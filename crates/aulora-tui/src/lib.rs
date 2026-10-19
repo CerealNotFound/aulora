@@ -3,6 +3,7 @@
 mod app;
 mod attach;
 mod client;
+mod conv;
 mod demo;
 mod keys;
 mod term;
@@ -23,12 +24,20 @@ use ratatui::crossterm::event::{
 };
 use ratatui::crossterm::{execute, terminal};
 
-use crate::app::{App, Conn, Mode, RowRef};
+use crate::app::{App, Conn, Mode, RowRef, Tab};
 use crate::client::Incoming;
 use crate::term::Term;
 
 pub use attach::attach;
 pub use client::SpawnFn;
+
+pub fn theme_names() -> Vec<&'static str> {
+    theme::THEMES.iter().map(|t| t.name).collect()
+}
+
+pub fn theme_exists(name: &str) -> bool {
+    theme::index_of(name).is_some()
+}
 
 /// Current terminal size in columns and rows.
 pub fn terminal_size() -> Option<(u16, u16)> {
@@ -43,6 +52,68 @@ pub struct Options {
     pub spawn_daemon: Option<SpawnFn>,
     /// Pane to select on start.
     pub select: Option<String>,
+    /// Theme name; otherwise the saved choice, otherwise matched to the terminal.
+    pub theme: Option<String>,
+    /// Tab to show on start: terminal, conversation, overview or activity.
+    pub tab: Option<String>,
+}
+
+fn parse_tab(name: &str) -> Option<Tab> {
+    match name.to_lowercase().as_str() {
+        "terminal" | "term" => Some(Tab::Terminal),
+        "conversation" | "conv" | "chat" => Some(Tab::Conversation),
+        "overview" => Some(Tab::Overview),
+        "activity" => Some(Tab::Activity),
+        _ => None,
+    }
+}
+
+/// Select a pane id, or a session by id prefix, then switch to `tab`.
+fn preselect(app: &mut App, select: Option<&str>, tab: Option<&str>) {
+    if let Some(q) = select {
+        if app.pane(q).is_some() {
+            app.selected = Some(RowRef::Pane(q.to_string()));
+        } else if let Some(s) = app.snap.as_ref().and_then(|s| s.sessions.iter().find(|s| s.id.starts_with(q))) {
+            app.selected = Some(RowRef::Session(s.id.clone()));
+        }
+    }
+    if let Some(tab) = tab.and_then(parse_tab) {
+        app.set_tab(tab);
+    }
+}
+
+fn config_path() -> PathBuf {
+    aulora_core::paths::home().join("config.json")
+}
+
+fn saved_theme() -> Option<String> {
+    let text = std::fs::read_to_string(config_path()).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    v.get("theme")?.as_str().map(str::to_string)
+}
+
+fn save_theme(name: &str) {
+    let path = config_path();
+    let mut v: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    v["theme"] = serde_json::Value::from(name);
+    let _ = aulora_core::paths::ensure_home();
+    let _ = std::fs::write(path, serde_json::to_string_pretty(&v).unwrap_or_default());
+}
+
+/// Pick the theme: an explicit name, the saved one, or Catppuccin matched
+/// to the terminal's background. Call in raw mode, before reading events.
+fn choose_theme(explicit: Option<&str>, detect: bool) {
+    let named = explicit.map(str::to_string).or_else(saved_theme).and_then(|n| theme::index_of(&n));
+    let index = match named {
+        Some(i) => i,
+        None if detect => theme::default_for(theme::terminal_is_light().unwrap_or(false)),
+        None => theme::default_for(false),
+    };
+    theme::set(index);
 }
 
 /// Connection state the main loop needs besides `App`.
@@ -77,8 +148,10 @@ pub fn run(mut opts: Options) -> Result<()> {
     if let Some(id) = opts.select.clone() {
         app.pending_select = Some((id, false));
     }
+    preselect(&mut app, opts.select.as_deref(), opts.tab.as_deref());
 
     let mut terminal = ratatui::init();
+    choose_theme(opts.theme.as_deref(), true);
     let mut out = std::io::stdout();
     let _ = execute!(out, EnableBracketedPaste);
     // Lets us tell Shift+Enter from Enter, among others, where supported.
@@ -113,7 +186,12 @@ pub fn run(mut opts: Options) -> Result<()> {
                     Event::Key(key) if key.kind != KeyEventKind::Release => {
                         if app.mode == Mode::Terminal {
                             terminal_key(&mut app, key, &ctx);
-                        } else if key.kind == KeyEventKind::Press && handle_key(&mut app, key, &opts, &ctx) {
+                        } else if key.kind != KeyEventKind::Press {
+                        } else if app.theme_picker.is_some() {
+                            picker_key(&mut app, key);
+                        } else if app.mode == Mode::Reading {
+                            reading_key(&mut app, key);
+                        } else if handle_key(&mut app, key, &opts, &ctx) {
                             return Ok(());
                         }
                     }
@@ -240,6 +318,106 @@ fn paste(app: &mut App, text: &str, ctx: &Ctx) {
     ctx.send(ClientMsg::Input { pane_id: id, data: proto::encode(&keys::paste(text, bracketed)) });
 }
 
+fn picker_key(app: &mut App, key: KeyEvent) {
+    let Some(sel) = app.theme_picker else { return };
+    let n = theme::THEMES.len();
+    match key.code {
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.theme_picker = Some((sel + 1) % n);
+            theme::set((sel + 1) % n);
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.theme_picker = Some((sel + n - 1) % n);
+            theme::set((sel + n - 1) % n);
+        }
+        KeyCode::Enter => {
+            let name = theme::get().name;
+            save_theme(name);
+            app.theme_picker = None;
+            app.toast(format!("Theme: {name}"));
+        }
+        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('t') => {
+            theme::set(app.theme_before);
+            app.theme_picker = None;
+        }
+        _ => {}
+    }
+}
+
+/// Copy text to the clipboard through the terminal (OSC 52), which works
+/// over SSH too.
+fn copy_to_clipboard(text: &str) {
+    use std::io::Write;
+    let mut out = std::io::stdout();
+    let _ = write!(out, "\x1b]52;c;{}\x07", proto::encode(text.as_bytes()));
+    let _ = out.flush();
+}
+
+fn reading_key(app: &mut App, key: KeyEvent) {
+    let Some(sid) = app.selected_session_id() else {
+        app.mode = Mode::Navigate;
+        return;
+    };
+    if app.searching {
+        match key.code {
+            KeyCode::Esc => app.searching = false,
+            KeyCode::Backspace => {
+                app.conv_query.pop();
+            }
+            KeyCode::Enter => {
+                app.searching = false;
+                let q = app.conv_query.clone();
+                let found = app.conversation(&sid).map(|c| {
+                    c.search = q;
+                    c.find_next()
+                });
+                if found == Some(false) {
+                    app.toast("No matches");
+                }
+            }
+            KeyCode::Char(c) => app.conv_query.push(c),
+            _ => {}
+        }
+        return;
+    }
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    if matches!(key.code, KeyCode::Esc | KeyCode::Left | KeyCode::Char('q')) || (ctrl && key.code == KeyCode::Char('q'))
+    {
+        app.mode = Mode::Navigate;
+        return;
+    }
+    let mut copied = None;
+    let mut not_found = false;
+    if let Some(c) = app.conversation(&sid) {
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => c.move_by(1),
+            KeyCode::Up | KeyCode::Char('k') => c.move_by(-1),
+            KeyCode::PageDown | KeyCode::Char(' ') => c.move_by(5),
+            KeyCode::PageUp => c.move_by(-5),
+            KeyCode::Home | KeyCode::Char('g') => c.select(0),
+            KeyCode::End | KeyCode::Char('G') => c.select_last(),
+            KeyCode::Char('[') => c.jump_prompt(false),
+            KeyCode::Char(']') => c.jump_prompt(true),
+            KeyCode::Enter | KeyCode::Right => c.toggle(),
+            KeyCode::Char('n') => not_found = !c.find_next(),
+            KeyCode::Char('y') => copied = c.entries.get(c.selected).map(|e| e.plain()),
+            KeyCode::Char('/') => {}
+            _ => {}
+        }
+    }
+    if key.code == KeyCode::Char('/') {
+        app.searching = true;
+        app.conv_query.clear();
+    }
+    if not_found {
+        app.toast("No more matches");
+    }
+    if let Some(text) = copied {
+        copy_to_clipboard(&text);
+        app.toast("Copied");
+    }
+}
+
 fn new_pane(app: &mut App, opts: &Options, ctx: &Ctx, kind: PaneKind) {
     let label = if kind == PaneKind::Claude { "Claude Code" } else { "a shell" };
     if matches!(app.conn, Conn::Demo) {
@@ -279,6 +457,7 @@ fn pane_key(app: &mut App, key: KeyEvent, opts: &Options) -> bool {
     let Some(p) = app.selected_pane().cloned() else { return false };
     let demo = matches!(app.conn, Conn::Demo);
     match key.code {
+        KeyCode::Enter if app.current_tab() != Tab::Terminal => return false,
         KeyCode::Enter if demo => app.toast("Demo panes are pictures; run aulora for real ones"),
         KeyCode::Enter => {
             if p.is_running() {
@@ -358,8 +537,19 @@ fn handle_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx) -> bool {
         KeyCode::PageUp => app.move_selection(-8),
         KeyCode::Char('g') | KeyCode::Home => app.select_edge(false),
         KeyCode::Char('G') | KeyCode::End => app.select_edge(true),
-        KeyCode::Tab => app.move_project(1),
-        KeyCode::BackTab => app.move_project(-1),
+        KeyCode::Tab => app.cycle_tab(1),
+        KeyCode::BackTab => app.cycle_tab(-1),
+        KeyCode::Char(c @ '1'..='4') => {
+            if let Some(tab) = app.tabs().get(c as usize - '1' as usize).copied() {
+                app.set_tab(tab);
+            }
+        }
+        KeyCode::Char('J') => app.move_project(1),
+        KeyCode::Char('K') => app.move_project(-1),
+        KeyCode::Char('t') => {
+            app.theme_before = theme::current_index();
+            app.theme_picker = Some(theme::current_index());
+        }
         KeyCode::Char('n') => app.next_attention(),
         KeyCode::Char('/') => app.filtering = true,
         KeyCode::Char('?') => app.help = true,
@@ -381,7 +571,15 @@ fn handle_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx) -> bool {
             app.move_selection(0);
             app.toast(if app.show_ended { "Showing ended sessions" } else { "Hiding ended sessions" });
         }
-        KeyCode::Enter | KeyCode::Char('o') => open_in_editor(app),
+        KeyCode::Enter => match app.selected {
+            Some(RowRef::Project(_)) => open_in_editor(app),
+            Some(_) if app.selected_session_id().is_some() => {
+                app.set_tab(Tab::Conversation);
+                app.mode = Mode::Reading;
+            }
+            _ => {}
+        },
+        KeyCode::Char('o') => open_in_editor(app),
         KeyCode::Char('x') => dismiss(app, opts, false),
         KeyCode::Char('X') => dismiss(app, opts, true),
         _ => {}
@@ -442,6 +640,63 @@ pub fn render_text(
     width: u16,
     height: u16,
 ) -> String {
+    render(opts, live, screens, width, height, false)
+}
+
+/// Like `render_text`, but every cell with its colors as JSON lines, for
+/// turning frames into images.
+pub fn render_json(
+    opts: &Options,
+    live: Option<Snapshot>,
+    screens: Vec<(String, u16, u16, Vec<u8>)>,
+    width: u16,
+    height: u16,
+) -> String {
+    render(opts, live, screens, width, height, true)
+}
+
+fn color_json(c: ratatui::style::Color) -> serde_json::Value {
+    use ratatui::style::Color as C;
+    match c {
+        C::Reset => serde_json::Value::Null,
+        C::Rgb(r, g, b) => serde_json::json!([r, g, b]),
+        C::Indexed(i) => serde_json::json!(i),
+        other => {
+            let i = [
+                C::Black,
+                C::Red,
+                C::Green,
+                C::Yellow,
+                C::Blue,
+                C::Magenta,
+                C::Cyan,
+                C::Gray,
+                C::DarkGray,
+                C::LightRed,
+                C::LightGreen,
+                C::LightYellow,
+                C::LightBlue,
+                C::LightMagenta,
+                C::LightCyan,
+                C::White,
+            ]
+            .iter()
+            .position(|x| *x == other)
+            .unwrap_or(7);
+            serde_json::json!(i)
+        }
+    }
+}
+
+fn render(
+    opts: &Options,
+    live: Option<Snapshot>,
+    screens: Vec<(String, u16, u16, Vec<u8>)>,
+    width: u16,
+    height: u16,
+    json: bool,
+) -> String {
+    choose_theme(opts.theme.as_deref(), false);
     let mut app = App::new(if opts.demo { Conn::Demo } else { Conn::Live }, opts.hooks_installed, opts.editor.clone());
     if let Some(id) = &opts.select {
         app.pending_select = Some((id.clone(), false));
@@ -459,9 +714,29 @@ pub fn render_text(
         t.reset(cols, rows, &data);
         app.terms.insert(id, t);
     }
+    preselect(&mut app, opts.select.as_deref(), opts.tab.as_deref());
     let mut terminal = ratatui::Terminal::new(TestBackend::new(width, height)).expect("test backend");
     terminal.draw(|f| ui::draw(f, &mut app)).expect("draw");
     let buf = terminal.backend().buffer();
+    if json {
+        let mut out = String::new();
+        for y in 0..height {
+            let row: Vec<serde_json::Value> = (0..width)
+                .map(|x| {
+                    let c = &buf[(x, y)];
+                    serde_json::json!([
+                        c.symbol(),
+                        color_json(c.fg),
+                        color_json(c.bg),
+                        c.modifier.contains(ratatui::style::Modifier::BOLD)
+                    ])
+                })
+                .collect();
+            out.push_str(&serde_json::to_string(&row).unwrap_or_default());
+            out.push('\n');
+        }
+        return out;
+    }
     let mut out = String::new();
     for y in 0..height {
         let mut skip = 0;

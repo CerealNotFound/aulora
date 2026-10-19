@@ -37,9 +37,21 @@ enum Cmd {
         /// Select this pane on start (id, prefix, name or project/name).
         #[arg(long)]
         select: Option<String>,
+        /// Theme to use (press t in the dashboard to browse them).
+        #[arg(long)]
+        theme: Option<String>,
+        /// Tab to start on: terminal, conversation, overview or activity.
+        #[arg(long)]
+        tab: Option<String>,
+        /// With --snapshot: print cells with colors as JSON lines.
+        #[arg(long, hide = true)]
+        json: bool,
     },
     /// Open the dashboard with made-up sessions.
-    Demo,
+    Demo {
+        #[arg(long)]
+        theme: Option<String>,
+    },
     /// Add or remove aulora's Claude Code hooks.
     Hooks {
         #[command(subcommand)]
@@ -163,10 +175,10 @@ fn dispatch(cli: Cli) -> Result<()> {
                 Cli::command().print_help()?;
                 return Ok(());
             }
-            tui(false, None, None)
+            tui(false, None, None, None, None, false)
         }
-        Some(Cmd::Tui { demo, snapshot, select }) => tui(demo, snapshot, select),
-        Some(Cmd::Demo) => tui(true, None, None),
+        Some(Cmd::Tui { demo, snapshot, select, theme, tab, json }) => tui(demo, snapshot, select, theme, tab, json),
+        Some(Cmd::Demo { theme }) => tui(true, None, None, theme, None, false),
         Some(Cmd::Hook) => {
             hook::run();
             Ok(())
@@ -197,13 +209,32 @@ fn hooks_installed() -> bool {
     install::read(&install::default_settings_path()).map(|v| !install::installed_events(&v).is_empty()).unwrap_or(false)
 }
 
-fn tui(demo: bool, snapshot: Option<String>, select: Option<String>) -> Result<()> {
+fn tui(
+    demo: bool,
+    snapshot: Option<String>,
+    select: Option<String>,
+    theme: Option<String>,
+    tab: Option<String>,
+    json: bool,
+) -> Result<()> {
     let exe = exe()?;
+    // Panes are looked up by name; anything else (a session id, or a demo
+    // pane) is passed through as given.
     let select = match (&select, demo) {
-        (Some(q), false) => Some(find_pane(q)?.id),
-        _ => None,
+        (Some(q), false) => Some(find_pane(q).map(|p| p.id).unwrap_or_else(|_| q.clone())),
+        (q, true) => q.clone(),
+        (None, _) => None,
     };
+    if let Some(t) = &theme {
+        anyhow::ensure!(
+            aulora_tui::theme_exists(t),
+            "unknown theme {t:?}; known: {}",
+            aulora_tui::theme_names().join(", ")
+        );
+    }
     let opts = aulora_tui::Options {
+        theme,
+        tab,
         select: select.clone(),
         demo,
         socket: paths::socket(),
@@ -224,7 +255,12 @@ fn tui(demo: bool, snapshot: Option<String>, select: Option<String>) -> Result<(
             .context("--snapshot takes WIDTHxHEIGHT, e.g. 180x50")?;
         let live = if demo { None } else { request_snapshot().ok() };
         let screens = select.iter().filter_map(|id| fetch_screen(id).ok()).collect();
-        print!("{}", aulora_tui::render_text(&opts, live, screens, w, h));
+        let frame = if json {
+            aulora_tui::render_json(&opts, live, screens, w, h)
+        } else {
+            aulora_tui::render_text(&opts, live, screens, w, h)
+        };
+        print!("{frame}");
         return Ok(());
     }
     aulora_tui::run(opts)

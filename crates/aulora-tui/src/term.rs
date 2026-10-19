@@ -84,8 +84,8 @@ pub fn render(term: &Term, area: Rect, buf: &mut Buffer) -> Option<(u16, u16)> {
                 col += 1;
                 continue;
             }
-            let mut fg = color(cell.fgcolor(), theme::TEXT);
-            let mut bg = color(cell.bgcolor(), theme::BG);
+            let mut fg = color(cell.fgcolor(), theme::get().text);
+            let mut bg = color(cell.bgcolor(), theme::get().bg);
             if cell.inverse() {
                 std::mem::swap(&mut fg, &mut bg);
             }

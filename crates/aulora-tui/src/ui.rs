@@ -1,3 +1,7 @@
+//! Drawing. Layout: a slim header, a sidebar with projects and what runs in
+//! them, and a main area that shows one view of the selection at a time
+//! (Terminal, Conversation, Overview or Activity).
+
 use aulora_core::model::*;
 use aulora_core::paths::tildify;
 use aulora_core::reduce::tool_label;
@@ -5,23 +9,22 @@ use aulora_core::util::{ago, basename, first_line, fmt_tokens, human_duration, s
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::symbols;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Sparkline};
+use ratatui::widgets::{Block, Clear, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, Conn, Mode, RowRef};
-use crate::theme::*;
+use crate::app::{App, Conn, Mode, RowRef, Tab};
+use crate::theme::{self, bold, dim, faint, fg, label, project_color, spinner, state_color, state_glyph, text};
 
 // ---------------------------------------------------------------------------
 // Text helpers
 
-fn w(s: &str) -> usize {
+pub fn w(s: &str) -> usize {
     UnicodeWidthStr::width(s)
 }
 
 /// Cut to `max` display columns, with an ellipsis if cut.
-fn fit(s: &str, max: usize) -> String {
+pub fn fit(s: &str, max: usize) -> String {
     if w(s) <= max {
         return s.to_string();
     }
@@ -46,7 +49,6 @@ fn spans_width(spans: &[Span]) -> usize {
     spans.iter().map(|s| w(&s.content)).sum()
 }
 
-/// Truncate a run of spans to `max` columns.
 fn fit_spans(spans: Vec<Span<'static>>, max: usize) -> Vec<Span<'static>> {
     let mut out = Vec::new();
     let mut used = 0;
@@ -77,70 +79,11 @@ fn lr(left: Vec<Span<'static>>, right: Vec<Span<'static>>, width: usize) -> Line
     Line::from(spans)
 }
 
-/// Word-wrap plain text to `width` columns.
-fn wrap(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(4);
-    let mut out = Vec::new();
-    for para in text.lines() {
-        let para = para.trim_end();
-        if para.is_empty() {
-            if out.last().is_some_and(|l: &String| !l.is_empty()) {
-                out.push(String::new());
-            }
-            continue;
-        }
-        let mut line = String::new();
-        for word in para.split_whitespace() {
-            let need = if line.is_empty() { w(word) } else { w(&line) + 1 + w(word) };
-            if need > width && !line.is_empty() {
-                out.push(std::mem::take(&mut line));
-            }
-            if w(word) > width {
-                // Hard-break very long words (paths, URLs).
-                let mut chunk = String::new();
-                for c in word.chars() {
-                    if w(&chunk) + c.width().unwrap_or(0) > width {
-                        out.push(std::mem::take(&mut chunk));
-                    }
-                    chunk.push(c);
-                }
-                line = chunk;
-            } else {
-                if !line.is_empty() {
-                    line.push(' ');
-                }
-                line.push_str(word);
-            }
-        }
-        if !line.is_empty() {
-            out.push(line);
-        }
-    }
-    while out.last().is_some_and(|l| l.is_empty()) {
-        out.pop();
-    }
-    out
-}
-
-/// Strip the most common markdown noise from replies.
-fn plain(text: &str) -> String {
-    text.lines()
-        .map(|l| {
-            let t = l.trim_start();
-            let t = t.trim_start_matches('#').trim_start();
-            t.replace("**", "").replace("__", "")
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+fn sp(s: impl Into<String>, style: Style) -> Span<'static> {
+    Span::styled(s.into(), style)
 }
 
 fn clock(ms: Ms) -> String {
-    chrono::DateTime::from_timestamp_millis(ms)
-        .map(|d| d.with_timezone(&chrono::Local).format("%H:%M:%S").to_string())
-        .unwrap_or_default()
-}
-
-fn hm(ms: Ms) -> String {
     chrono::DateTime::from_timestamp_millis(ms)
         .map(|d| d.with_timezone(&chrono::Local).format("%H:%M").to_string())
         .unwrap_or_default()
@@ -154,14 +97,13 @@ fn dur_ms(ms: u64) -> String {
     }
 }
 
-/// One-line sparkline from values, scaled to the max.
 fn spark(values: &[u64], width: usize) -> String {
     const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     if values.is_empty() || width == 0 {
         return String::new();
     }
-    let vals: Vec<u64> = if values.len() > width { values[values.len() - width..].to_vec() } else { values.to_vec() };
-    let max = *vals.iter().max().unwrap_or(&1).max(&1);
+    let vals = if values.len() > width { &values[values.len() - width..] } else { values };
+    let max = (*vals.iter().max().unwrap_or(&1)).max(1);
     vals.iter().map(|v| BARS[((*v as f64 / max as f64) * 7.0).round() as usize]).collect()
 }
 
@@ -169,807 +111,27 @@ fn plural(n: usize, word: &str) -> String {
     if n == 1 { format!("1 {word}") } else { format!("{n} {word}s") }
 }
 
-fn panel(title: &str) -> Block<'static> {
-    Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(BORDER))
-        .style(Style::new().bg(PANEL))
-        .title(Line::from(vec![Span::raw(" "), Span::styled(title.to_string(), label()), Span::raw(" ")]))
-}
-
-fn sp(s: impl Into<String>, style: Style) -> Span<'static> {
-    Span::styled(s.into(), style)
-}
-
-fn gradient_text(text: &str, bold_: bool) -> Vec<Span<'static>> {
-    let n = text.chars().count().max(2) - 1;
-    text.chars()
-        .enumerate()
-        .map(|(i, c)| {
-            let mut st = Style::new().fg(aurora(i as f32 / n as f32));
-            if bold_ {
-                st = st.add_modifier(Modifier::BOLD);
-            }
-            Span::styled(c.to_string(), st)
-        })
-        .collect()
-}
-
-fn state_pill(s: &Session, now: Ms) -> Vec<Span<'static>> {
-    let c = live_state_color(&s.state, now);
-    vec![sp(
-        format!(" {} {} · {} ", state_glyph(&s.state, now), s.state.label(), short_duration(now - s.state_since)),
-        Style::new().bg(c).fg(BG).add_modifier(Modifier::BOLD),
-    )]
-}
-
-// ---------------------------------------------------------------------------
-// Entry point
-
-pub fn draw(f: &mut Frame, app: &mut App) {
-    let area = f.area();
-    f.render_widget(Block::new().style(Style::new().bg(BG)), area);
-
-    let has_alert = !app.alerts().is_empty();
-    let rows = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(if has_alert { 1 } else { 0 }),
-        Constraint::Min(0),
-        Constraint::Length(1),
-    ])
-    .split(area);
-
-    header(f, rows[0], app);
-    if has_alert {
-        alert_banner(f, rows[1], app);
-    }
-    let body = rows[2].inner(ratatui::layout::Margin { horizontal: 1, vertical: 0 });
-    let no_sessions = app.snap.as_ref().is_none_or(|s| s.sessions.is_empty() && s.panes.is_empty());
-    if no_sessions {
-        empty_state(f, body, app);
-    } else {
-        main_body(f, body, app);
-    }
-    footer(f, rows[3], app);
-    if app.help {
-        help(f, area, app);
-    }
-    toast(f, rows[2], app);
-}
-
-fn header(f: &mut Frame, area: Rect, app: &App) {
-    let now = app.now;
-    let c = app.counts();
-    let mut left = vec![sp(" ✦ ", bold(TEAL))];
-    left.extend(gradient_text("aulora", true));
-    left.push(sp(format!("  v{}", aulora_core::VERSION), faint()));
-    left.push(sp("   ", text()));
-
-    let pill = |n: usize, glyph: &str, label_: &str, color: Color| -> Vec<Span<'static>> {
-        let active = n > 0;
-        vec![
-            sp(format!("{glyph} "), Style::new().fg(if active { color } else { FAINT })),
-            sp(n.to_string(), if active { bold(color) } else { faint() }),
-            sp(format!(" {label_}   "), if active { dim() } else { faint() }),
-        ]
-    };
-    let ny_color = if c.needs_you > 0 { lerp(AMBER, Color::Rgb(255, 236, 170), pulse(now, 1400)) } else { AMBER };
-    left.extend(pill(c.needs_you, "◆", "needs you", ny_color));
-    if c.errored > 0 {
-        left.extend(pill(c.errored, "✗", "errored", RED));
-    }
-    left.extend(pill(c.working, spinner(now), "working", CYAN));
-    left.extend(pill(c.your_turn, "✓", "your turn", GREEN));
-    left.extend(pill(c.idle, "○", "idle", DIM));
-
-    let mut right: Vec<Span<'static>> = Vec::new();
-    match &app.conn {
-        Conn::Live => {
-            if let Some(s) = &app.snap {
-                right.push(sp(format!("{} · {} live   ", plural(c.projects, "project"), c.live()), faint()));
-                right.push(sp("● ", Style::new().fg(lerp(GREEN, TEAL, pulse(now, 3000)))));
-                right.push(sp(
-                    format!(
-                        "daemon up {} · {} events   ",
-                        short_duration(now - s.daemon.started_at),
-                        s.daemon.hooks_seen
-                    ),
-                    dim(),
-                ));
-            }
-        }
-        Conn::Demo => right.push(sp("◇ demo data   ", bold(VIOLET))),
-        Conn::Connecting => right.push(sp(format!("{} connecting to daemon…   ", spinner(now)), dim())),
-        Conn::Offline(why) => right.push(sp(format!("● daemon offline: {why} · retrying   "), bold(RED))),
-    }
-    right.push(sp(format!("{} ", clock(now)), text()));
-    let line = lr(left, right, area.width as usize);
-    f.render_widget(Paragraph::new(line).style(Style::new().bg(PANEL)), area);
-}
-
-fn alert_banner(f: &mut Frame, area: Rect, app: &App) {
-    let alerts = app.alerts();
-    let Some(s) = alerts.first() else { return };
-    let now = app.now;
-    let pc = lerp(AMBER, Color::Rgb(255, 240, 190), pulse(now, 1400));
-    let (reason, detail) = match &s.state {
-        SessionState::NeedsYou { reason, detail } => (reason.label(), detail.clone()),
-        _ => ("needs you", String::new()),
-    };
-    let left = vec![
-        sp(" ◆ NEEDS YOU ", Style::new().bg(pc).fg(BG).add_modifier(Modifier::BOLD)),
-        sp("  ", text()),
-        sp(basename(&s.project_root), bold(project_color(&s.project_root))),
-        sp(" › ", faint()),
-        sp(s.display_title(), bold(TEXT)),
-        sp(format!("  {reason}: "), Style::new().fg(AMBER)),
-        sp(detail, text()),
-        sp(format!("  · {}", short_duration(now - s.state_since)), dim()),
-    ];
-    let mut right = Vec::new();
-    if alerts.len() > 1 {
-        right.push(sp(format!("+{} more  ", alerts.len() - 1), bold(AMBER)));
-    }
-    right.push(sp("n", bold(TEXT)));
-    right.push(sp(" next  ", dim()));
-    right.push(sp("⏎", bold(TEXT)));
-    right.push(sp(format!(" open in {} ", editor_name(app)), dim()));
-    f.render_widget(Paragraph::new(lr(left, right, area.width as usize)).style(Style::new().bg(AMBER_BG)), area);
-}
-
-fn editor_name(app: &App) -> String {
-    match app.editor.as_str() {
-        "code" | "code-insiders" => "VS Code".into(),
-        "cursor" => "Cursor".into(),
-        "zed" => "Zed".into(),
-        other => other.to_string(),
+fn fill(f: &mut Frame, area: Rect, bg: Color) {
+    if bg != Color::Reset {
+        f.render_widget(Block::new().style(Style::new().bg(bg)), area);
     }
 }
 
-fn main_body(f: &mut Frame, area: Rect, app: &mut App) {
-    let pane_selected = app.selected_pane().is_some();
-    if pane_selected && (app.zoom || (area.width < 118 && app.mode == Mode::Terminal)) {
-        pane_view(f, area, app);
-        return;
-    }
-    // A pane gets the full height; the feed would only take rows from it.
-    let show_feed = area.height >= 28 && !pane_selected;
-    let feed_h = if area.height >= 44 { 10 } else { 7 };
-    let rows =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(if show_feed { feed_h } else { 0 })]).split(area);
-    let wide = area.width >= 118;
-    if wide {
-        let left_w = ((area.width as u32 * 40) / 100).clamp(52, 78) as u16;
-        let cols =
-            Layout::horizontal([Constraint::Length(left_w), Constraint::Length(1), Constraint::Min(0)]).split(rows[0]);
-        session_list(f, cols[0], app);
-        match app.selected.clone() {
-            Some(RowRef::Session(id)) => {
-                if let Some(s) = app.session(&id).cloned() {
-                    session_detail(f, cols[2], app, &s);
-                }
-            }
-            Some(RowRef::Project(root)) => project_detail(f, cols[2], app, &root),
-            Some(RowRef::Pane(_)) => pane_view(f, cols[2], app),
-            None => {}
-        }
-    } else {
-        session_list(f, rows[0], app);
-    }
-    if show_feed {
-        feed(f, rows[1], app);
+/// Text color on a badge filled with an accent color.
+fn on_accent() -> Color {
+    let t = theme::get();
+    match t.bg {
+        Color::Reset if t.light => Color::White,
+        Color::Reset => Color::Black,
+        c => c,
     }
 }
 
-// ---------------------------------------------------------------------------
-// Left: projects and sessions
-
-fn git_spans(g: &GitInfo) -> Vec<Span<'static>> {
-    let mut v = vec![sp(format!("⎇ {}", g.branch.clone().unwrap_or_else(|| "?".into())), dim())];
-    if g.ahead > 0 {
-        v.push(sp(format!(" ↑{}", g.ahead), Style::new().fg(GREEN)));
-    }
-    if g.behind > 0 {
-        v.push(sp(format!(" ↓{}", g.behind), Style::new().fg(RED)));
-    }
-    if g.conflicts > 0 {
-        v.push(sp(format!(" ✗{}", g.conflicts), bold(RED)));
-    }
-    if g.staged > 0 {
-        v.push(sp(format!(" +{}", g.staged), Style::new().fg(GREEN)));
-    }
-    if g.modified > 0 {
-        v.push(sp(format!(" ~{}", g.modified), Style::new().fg(BLUE)));
-    }
-    if g.untracked > 0 {
-        v.push(sp(format!(" ?{}", g.untracked), faint()));
-    }
-    if !g.is_dirty() {
-        v.push(sp(" ✓", faint()));
-    }
-    v
-}
-
-fn session_detail_line(s: &Session, now: Ms) -> Vec<Span<'static>> {
-    match &s.state {
-        SessionState::NeedsYou { reason, detail } => {
-            vec![sp(format!("{}: ", reason.label()), bold(AMBER)), sp(detail.clone(), Style::new().fg(TEXT))]
-        }
-        SessionState::Errored { detail } => vec![sp(detail.clone(), Style::new().fg(RED))],
-        SessionState::Working | SessionState::Compacting => {
-            let mut v = match &s.current_tool {
-                Some(t) => vec![
-                    sp(tool_label(&t.name), bold(CYAN)),
-                    sp(format!(" {}", t.target), dim()),
-                    sp(format!(" {}", short_duration(now - t.started_at)), faint()),
-                ],
-                None if matches!(s.state, SessionState::Compacting) => {
-                    vec![sp("compacting context…", Style::new().fg(VIOLET))]
-                }
-                None => vec![sp("thinking…", dim())],
-            };
-            if s.subagents_active > 0 {
-                v.push(sp(format!(" · ⑂{}", s.subagents_active), Style::new().fg(PINK)));
-            }
-            v
-        }
-        SessionState::YourTurn => match &s.last_reply {
-            Some(r) => {
-                vec![sp(format!("“{}”", first_line(&plain(r))), Style::new().fg(DIM).add_modifier(Modifier::ITALIC))]
-            }
-            None => vec![sp("turn finished", dim())],
-        },
-        SessionState::Idle => vec![sp(
-            s.last_prompt
-                .as_deref()
-                .map(|p| format!("› {}", first_line(p)))
-                .unwrap_or_else(|| "waiting for a first prompt".into()),
-            faint(),
-        )],
-        SessionState::Ended { reason } => {
-            vec![sp(format!("ended · {reason} · {}", ago(now, s.state_since)), faint())]
-        }
-    }
-}
-
-struct ListLine {
-    line: Line<'static>,
-    row: usize,
-}
-
-fn session_list(f: &mut Frame, area: Rect, app: &mut App) {
-    let now = app.now;
-    let c = app.counts();
-    let title_right = format!(" {} · {} ", plural(c.live() + c.ended, "session"), plural(c.projects, "project"));
-    let mut block = panel("projects")
-        .title(Line::from(sp(title_right, faint())).right_aligned())
-        .border_style(Style::new().fg(BORDER_HI));
-    if !app.filter.is_empty() || app.filtering {
-        block = block.title_bottom(Line::from(vec![
-            sp(" / ", bold(TEAL)),
-            sp(app.filter.clone(), text()),
-            sp(if app.filtering { "▏" } else { "" }, Style::new().fg(TEAL)),
-            sp(" ", text()),
-        ]));
-    }
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    let width = inner.width as usize;
-
-    let rows = app.rows();
-    let mut lines: Vec<ListLine> = Vec::new();
-    let mut ri = 0usize;
-    let projects: Vec<Project> = app.visible_projects().into_iter().cloned().collect();
-    for (pi, p) in projects.iter().enumerate() {
-        if pi > 0 {
-            lines.push(ListLine { line: Line::raw(""), row: usize::MAX });
-        }
-        let pc = project_color(&p.root);
-        let sessions: Vec<Session> = app.visible_sessions(&p.root).into_iter().cloned().collect();
-        let selected = app.selected.as_ref() == Some(&RowRef::Project(p.root.clone()));
-        let marker = if selected { sp("▌", Style::new().fg(pc)) } else { sp(" ", text()) };
-        let needs = app
-            .snap
-            .as_ref()
-            .map(|snap| {
-                snap.sessions
-                    .iter()
-                    .filter(|s| s.project_root == p.root && matches!(s.state, SessionState::NeedsYou { .. }))
-                    .count()
-            })
-            .unwrap_or(0);
-        let mut l1 = vec![marker.clone(), sp(p.name.clone(), bold(pc))];
-        if needs > 0 {
-            l1.push(sp(format!("  ◆{needs}"), bold(AMBER)));
-        }
-        let r1 = p.git.as_ref().map(git_spans).unwrap_or_else(|| vec![sp("no git", faint())]);
-        let mut l2 = vec![marker, sp(tildify(&p.root), faint())];
-        if let Some(g) = &p.git
-            && let (Some(msg), Some(at)) = (&g.last_commit, g.last_commit_at)
-        {
-            l2.push(sp(format!("  ·  {} ", short_duration(now - at)), faint()));
-            l2.push(sp(msg.clone(), dim()));
-        }
-        let bg = if selected { Style::new().bg(SELECT) } else { Style::new() };
-        lines.push(ListLine { line: lr(l1, r1, width).style(bg), row: ri });
-        lines.push(ListLine { line: lr(l2, vec![], width).style(bg), row: ri });
-        ri += 1;
-
-        let panes: Vec<Pane> = app.visible_panes(&p.root).into_iter().cloned().collect();
-        let n = panes.len() + sessions.len();
-        for (pi, x) in panes.iter().enumerate() {
-            let last = pi + 1 == n;
-            let selected = app.selected.as_ref() == Some(&RowRef::Pane(x.id.clone()));
-            let marker = if selected { sp("▌", Style::new().fg(pc)) } else { sp(" ", text()) };
-            let linked = app.pane_session(&x.id).filter(|s| s.state.is_live()).cloned();
-            let active = now - x.last_output_at < 2_000;
-            let (glyph, gc, label_, since) = match (&x.exit, &linked) {
-                (Some(e), _) => ("■".to_string(), FAINT, format!("EXITED {}", e.code), e.at),
-                (None, Some(s)) => (
-                    state_glyph(&s.state, now).to_string(),
-                    live_state_color(&s.state, now),
-                    s.state.label().to_string(),
-                    s.state_since,
-                ),
-                (None, None) => (
-                    if x.kind == PaneKind::Command { "▶" } else { "❯" }.to_string(),
-                    if active { CYAN } else { TEAL },
-                    if active { "ACTIVE".to_string() } else { "READY".to_string() },
-                    x.last_output_at,
-                ),
-            };
-            let mut l1 = vec![
-                marker.clone(),
-                sp(if last { " └─ " } else { " ├─ " }, faint()),
-                sp(glyph, bold(gc)),
-                sp(" ", text()),
-                sp(x.name.clone(), if x.exit.is_some() { faint() } else { bold(TEXT) }),
-            ];
-            if let Some(s) = &linked {
-                l1.push(sp(format!(" · {}", s.display_title()), text()));
-            }
-            let r1 = vec![sp(label_, bold(gc)), sp(format!(" {:>5}", short_duration(now - since)), dim())];
-            let mut l2 = vec![marker, sp(if last { "      " } else { " │    " }, faint())];
-            match &linked {
-                Some(s) => l2.extend(session_detail_line(s, now)),
-                None => {
-                    let what = match (&x.title, x.kind) {
-                        (Some(t), _) => t.clone(),
-                        (None, PaneKind::Command) => x.args.join(" "),
-                        (None, PaneKind::Claude) => "claude".into(),
-                        (None, PaneKind::Shell) => aulora_core::util::rel_path(&x.cwd, &p.root),
-                    };
-                    l2.push(sp(if what.is_empty() { ".".into() } else { what }, faint()));
-                }
-            }
-            let r2 = vec![sp(format!("{}×{} · {}", x.cols, x.rows, x.id), faint())];
-            let bg = if selected { Style::new().bg(SELECT) } else { Style::new() };
-            lines.push(ListLine { line: lr(l1, r1, width).style(bg), row: ri });
-            lines.push(ListLine { line: lr(l2, r2, width).style(bg), row: ri });
-            ri += 1;
-        }
-        for (si, s) in sessions.iter().enumerate() {
-            let last = panes.len() + si + 1 == n;
-
-            let selected = app.selected.as_ref() == Some(&RowRef::Session(s.id.clone()));
-            let marker = if selected { sp("▌", Style::new().fg(pc)) } else { sp(" ", text()) };
-            let sc = live_state_color(&s.state, now);
-            let title_style = match s.state {
-                SessionState::NeedsYou { .. } => bold(TEXT),
-                SessionState::Ended { .. } => faint(),
-                _ => text(),
-            };
-            let l1 = vec![
-                marker.clone(),
-                sp(if last { " └─ " } else { " ├─ " }, faint()),
-                sp(state_glyph(&s.state, now), bold(sc)),
-                sp(" ", text()),
-                sp(s.display_title(), title_style),
-            ];
-            let r1 =
-                vec![sp(s.state.label(), bold(sc)), sp(format!(" {:>5}", short_duration(now - s.state_since)), dim())];
-            let mut l2 = vec![marker, sp(if last { "      " } else { " │    " }, faint())];
-            l2.extend(session_detail_line(s, now));
-            let mut r2 = Vec::new();
-            if let Some(app_name) = s.terminal.app_name() {
-                r2.push(sp(app_name, faint()));
-            }
-            if let Some(m) = &s.model {
-                if !r2.is_empty() {
-                    r2.push(sp(" · ", faint()));
-                }
-                r2.push(sp(short_model(m), faint()));
-            }
-            let bg = if selected { Style::new().bg(SELECT) } else { Style::new() };
-            lines.push(ListLine { line: lr(l1, r1, width).style(bg), row: ri });
-            lines.push(ListLine { line: lr(l2, r2, width).style(bg), row: ri });
-            ri += 1;
-        }
-    }
-
-    // Keep the selected row in view.
-    let sel = app.selected.as_ref().and_then(|s| rows.iter().position(|r| r == s));
-    let h = inner.height as usize;
-    if let Some(sel) = sel {
-        let first = lines.iter().position(|l| l.row == sel).unwrap_or(0);
-        let last = lines.iter().rposition(|l| l.row == sel).unwrap_or(first);
-        if first < app.scroll {
-            app.scroll = first.saturating_sub(if sel == 0 { 0 } else { 1 });
-        } else if last >= app.scroll + h {
-            app.scroll = last + 1 - h;
-        }
-    }
-    app.scroll = app.scroll.min(lines.len().saturating_sub(h));
-    let visible: Vec<Line> = lines.into_iter().skip(app.scroll).take(h).map(|l| l.line).collect();
-    f.render_widget(Paragraph::new(visible), inner);
-}
-
-// ---------------------------------------------------------------------------
-// Right: a live pane
-
-fn pane_view(f: &mut Frame, area: Rect, app: &mut App) {
-    let now = app.now;
-    let Some(p) = app.selected_pane().cloned() else { return };
-    let linked = app.pane_session(&p.id).filter(|s| s.state.is_live()).cloned();
-    let focused = app.mode == Mode::Terminal;
-    let needs = linked.as_ref().is_some_and(|s| matches!(s.state, SessionState::NeedsYou { .. }));
-    let border = if needs {
-        lerp(AMBER_DIM, AMBER, pulse(now, 1400))
-    } else if focused {
-        TEAL
-    } else {
-        BORDER_HI
-    };
-    let pc = project_color(&p.project_root);
-    let title = Line::from(vec![
-        sp(" ", text()),
-        sp(if focused { "● " } else { "❯ " }, bold(if focused { TEAL } else { pc })),
-        sp(p.name.clone(), bold(TEXT)),
-        sp(format!("  {}", basename(&p.project_root)), Style::new().fg(pc)),
-        sp(format!("  {} ", tildify(&p.cwd)), faint()),
-    ]);
-    let mut right = format!(" {}×{} · pane {}", p.cols, p.rows, p.id);
-    if let Some(pid) = p.pid {
-        right.push_str(&format!(" · pid {pid}"));
-    }
-    right.push(' ');
-    let hint = if focused {
-        Line::from(vec![
-            sp(" TERMINAL ", Style::new().bg(TEAL).fg(BG).add_modifier(Modifier::BOLD)),
-            sp(" ctrl-q to leave ", faint()),
-        ])
-    } else {
-        Line::from(vec![sp(" ⏎", bold(TEXT)), sp(" type here  ", faint()), sp("z", bold(TEXT)), sp(" zoom ", faint())])
-    };
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(border))
-        .style(Style::new().bg(BG))
-        .title(title)
-        .title(Line::from(sp(right, faint())).right_aligned())
-        .title_bottom(hint.right_aligned());
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    let term_area = match &linked {
-        Some(s) if inner.height > 4 => {
-            let rows =
-                Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)]).split(inner);
-            let width = rows[0].width as usize;
-            let mut left = state_pill(s, now);
-            left.push(sp("  ", text()));
-            left.push(sp(s.display_title(), bold(TEXT)));
-            left.push(sp("  ", text()));
-            left.extend(session_detail_line(s, now));
-            let mut r = Vec::new();
-            if let Some(m) = &s.model {
-                r.push(sp(short_model(m), Style::new().fg(VIOLET)));
-            }
-            if let Some(c) = s.context_tokens {
-                r.push(sp(format!("  ctx {}", fmt_tokens(c)), Style::new().fg(TEAL)));
-            }
-            r.push(sp(format!("  {} tools ", s.tool_calls), faint()));
-            f.render_widget(Paragraph::new(lr(left, r, width)).style(Style::new().bg(PANEL)), rows[0]);
-            f.render_widget(Paragraph::new(Line::from(sp("─".repeat(width), Style::new().fg(BORDER)))), rows[1]);
-            rows[2]
-        }
-        _ => inner,
-    };
-    app.view_size = Some((p.id.clone(), term_area.width, term_area.height));
-
-    let Some(t) = app.terms.get(&p.id) else {
-        let msg = Paragraph::new(Line::from(vec![
-            sp(format!("{} ", spinner(now)), Style::new().fg(TEAL)),
-            sp("attaching…", dim()),
-        ]));
-        f.render_widget(msg, centered(term_area, 14, 1));
-        return;
-    };
-    let cursor = crate::term::render(t, term_area, f.buffer_mut());
-    if focused && let Some(pos) = cursor {
-        f.set_cursor_position(pos);
-    }
-    let scrolled = t.scrolled();
-    if scrolled > 0 {
-        let msg = format!(" ↑ {scrolled} lines up · PgDn or End to return ");
-        let wd = (w(&msg) as u16).min(term_area.width);
-        let r = Rect { x: term_area.x + term_area.width - wd, y: term_area.y, width: wd, height: 1 };
-        f.render_widget(Paragraph::new(Line::from(sp(msg, Style::new().fg(BG).bg(VIOLET)))), r);
-    }
-    if let Some(e) = &p.exit {
-        let msg = format!(
-            " process exited with code {}{} · r restart · x close ",
-            e.code,
-            e.signal.as_ref().map(|s| format!(" ({s})")).unwrap_or_default()
-        );
-        let wd = (w(&msg) as u16).min(term_area.width);
-        let r = Rect { x: term_area.x, y: term_area.y + term_area.height.saturating_sub(1), width: wd, height: 1 };
-        f.render_widget(Paragraph::new(Line::from(sp(msg, Style::new().fg(TEXT).bg(RAISED)))), r);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Right: one session
-
-fn meta(label_: &str, value: impl Into<String>, color: Color) -> Vec<Span<'static>> {
-    vec![sp(format!("{label_} "), faint()), sp(value.into(), Style::new().fg(color)), sp("   ", text())]
-}
-
-fn session_detail(f: &mut Frame, area: Rect, app: &App, s: &Session) {
-    let now = app.now;
-    let tall = area.height >= 30;
-    let rows = Layout::vertical([
-        Constraint::Length(6),
-        Constraint::Length(4),
-        Constraint::Length(if tall { 6 } else { 5 }),
-        Constraint::Min(6),
-    ])
-    .split(area);
-
-    // Header card.
-    let pc = project_color(&s.project_root);
-    let block = panel("session")
-        .border_style(Style::new().fg(if matches!(s.state, SessionState::NeedsYou { .. }) {
-            lerp(AMBER_DIM, AMBER, pulse(now, 1400))
-        } else {
-            BORDER_HI
-        }))
-        .title(Line::from(sp(format!(" {} ", s.short_id()), faint())).right_aligned());
-    let inner = block.inner(rows[0]);
-    f.render_widget(block, rows[0]);
-    let width = inner.width as usize;
-    let mut lines = Vec::new();
-    lines.push(lr(vec![sp(" ", text()), sp(s.display_title(), bold(TEXT))], state_pill(s, now), width));
-    let branch =
-        s.git_branch.clone().or_else(|| app.project(&s.project_root).and_then(|p| p.git.as_ref()?.branch.clone()));
-    let mut l2 = vec![sp(" ", text()), sp(basename(&s.project_root), bold(pc))];
-    if let Some(b) = branch {
-        l2.push(sp(format!("  ⎇ {b}"), dim()));
-    }
-    l2.push(sp(format!("   {}", tildify(&s.cwd)), faint()));
-    lines.push(lr(l2, vec![], width));
-    let mut l3 = vec![sp(" ", text())];
-    if let Some(m) = &s.model {
-        l3.extend(meta("model", short_model(m), VIOLET));
-    }
-    if let Some(e) = &s.effort {
-        l3.extend(meta("effort", e.clone(), TEXT));
-    }
-    if let Some(m) = &s.permission_mode {
-        let color = if m == "bypassPermissions" {
-            RED
-        } else if m == "plan" {
-            TEAL
-        } else {
-            TEXT
-        };
-        l3.extend(meta("mode", m.clone(), color));
-    }
-    if let Some(a) = s.terminal.app_name() {
-        l3.extend(meta("in", a, TEXT));
-    }
-    if let Some(pid) = s.pid {
-        l3.extend(meta("pid", pid.to_string(), DIM));
-    }
-    lines.push(lr(l3, vec![], width));
-    let mut l4 = vec![
-        sp(" started ", faint()),
-        sp(hm(s.started_at), text()),
-        sp(format!(" ({})", ago(now, s.started_at)), faint()),
-        sp("   last event ", faint()),
-        sp(ago(now, s.last_event_at), text()),
-    ];
-    if let Some(t) = s.turn_started_at {
-        l4.push(sp("   turn running ", faint()));
-        l4.push(sp(human_duration(now - t), bold(CYAN)));
-    } else if let Some(t) = s.last_turn_ms {
-        l4.push(sp("   last turn took ", faint()));
-        l4.push(sp(human_duration(t as i64), text()));
-    }
-    lines.push(lr(l4, vec![], width));
-    f.render_widget(Paragraph::new(lines), inner);
-
-    // Stats tiles.
-    let added: u32 = s.files_touched.iter().map(|f| f.added).sum();
-    let removed: u32 = s.files_touched.iter().map(|f| f.removed).sum();
-    let tiles: Vec<(&str, String, Color, String)> = vec![
-        ("TURNS", s.turns.to_string(), TEXT, String::new()),
-        ("TOOL CALLS", s.tool_calls.to_string(), CYAN, String::new()),
-        ("FILES", s.files_touched.len().to_string(), VIOLET, format!(" +{added} −{removed}")),
-        ("ERRORS", s.tool_errors.to_string(), if s.tool_errors > 0 { RED } else { FAINT }, String::new()),
-        ("AGENTS", s.subagents_active.to_string(), if s.subagents_active > 0 { PINK } else { FAINT }, String::new()),
-        ("CONTEXT", s.context_tokens.map(fmt_tokens).unwrap_or_else(|| "—".into()), TEAL, String::new()),
-        ("OUTPUT", if s.output_tokens > 0 { fmt_tokens(s.output_tokens) } else { "—".into() }, BLUE, String::new()),
-    ];
-    stat_tiles(f, rows[1], &tiles);
-
-    // Now + activity.
-    let mid =
-        Layout::horizontal([Constraint::Percentage(55), Constraint::Length(1), Constraint::Min(0)]).split(rows[2]);
-    now_panel(f, mid[0], app, s);
-    activity_panel(f, mid[2], now, &[s], s.context_history.clone(), s.context_tokens);
-
-    // Conversation + tools/files.
-    let bottom =
-        Layout::horizontal([Constraint::Percentage(55), Constraint::Length(1), Constraint::Min(0)]).split(rows[3]);
-    conversation(f, bottom[0], now, s);
-    let right = Layout::vertical([Constraint::Percentage(58), Constraint::Min(4)]).split(bottom[2]);
-    tools_panel(f, right[0], now, s);
-    files_panel(f, right[1], &s.files_touched, s.files_touched.len());
-}
-
-fn stat_tiles(f: &mut Frame, area: Rect, tiles: &[(&str, String, Color, String)]) {
-    let block = panel("stats");
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    let n = tiles.len() as u32;
-    let cols = Layout::horizontal((0..n).map(|_| Constraint::Ratio(1, n))).split(inner);
-    for (i, (label_, value, color, sub)) in tiles.iter().enumerate() {
-        let sep = if i == 0 { " " } else { "│" };
-        let lines = vec![
-            Line::from(vec![sp(sep, Style::new().fg(BORDER)), sp(format!(" {label_}"), label())]),
-            Line::from(vec![
-                sp(sep, Style::new().fg(BORDER)),
-                sp(format!(" {value}"), bold(*color)),
-                sp(if w(value) + w(sub) + 2 < cols[i].width as usize { sub.clone() } else { String::new() }, faint()),
-            ]),
-        ];
-        f.render_widget(Paragraph::new(lines), cols[i]);
-    }
-}
-
-fn now_panel(f: &mut Frame, area: Rect, app: &App, s: &Session) {
-    let now = app.now;
-    let (title_color, lines): (Color, Vec<Line<'static>>) = match &s.state {
-        SessionState::NeedsYou { reason, detail } => {
-            let headline = match reason {
-                Attention::Permission => "Waiting for your permission",
-                Attention::Question => "Claude asked you a question",
-                Attention::PlanApproval => "A plan is ready for your review",
-                Attention::Input => "Claude needs your input",
-            };
-            (
-                lerp(AMBER_DIM, AMBER, pulse(now, 1400)),
-                vec![
-                    Line::from(vec![sp(" ◆ ", bold(AMBER)), sp(headline, bold(AMBER))]),
-                    Line::from(vec![sp("   ", text()), sp(detail.clone(), text())]),
-                    Line::from(vec![
-                        sp(format!("   waiting {}  ·  ", human_duration(now - s.state_since)), faint()),
-                        sp("⏎", bold(TEXT)),
-                        sp(format!(" open in {}", editor_name(app)), faint()),
-                    ]),
-                ],
-            )
-        }
-        SessionState::Working => {
-            let mut v = match &s.current_tool {
-                Some(t) => vec![
-                    Line::from(vec![
-                        sp(format!(" {} ", spinner(now)), bold(CYAN)),
-                        sp(tool_label(&t.name), bold(CYAN)),
-                        sp(format!("  {}", t.target), text()),
-                    ]),
-                    Line::from(vec![
-                        sp(format!("   running {}", human_duration(now - t.started_at)), dim()),
-                        sp(
-                            t.agent.as_ref().map(|a| format!("  ·  in {a} agent")).unwrap_or_default(),
-                            Style::new().fg(PINK),
-                        ),
-                    ]),
-                ],
-                None => vec![
-                    Line::from(vec![sp(format!(" {} ", spinner(now)), bold(CYAN)), sp("Thinking…", bold(CYAN))]),
-                    Line::raw(""),
-                ],
-            };
-            let turn = s.turn_started_at.map(|t| human_duration(now - t)).unwrap_or_default();
-            v.push(Line::from(vec![
-                sp(format!("   turn {turn}"), faint()),
-                sp(
-                    if s.subagents_active > 0 {
-                        format!("  ·  ⑂ {} agents running", s.subagents_active)
-                    } else {
-                        String::new()
-                    },
-                    Style::new().fg(PINK),
-                ),
-            ]));
-            (CYAN, v)
-        }
-        SessionState::YourTurn => (
-            GREEN,
-            vec![
-                Line::from(vec![sp(" ✓ ", bold(GREEN)), sp("Finished · your turn", bold(GREEN))]),
-                Line::from(vec![sp(
-                    format!(
-                        "   took {}  ·  done {}",
-                        s.last_turn_ms.map(|t| human_duration(t as i64)).unwrap_or_else(|| "—".into()),
-                        ago(now, s.state_since)
-                    ),
-                    dim(),
-                )]),
-                Line::from(vec![sp("   ⏎", bold(TEXT)), sp(format!(" open in {}", editor_name(app)), faint())]),
-            ],
-        ),
-        SessionState::Compacting => (
-            VIOLET,
-            vec![
-                Line::from(vec![sp(" ◌ ", bold(VIOLET)), sp("Compacting context…", bold(VIOLET))]),
-                Line::from(sp(format!("   for {}", human_duration(now - s.state_since)), dim())),
-            ],
-        ),
-        SessionState::Errored { detail } => (
-            RED,
-            vec![
-                Line::from(vec![sp(" ✗ ", bold(RED)), sp("The last turn failed", bold(RED))]),
-                Line::from(vec![sp("   ", text()), sp(detail.clone(), text())]),
-            ],
-        ),
-        SessionState::Idle => (
-            DIM,
-            vec![
-                Line::from(vec![sp(" ○ ", dim()), sp("Idle", bold(DIM))]),
-                Line::from(sp("   waiting for your first prompt", faint())),
-            ],
-        ),
-        SessionState::Ended { .. } if s.origin == Origin::History => (
-            FAINT,
-            vec![
-                Line::from(vec![sp(" ◷ ", dim()), sp("Past session, not running", bold(DIM))]),
-                Line::from(sp(
-                    format!("   last active {}  ·  read from its transcript", ago(now, s.last_event_at)),
-                    faint(),
-                )),
-                Line::from(vec![sp("   resume with ", faint()), sp(format!("claude --resume {}", s.id), text())]),
-            ],
-        ),
-        SessionState::Ended { reason } => (
-            FAINT,
-            vec![
-                Line::from(vec![sp(" ■ ", faint()), sp(format!("Session ended ({reason})"), bold(DIM))]),
-                Line::from(sp(format!("   {}  ·  x to dismiss", ago(now, s.state_since)), faint())),
-            ],
-        ),
-    };
-    let mut lines = lines;
-    if s.origin == Origin::Running && s.state.is_live() {
-        lines.push(Line::from(sp(
-            "   found in Claude's session list; details arrive with its next hook event",
-            faint(),
-        )));
-    }
-    let block = panel("now").border_style(Style::new().fg(title_color));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    let width = inner.width as usize;
-    let lines: Vec<Line> = lines.into_iter().map(|l| lr(l.spans, vec![], width)).collect();
-    f.render_widget(Paragraph::new(lines), inner);
-}
-
-fn activity_panel(f: &mut Frame, area: Rect, now: Ms, sessions: &[&Session], ctx: Vec<u64>, ctx_now: Option<u64>) {
+/// Minute buckets for the last hour across some sessions.
+fn activity(sessions: &[&Session], now: Ms) -> (Vec<u64>, u64) {
     let minute = now / 60_000;
     let mut buckets = vec![0u64; 60];
-    let mut total = 0u64;
+    let mut total = 0;
     for s in sessions {
         for (m, n) in &s.activity {
             let age = minute - m;
@@ -979,416 +141,897 @@ fn activity_panel(f: &mut Frame, area: Rect, now: Ms, sessions: &[&Session], ctx
             }
         }
     }
-    let block = panel("activity · 60 min").title(Line::from(sp(format!(" {total} events "), faint())).right_aligned());
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    if inner.height == 0 {
+    (buckets, total)
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+
+pub fn draw(f: &mut Frame, app: &mut App) {
+    let t = theme::get();
+    let area = f.area();
+    f.render_widget(Clear, area);
+    fill(f, area, t.bg);
+
+    let alert = !app.alerts().is_empty();
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(if alert { 1 } else { 0 }),
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .split(area);
+    header(f, rows[0], app);
+    if alert {
+        alert_line(f, rows[1], app);
+    }
+    if app.rows().is_empty() {
+        empty_state(f, rows[3], app);
+    } else {
+        body(f, rows[3], app);
+    }
+    footer(f, rows[4], app);
+    if app.help {
+        help(f, area);
+    }
+    if app.theme_picker.is_some() {
+        theme_picker(f, area, app);
+    }
+    toast(f, rows[3], app);
+}
+
+fn header(f: &mut Frame, area: Rect, app: &App) {
+    let t = theme::get();
+    let now = app.now;
+    let c = app.counts();
+    // On a filled bar (tmux), everything uses the bar's own text color.
+    let tint = |col: Color| if t.bar_bg != Color::Reset && t.name == "tmux" { t.bar_fg } else { col };
+    let mut left = vec![sp(" aulora", bold(tint(t.accent)))];
+    if let Some((project, item)) = app.breadcrumb() {
+        left.push(sp("   ", text()));
+        left.push(sp(project, fg(tint(t.dim))));
+        if let Some(item) = item {
+            left.push(sp(" › ", fg(tint(t.faint))));
+            left.push(sp(item, fg(tint(t.text))));
+        }
+    }
+    let mut right: Vec<Span<'static>> = Vec::new();
+    for (n, glyph, color, word) in [
+        (c.needs_you, "◆", t.yellow, "needs you"),
+        (c.errored, "✗", t.red, "failed"),
+        (c.working, spinner(now), t.blue, "working"),
+        (c.your_turn, "✓", t.green, "your turn"),
+    ] {
+        if n > 0 {
+            right.push(sp(format!("{glyph} {n} {word}   "), fg(tint(color))));
+        }
+    }
+    match &app.conn {
+        Conn::Offline(_) => right.push(sp("● daemon offline   ", bold(tint(t.red)))),
+        Conn::Connecting => right.push(sp(format!("{} connecting   ", spinner(now)), fg(tint(t.dim)))),
+        Conn::Demo => right.push(sp("demo   ", fg(tint(t.magenta)))),
+        Conn::Live => {}
+    }
+    right.push(sp(format!("{} ", clock(now)), fg(tint(t.dim))));
+    let bar = Style::new().bg(t.bar_bg).fg(t.bar_fg);
+    f.render_widget(Paragraph::new(lr(left, right, area.width as usize)).style(bar), area);
+}
+
+fn alert_line(f: &mut Frame, area: Rect, app: &App) {
+    let t = theme::get();
+    let alerts = app.alerts();
+    let Some(s) = alerts.first() else { return };
+    let (reason, detail) = match &s.state {
+        SessionState::NeedsYou { reason, detail } => (reason.label(), detail.clone()),
+        _ => ("needs you", String::new()),
+    };
+    let left = vec![
+        sp(format!(" {} ", state_glyph(&s.state, app.now)), bold(t.yellow)),
+        sp(basename(&s.project_root), fg(project_color(&s.project_root))),
+        sp(" › ", faint()),
+        sp(s.display_title(), text()),
+        sp(format!("  {reason}: "), fg(t.yellow)),
+        sp(detail, dim()),
+    ];
+    let mut right = Vec::new();
+    if alerts.len() > 1 {
+        right.push(sp(format!("+{} more  ", alerts.len() - 1), fg(t.yellow)));
+    }
+    right.push(sp("n", bold(t.text)));
+    right.push(sp(" jump ", faint()));
+    f.render_widget(Paragraph::new(lr(left, right, area.width as usize)), area);
+}
+
+fn body(f: &mut Frame, area: Rect, app: &mut App) {
+    let t = theme::get();
+    let zoomed = app.zoom && app.selected_pane().is_some();
+    let narrow = area.width < 90;
+    let focused = app.mode != Mode::Navigate;
+    if zoomed || (narrow && focused) {
+        main(f, area, app);
         return;
     }
-    let spark_h = inner.height.saturating_sub(1).max(1);
-    let rows = Layout::vertical([Constraint::Length(spark_h), Constraint::Length(1)]).split(inner);
-    let width = inner.width as usize;
-    let data: Vec<u64> = if buckets.len() > width { buckets[buckets.len() - width..].to_vec() } else { buckets };
-    let pad = width.saturating_sub(data.len());
-    let spark_area = Rect { x: rows[0].x + pad as u16, width: rows[0].width.saturating_sub(pad as u16), ..rows[0] };
-    f.render_widget(
-        Sparkline::default().data(data).bar_set(symbols::bar::NINE_LEVELS).style(Style::new().fg(CYAN).bg(PANEL)),
-        spark_area,
-    );
-    if inner.height >= 2 {
-        let mut l = vec![sp(" context ", faint())];
-        let ctx_spark = spark(&ctx, width.saturating_sub(20));
-        l.push(sp(ctx_spark, Style::new().fg(TEAL)));
-        let right = vec![sp(ctx_now.map(fmt_tokens).unwrap_or_else(|| "—".into()), bold(TEAL)), sp(" ", text())];
-        f.render_widget(Paragraph::new(lr(l, right, width)), rows[1]);
+    if narrow {
+        fill(f, area, t.surface);
+        sidebar(f, area, app);
+        return;
+    }
+    let side_w = ((area.width as u32 * 30) / 100).clamp(32, 52) as u16;
+    let cols = Layout::horizontal([Constraint::Length(side_w), Constraint::Length(1), Constraint::Min(0)]).split(area);
+    fill(f, cols[0], t.surface);
+    sidebar(f, cols[0], app);
+    let sep: Vec<Line> = (0..cols[1].height).map(|_| Line::from(sp("│", fg(t.border)))).collect();
+    f.render_widget(Paragraph::new(sep), cols[1]);
+    main(f, cols[2], app);
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar
+
+fn git_brief(g: &GitInfo) -> Vec<Span<'static>> {
+    let t = theme::get();
+    let mut v = vec![sp(g.branch.clone().unwrap_or_default(), faint())];
+    let changes = g.staged + g.modified + g.untracked;
+    if g.conflicts > 0 {
+        v.push(sp(format!(" ✗{}", g.conflicts), fg(t.red)));
+    }
+    if changes > 0 {
+        v.push(sp(format!(" ●{changes}"), fg(t.yellow)));
+    }
+    if g.ahead > 0 {
+        v.push(sp(format!(" ↑{}", g.ahead), fg(t.green)));
+    }
+    if g.behind > 0 {
+        v.push(sp(format!(" ↓{}", g.behind), fg(t.red)));
+    }
+    v
+}
+
+/// The second line under a session or Claude pane.
+fn session_detail(s: &Session, now: Ms) -> Vec<Span<'static>> {
+    let t = theme::get();
+    match &s.state {
+        SessionState::NeedsYou { reason, detail } => {
+            vec![sp(format!("{}: ", reason.label()), fg(t.yellow)), sp(detail.clone(), text())]
+        }
+        SessionState::Errored { detail } => vec![sp(detail.clone(), fg(t.red))],
+        SessionState::Working | SessionState::Compacting => match &s.current_tool {
+            Some(c) => vec![
+                sp(tool_label(&c.name), fg(t.cyan)),
+                sp(format!(" {}", c.target), dim()),
+                sp(format!(" {}", short_duration(now - c.started_at)), faint()),
+            ],
+            None => {
+                let what = if matches!(s.state, SessionState::Compacting) { "compacting…" } else { "thinking…" };
+                vec![sp(what, faint())]
+            }
+        },
+        SessionState::YourTurn => match &s.last_reply {
+            Some(r) => vec![sp(first_line(r).replace("**", ""), dim())],
+            None => vec![sp("done", faint())],
+        },
+        SessionState::Idle => vec![sp("waiting for a first prompt", faint())],
+        SessionState::Ended { .. } if s.origin == Origin::History => {
+            vec![sp(format!("{} turns · last active {}", s.turns, ago(now, s.last_event_at)), faint())]
+        }
+        SessionState::Ended { reason } => vec![sp(format!("ended · {reason}"), faint())],
     }
 }
 
-fn conversation(f: &mut Frame, area: Rect, now: Ms, s: &Session) {
-    let block = panel("conversation").title(Line::from(sp(format!(" turn {} ", s.turns), faint())).right_aligned());
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    let width = inner.width.saturating_sub(2) as usize;
-    let h = inner.height as usize;
-    let mut lines: Vec<Line> = Vec::new();
+struct SideLine {
+    line: Line<'static>,
+    row: Option<usize>,
+}
 
-    let prompt = s.last_prompt.clone().unwrap_or_default();
-    let mut p_lines = wrap(&prompt, width);
-    let p_max = (h / 3).max(2);
-    if p_lines.len() > p_max {
-        p_lines.truncate(p_max);
-        if let Some(l) = p_lines.last_mut() {
-            *l = fit(&format!("{l} …"), width);
+fn sidebar(f: &mut Frame, area: Rect, app: &mut App) {
+    let t = theme::get();
+    let now = app.now;
+    let width = area.width as usize;
+    let rows = app.rows();
+    let mut out: Vec<SideLine> = Vec::new();
+    let c = app.counts();
+    let mut head = vec![sp(" PROJECTS", label())];
+    if app.show_history {
+        head.push(sp("  with history", fg(t.magenta)));
+    }
+    out.push(SideLine { line: lr(head, vec![sp(format!("{} ", c.projects), faint())], width), row: None });
+    if !app.filter.is_empty() || app.filtering {
+        out.push(SideLine {
+            line: Line::from(vec![
+                sp(" / ", bold(t.accent)),
+                sp(app.filter.clone(), text()),
+                sp(if app.filtering { "▏" } else { "" }, fg(t.accent)),
+            ]),
+            row: None,
+        });
+    }
+
+    for (ri, r) in rows.iter().enumerate() {
+        let selected = app.selected.as_ref() == Some(r);
+        let bg = if selected { Style::new().bg(t.select) } else { Style::new() };
+        match r {
+            RowRef::Project(root) => {
+                let Some(p) = app.project(root) else { continue };
+                out.push(SideLine { line: Line::raw(""), row: None });
+                let mut right = p.git.as_ref().map(git_brief).unwrap_or_default();
+                right.push(sp(" ", text()));
+                let name = vec![sp(format!(" {}", p.name), bold(project_color(root)))];
+                out.push(SideLine { line: lr(name, right, width).style(bg), row: Some(ri) });
+            }
+            RowRef::Pane(id) => {
+                let Some(x) = app.pane(id).cloned() else { continue };
+                let linked = app.pane_session(&x.id).filter(|s| s.state.is_live()).cloned();
+                let (glyph, gc, right) = match (&x.exit, &linked) {
+                    (Some(e), _) => ("■".to_string(), t.faint, format!("exited {}", e.code)),
+                    (None, Some(s)) => (
+                        state_glyph(&s.state, now).to_string(),
+                        state_color(&s.state),
+                        short_duration(now - s.state_since),
+                    ),
+                    (None, None) => {
+                        let active = now - x.last_output_at < 2_000;
+                        let glyph = if x.kind == PaneKind::Command { "▶" } else { "❯" };
+                        (glyph.to_string(), if active { t.cyan } else { t.faint }, String::new())
+                    }
+                };
+                let title = match &linked {
+                    Some(s) => format!("{} · {}", x.name, s.display_title()),
+                    None => x.name.clone(),
+                };
+                let title_style = if x.exit.is_some() { faint() } else { text() };
+                let l1 = lr(
+                    vec![sp(format!("   {glyph} "), bold(gc)), sp(title, title_style)],
+                    vec![sp(format!("{right} "), faint())],
+                    width,
+                );
+                out.push(SideLine { line: l1.style(bg), row: Some(ri) });
+                let attention = linked.as_ref().is_some_and(|s| matches!(s.state, SessionState::NeedsYou { .. }));
+                if selected || attention {
+                    let mut l2 = vec![sp("     ", text())];
+                    match &linked {
+                        Some(s) => l2.extend(session_detail(s, now)),
+                        None => {
+                            let what = x.title.clone().unwrap_or_else(|| {
+                                if x.kind == PaneKind::Command { x.args.join(" ") } else { tildify(&x.cwd) }
+                            });
+                            l2.push(sp(what, faint()));
+                        }
+                    }
+                    out.push(SideLine { line: lr(l2, vec![], width).style(bg), row: Some(ri) });
+                }
+            }
+            RowRef::Session(id) => {
+                let Some(s) = app.session(id).cloned() else { continue };
+                let sc = state_color(&s.state);
+                let title_style = if s.state.is_live() { text() } else { faint() };
+                let right =
+                    if s.state.is_live() { short_duration(now - s.state_since) } else { ago(now, s.last_event_at) };
+                let l1 = lr(
+                    vec![
+                        sp(format!("   {} ", state_glyph(&s.state, now)), bold(sc)),
+                        sp(s.display_title(), title_style),
+                    ],
+                    vec![sp(format!("{right} "), faint())],
+                    width,
+                );
+                out.push(SideLine { line: l1.style(bg), row: Some(ri) });
+                if selected || matches!(s.state, SessionState::NeedsYou { .. }) {
+                    let mut l2 = vec![sp("     ", text())];
+                    l2.extend(session_detail(&s, now));
+                    out.push(SideLine { line: lr(l2, vec![], width).style(bg), row: Some(ri) });
+                }
+            }
         }
     }
-    lines.push(Line::from(vec![
-        sp(" YOU", bold(TEAL)),
-        sp(s.last_prompt_at.map(|t| format!("  {} · {}", hm(t), ago(now, t))).unwrap_or_default(), faint()),
-    ]));
-    if p_lines.is_empty() {
-        lines.push(Line::from(sp("  no prompt yet", faint())));
+
+    // Keep the selection in view.
+    let h = area.height as usize;
+    if let Some(sel) = app.selected.as_ref().and_then(|s| rows.iter().position(|r| r == s)) {
+        let first = out.iter().position(|l| l.row == Some(sel)).unwrap_or(0);
+        let last = out.iter().rposition(|l| l.row == Some(sel)).unwrap_or(first);
+        if first < app.scroll {
+            app.scroll = first.saturating_sub(1);
+        } else if last >= app.scroll + h {
+            app.scroll = last + 1 - h;
+        }
     }
-    for l in p_lines {
-        lines.push(Line::from(vec![sp("  ", text()), sp(l, text())]));
+    app.scroll = app.scroll.min(out.len().saturating_sub(h));
+    let visible: Vec<Line> = out.into_iter().skip(app.scroll).take(h).map(|l| l.line).collect();
+    f.render_widget(Paragraph::new(visible), area);
+}
+
+// ---------------------------------------------------------------------------
+// Main area
+
+fn main(f: &mut Frame, area: Rect, app: &mut App) {
+    let t = theme::get();
+    let Some(sel) = app.selected.clone() else { return };
+    let area = Rect { x: area.x + 1, width: area.width.saturating_sub(2), ..area };
+    let width = area.width as usize;
+    let now = app.now;
+    let tabs = app.tabs();
+    let tab = app.current_tab();
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .split(area);
+
+    let (title, state_spans, meta) = match &sel {
+        RowRef::Pane(id) => {
+            let p = app.pane(id).cloned();
+            let s = app.pane_session(id).filter(|s| s.state.is_live()).cloned();
+            let title = match (&p, &s) {
+                (Some(p), Some(s)) => format!("{} · {}", p.name, s.display_title()),
+                (Some(p), None) => p.name.clone(),
+                _ => String::new(),
+            };
+            let state = match (&p, &s) {
+                (Some(p), _) if p.exit.is_some() => vec![sp("exited", faint())],
+                (_, Some(s)) => state_words(s, now),
+                _ => vec![sp("running", fg(t.cyan))],
+            };
+            let mut meta = Vec::new();
+            if let Some(p) = &p {
+                meta.push(sp(basename(&p.project_root), fg(project_color(&p.project_root))));
+                meta.push(sp(format!("  {}", tildify(&p.cwd)), faint()));
+                meta.push(sp(format!("  {}×{}", p.cols, p.rows), faint()));
+            }
+            if let Some(s) = &s {
+                session_meta(&mut meta, s);
+            }
+            (title, state, meta)
+        }
+        RowRef::Session(id) => {
+            let Some(s) = app.session(id).cloned() else { return };
+            let mut meta = vec![sp(basename(&s.project_root), fg(project_color(&s.project_root)))];
+            if let Some(b) = &s.git_branch {
+                meta.push(sp(format!("  {b}"), faint()));
+            }
+            session_meta(&mut meta, &s);
+            if let Some(a) = s.terminal.app_name() {
+                meta.push(sp(format!("  in {a}"), faint()));
+            }
+            (s.display_title(), state_words(&s, now), meta)
+        }
+        RowRef::Project(root) => {
+            let Some(p) = app.project(root).cloned() else { return };
+            let mut meta = vec![sp(tildify(&p.root), faint())];
+            if let Some(g) = &p.git {
+                meta.push(sp("  ", text()));
+                meta.extend(git_brief(g));
+            }
+            (p.name.clone(), vec![], meta)
+        }
+    };
+    f.render_widget(Paragraph::new(lr(vec![sp(title, bold(t.text))], state_spans, width)), rows[0]);
+    f.render_widget(Paragraph::new(lr(meta, vec![], width)), rows[1]);
+
+    let mut spans = Vec::new();
+    for (i, tb) in tabs.iter().enumerate() {
+        let name = format!("{} {}", i + 1, tb.label());
+        if *tb == tab {
+            spans.push(sp(name, bold(t.accent).add_modifier(Modifier::UNDERLINED)));
+        } else {
+            spans.push(sp(name, faint()));
+        }
+        spans.push(sp("    ", text()));
+    }
+    let badge = |word: &str, c: Color| {
+        vec![sp(format!(" {word} "), Style::new().fg(on_accent()).bg(c).add_modifier(Modifier::BOLD))]
+    };
+    let mode = match app.mode {
+        Mode::Terminal => badge("typing", t.accent),
+        Mode::Reading => badge("reading", t.magenta),
+        Mode::Navigate => vec![],
+    };
+    f.render_widget(Paragraph::new(lr(spans, mode, width)), rows[2]);
+    f.render_widget(Paragraph::new(Line::from(sp("─".repeat(width), fg(t.border)))), rows[3]);
+
+    let content = rows[4];
+    match (tab, &sel) {
+        (Tab::Terminal, RowRef::Pane(id)) => pane_terminal(f, content, app, &id.clone()),
+        (Tab::Conversation, _) => {
+            if let Some(sid) = app.selected_session_id() {
+                conversation(f, content, app, &sid);
+            }
+        }
+        (Tab::Overview, RowRef::Project(root)) => project_overview(f, content, app, &root.clone()),
+        (Tab::Overview, _) => {
+            if let Some(s) = app.selected_session_id().and_then(|id| app.session(&id).cloned()) {
+                session_overview(f, content, app, &s);
+            }
+        }
+        (Tab::Activity, _) => activity_tab(f, content, app),
+        _ => {}
+    }
+}
+
+fn state_words(s: &Session, now: Ms) -> Vec<Span<'static>> {
+    let c = state_color(&s.state);
+    let word = match &s.state {
+        SessionState::NeedsYou { reason, .. } => reason.label().to_string(),
+        SessionState::Ended { .. } if s.origin == Origin::History => "not running".into(),
+        other => other.label().to_lowercase(),
+    };
+    vec![
+        sp(format!("{} ", state_glyph(&s.state, now)), bold(c)),
+        sp(word, bold(c)),
+        sp(format!(" · {}", short_duration(now - s.state_since)), faint()),
+    ]
+}
+
+fn session_meta(meta: &mut Vec<Span<'static>>, s: &Session) {
+    let t = theme::get();
+    if let Some(m) = &s.model {
+        meta.push(sp(format!("  {}", short_model(m)), fg(t.magenta)));
+    }
+    if let Some(c) = s.context_tokens {
+        meta.push(sp(format!("  ctx {}", fmt_tokens(c)), faint()));
+    }
+    if let Some(m) = &s.permission_mode
+        && m != "default"
+    {
+        meta.push(sp(format!("  {m}"), fg(if m == "bypassPermissions" { t.red } else { t.dim })));
+    }
+}
+
+fn pane_terminal(f: &mut Frame, area: Rect, app: &mut App, id: &str) {
+    let t = theme::get();
+    let now = app.now;
+    app.view_size = Some((id.to_string(), area.width, area.height));
+    let Some(term) = app.terms.get(id) else {
+        let msg = Line::from(vec![sp(format!("{} ", spinner(now)), fg(t.accent)), sp("attaching…", dim())]);
+        f.render_widget(Paragraph::new(msg), area);
+        return;
+    };
+    let cursor = crate::term::render(term, area, f.buffer_mut());
+    if app.mode == Mode::Terminal
+        && let Some(pos) = cursor
+    {
+        f.set_cursor_position(pos);
+    }
+    let scrolled = term.scrolled();
+    let raised = Style::new().fg(t.text).bg(t.raised);
+    if scrolled > 0 {
+        let msg = format!(" ↑ {scrolled} lines up · PgDn or End to return ");
+        let wd = (w(&msg) as u16).min(area.width);
+        let r = Rect { x: area.x + area.width - wd, y: area.y, width: wd, height: 1 };
+        f.render_widget(Paragraph::new(Line::from(sp(msg, raised))), r);
+    }
+    if let Some(e) = app.pane(id).and_then(|p| p.exit.clone()) {
+        let msg = format!(" exited with code {} · r restart · x close ", e.code);
+        let wd = (w(&msg) as u16).min(area.width);
+        let r = Rect { x: area.x, y: area.y + area.height.saturating_sub(1), width: wd, height: 1 };
+        f.render_widget(Paragraph::new(Line::from(sp(msg, raised))), r);
+    }
+}
+
+fn section(title: &str, right: Option<String>, width: usize) -> Line<'static> {
+    lr(vec![sp(title.to_string(), label())], right.map(|r| vec![sp(r, faint())]).unwrap_or_default(), width)
+}
+
+fn session_overview(f: &mut Frame, area: Rect, app: &App, s: &Session) {
+    let t = theme::get();
+    let now = app.now;
+    let width = area.width as usize;
+    let mut lines: Vec<Line> = vec![Line::raw("")];
+
+    lines.push(section("NOW", None, width));
+    let now_line: Vec<Span<'static>> = match &s.state {
+        SessionState::NeedsYou { reason, detail } => vec![
+            sp(format!("  {} ", state_glyph(&s.state, now)), bold(t.yellow)),
+            sp(format!("{}: ", reason.label()), bold(t.yellow)),
+            sp(detail.clone(), text()),
+            sp(format!("  · {}", human_duration(now - s.state_since)), faint()),
+        ],
+        SessionState::Working => match &s.current_tool {
+            Some(c) => vec![
+                sp(format!("  {} ", spinner(now)), bold(t.blue)),
+                sp(tool_label(&c.name), fg(t.cyan)),
+                sp(format!("  {}", c.target), text()),
+                sp(format!("  · {}", human_duration(now - c.started_at)), faint()),
+            ],
+            None => vec![sp(format!("  {} thinking", spinner(now)), fg(t.blue))],
+        },
+        SessionState::YourTurn => vec![
+            sp("  ✓ ", bold(t.green)),
+            sp("finished, your turn", fg(t.green)),
+            sp(s.last_turn_ms.map(|m| format!("  · took {}", human_duration(m as i64))).unwrap_or_default(), faint()),
+        ],
+        SessionState::Errored { detail } => vec![sp("  ✗ ", bold(t.red)), sp(detail.clone(), fg(t.red))],
+        SessionState::Compacting => vec![sp("  ◌ compacting context", fg(t.magenta))],
+        SessionState::Idle => vec![sp("  ○ waiting for a first prompt", dim())],
+        SessionState::Ended { .. } if s.origin == Origin::History => vec![
+            sp("  not running · last active ", faint()),
+            sp(ago(now, s.last_event_at), dim()),
+            sp("  ·  resume with ", faint()),
+            sp(format!("claude --resume {}", s.id), text()),
+        ],
+        SessionState::Ended { reason } => {
+            vec![sp(format!("  ended ({reason}) · {}", ago(now, s.state_since)), faint())]
+        }
+    };
+    lines.push(lr(now_line, vec![], width));
+    if s.origin == Origin::Running && s.state.is_live() {
+        lines.push(Line::from(sp(
+            "  found in Claude's session list; more detail arrives with its next hook event",
+            faint(),
+        )));
     }
     lines.push(Line::raw(""));
 
-    let working = matches!(s.state, SessionState::Working | SessionState::Compacting | SessionState::NeedsYou { .. });
-    let live = if working { s.live_text.clone().filter(|t| !t.trim().is_empty()) } else { None };
-    let (reply_label, reply_time) =
-        if working { (" CLAUDE  · this turn", s.turn_started_at) } else { (" CLAUDE", s.last_reply_at) };
-    lines.push(Line::from(vec![
-        sp(reply_label, bold(VIOLET)),
-        sp(reply_time.map(|t| format!("  {} · {}", hm(t), ago(now, t))).unwrap_or_default(), faint()),
-    ]));
-    let reply = match (&live, working) {
-        (Some(t), _) => plain(t),
-        (None, true) => String::from("working…"),
-        (None, false) => s.last_reply.clone().map(|r| plain(&r)).unwrap_or_default(),
-    };
-    // Earlier prompts go at the bottom when there's room.
-    let earlier: Vec<&PromptEntry> = s.prompts.iter().rev().skip(1).take(6).collect();
-    let earlier_h = if earlier.is_empty() || h < 16 { 0 } else { (earlier.len() + 2).min(h / 3) };
-    let remaining = h.saturating_sub(lines.len() + earlier_h);
-    let mut r_lines = wrap(&reply, width);
-    if r_lines.is_empty() {
-        r_lines.push("—".into());
+    let added: u32 = s.files_touched.iter().map(|x| x.added).sum();
+    let removed: u32 = s.files_touched.iter().map(|x| x.removed).sum();
+    let mut nums = vec![
+        sp(format!("  {}", plural(s.turns as usize, "turn")), text()),
+        sp(" · ", faint()),
+        sp(plural(s.tool_calls as usize, "tool call"), text()),
+        sp(" · ", faint()),
+        sp(plural(s.files_touched.len(), "file"), text()),
+        sp(format!(" +{added}"), fg(t.green)),
+        sp(format!(" −{removed}"), fg(t.red)),
+    ];
+    if s.tool_errors > 0 {
+        nums.push(sp(" · ", faint()));
+        nums.push(sp(plural(s.tool_errors as usize, "error"), fg(t.red)));
     }
-    if r_lines.len() > remaining && remaining > 0 {
-        r_lines.truncate(remaining);
-        if let Some(l) = r_lines.last_mut() {
-            *l = fit(&format!("{l} …"), width);
-        }
+    if s.subagents_active > 0 {
+        nums.push(sp(" · ", faint()));
+        nums.push(sp(format!("{} agents running", s.subagents_active), fg(t.magenta)));
     }
-    let reply_style = if working && live.is_none() {
-        faint()
-    } else if working {
-        dim()
-    } else {
-        text()
-    };
-    for l in r_lines {
-        lines.push(Line::from(vec![sp("  ", text()), sp(l, reply_style)]));
+    let (buckets, total) = activity(&[s], now);
+    lines.push(section("AT A GLANCE", Some(format!("{total} events in the last hour")), width));
+    lines.push(lr(nums, vec![], width));
+    let mut graphs = vec![sp("  activity ", faint()), sp(spark(&buckets, 30), fg(t.blue))];
+    if s.context_history.len() > 1 {
+        graphs.push(sp("   context ", faint()));
+        graphs.push(sp(spark(&s.context_history, 20), fg(t.accent)));
     }
-    if earlier_h > 0 {
-        while lines.len() + earlier_h < h {
-            lines.push(Line::raw(""));
+    lines.push(lr(graphs, vec![], width));
+    lines.push(Line::raw(""));
+
+    let body_w = width.saturating_sub(4);
+    if let Some(p) = &s.last_prompt {
+        lines.push(section("YOU ASKED", s.last_prompt_at.map(|a| ago(now, a)), width));
+        for l in crate::conv::wrap(p, body_w).into_iter().take(3) {
+            lines.push(Line::from(vec![sp("  ", text()), sp(l, text())]));
         }
         lines.push(Line::raw(""));
-        lines.push(Line::from(sp(" EARLIER IN THIS SESSION", label())));
-        for p in earlier.into_iter().take(earlier_h - 2) {
-            lines.push(lr(
-                vec![sp(format!("  {}  ", hm(p.at)), faint()), sp(first_line(&p.text).to_string(), dim())],
-                vec![],
-                width + 2,
-            ));
-        }
     }
-    f.render_widget(Paragraph::new(lines), inner);
+    let busy = s.state.is_live() && !matches!(s.state, SessionState::YourTurn | SessionState::Idle);
+    let reply = if busy { s.live_text.clone() } else { s.last_reply.clone() };
+    if let Some(r) = reply {
+        lines.push(section("CLAUDE SAID", Some("the rest is in Conversation".into()), width));
+        for l in crate::conv::wrap(&r.replace("**", ""), body_w).into_iter().take(5) {
+            lines.push(Line::from(vec![sp("  ", text()), sp(l, dim())]));
+        }
+        lines.push(Line::raw(""));
+    }
+
+    let used = (lines.len() as u16).min(area.height);
+    f.render_widget(Paragraph::new(lines), area);
+    let rest = Rect { y: area.y + used, height: area.height - used, ..area };
+    if rest.height < 3 {
+        return;
+    }
+    let (tools_area, files_area) = if rest.width >= 100 {
+        let c = Layout::horizontal([Constraint::Percentage(55), Constraint::Length(2), Constraint::Min(0)]).split(rest);
+        (c[0], c[2])
+    } else {
+        let c = Layout::vertical([Constraint::Percentage(55), Constraint::Min(0)]).split(rest);
+        (c[0], c[1])
+    };
+    tool_list(f, tools_area, now, s);
+    file_list(f, files_area, &s.files_touched);
 }
 
-fn tools_panel(f: &mut Frame, area: Rect, now: Ms, s: &Session) {
-    let block =
-        panel("recent tools").title(Line::from(sp(format!(" {} total ", s.tool_calls), faint())).right_aligned());
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    let width = inner.width as usize;
-    let mut lines = Vec::new();
+fn tool_list(f: &mut Frame, area: Rect, now: Ms, s: &Session) {
+    let t = theme::get();
+    let width = area.width as usize;
+    let mut lines = vec![section("RECENT TOOLS", Some(format!("{} total", s.tool_calls)), width)];
     let mut calls: Vec<(&ToolCall, bool)> = Vec::new();
-    if let Some(t) = &s.current_tool {
-        calls.push((t, true));
+    if let Some(c) = &s.current_tool {
+        calls.push((c, true));
     }
-    calls.extend(s.recent_tools.iter().map(|t| (t, false)));
+    calls.extend(s.recent_tools.iter().map(|c| (c, false)));
     if calls.is_empty() {
-        lines.push(Line::from(sp(" no tool calls yet", faint())));
+        lines.push(Line::from(sp("  none yet", faint())));
     }
-    for (t, running) in calls.into_iter().take(inner.height as usize) {
-        let (glyph, gc) = if running {
-            (spinner(now).to_string(), CYAN)
-        } else if t.ok == Some(false) {
-            ("✗".into(), RED)
+    for (c, running) in calls.into_iter().take(area.height.saturating_sub(1) as usize) {
+        let (g, gc) = if running {
+            (spinner(now).to_string(), t.blue)
+        } else if c.ok == Some(false) {
+            ("✗".into(), t.red)
         } else {
-            ("✓".into(), GREEN)
+            ("✓".into(), t.green)
         };
         let dur =
-            if running { short_duration(now - t.started_at) } else { t.duration_ms.map(dur_ms).unwrap_or_default() };
-        let name = fit(&tool_label(&t.name), 10);
+            if running { short_duration(now - c.started_at) } else { c.duration_ms.map(dur_ms).unwrap_or_default() };
         lines.push(lr(
             vec![
-                sp(format!(" {} ", hm(t.started_at)), faint()),
-                sp(format!("{glyph} "), Style::new().fg(gc)),
-                sp(format!("{name:<10} "), Style::new().fg(if running { CYAN } else { TEXT })),
-                sp(t.target.clone(), dim()),
+                sp(format!("  {g} "), fg(gc)),
+                sp(format!("{:<8}", fit(&tool_label(&c.name), 8)), fg(t.cyan)),
+                sp(c.target.clone(), dim()),
             ],
-            vec![sp(format!("{dur} "), faint())],
+            vec![sp(dur, faint())],
             width,
         ));
     }
-    f.render_widget(Paragraph::new(lines), inner);
+    f.render_widget(Paragraph::new(lines), area);
 }
 
-fn files_panel(f: &mut Frame, area: Rect, files: &[FileTouch], total: usize) {
-    let block =
-        panel("files touched").title(Line::from(sp(format!(" {} ", plural(total, "file")), faint())).right_aligned());
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    let width = inner.width as usize;
-    let mut lines = Vec::new();
+fn file_list(f: &mut Frame, area: Rect, files: &[FileTouch]) {
+    let t = theme::get();
+    let width = area.width as usize;
+    let mut lines = vec![section("FILES EDITED", Some(plural(files.len(), "file")), width)];
     if files.is_empty() {
-        lines.push(Line::from(sp(" no edits yet", faint())));
+        lines.push(Line::from(sp("  none yet", faint())));
     }
-    for ft in files.iter().take(inner.height as usize) {
-        let dir = std::path::Path::new(&ft.path).parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
-        let name = basename(&ft.path);
-        let mut left = vec![sp(" ", text())];
+    for x in files.iter().take(area.height.saturating_sub(1) as usize) {
+        let dir = std::path::Path::new(&x.path).parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+        let mut left = vec![sp("  ", text())];
         if !dir.is_empty() {
             left.push(sp(format!("{dir}/"), faint()));
         }
-        left.push(sp(name, text()));
-        let right = vec![
-            sp(format!("+{}", ft.added), Style::new().fg(GREEN)),
-            sp(format!(" −{}", ft.removed), Style::new().fg(RED)),
-            sp(format!(" ×{} ", ft.edits), faint()),
-        ];
+        left.push(sp(basename(&x.path), text()));
+        let right = vec![sp(format!("+{}", x.added), fg(t.green)), sp(format!(" −{}", x.removed), fg(t.red))];
         lines.push(lr(left, right, width));
     }
-    f.render_widget(Paragraph::new(lines), inner);
+    f.render_widget(Paragraph::new(lines), area);
 }
 
-// ---------------------------------------------------------------------------
-// Right: one project
-
-fn project_detail(f: &mut Frame, area: Rect, app: &App, root: &str) {
+fn project_overview(f: &mut Frame, area: Rect, app: &App, root: &str) {
+    let t = theme::get();
     let now = app.now;
+    let width = area.width as usize;
     let Some(p) = app.project(root).cloned() else { return };
-    let sessions: Vec<Session> = app.visible_sessions(root).into_iter().cloned().collect();
-    let pc = project_color(root);
-    let rows =
-        Layout::vertical([Constraint::Length(6), Constraint::Length(4), Constraint::Length(6), Constraint::Min(5)])
-            .split(area);
-
-    let block = panel("project").border_style(Style::new().fg(BORDER_HI));
-    let inner = block.inner(rows[0]);
-    f.render_widget(block, rows[0]);
-    let width = inner.width as usize;
-    let mut lines = vec![lr(
-        vec![sp(" ", text()), sp(p.name.clone(), bold(pc)), sp(format!("   {}", tildify(&p.root)), faint())],
-        vec![sp(format!(" {} ", ago(now, p.last_activity)), faint())],
-        width,
-    )];
+    let mut lines: Vec<Line> = vec![Line::raw("")];
+    lines.push(section("GIT", None, width));
     match &p.git {
         Some(g) => {
-            let mut l = vec![sp(" ", text())];
-            l.extend(git_spans(g));
             let mut parts = Vec::new();
-            if g.staged > 0 {
-                parts.push(format!("{} staged", g.staged));
-            }
-            if g.modified > 0 {
-                parts.push(format!("{} modified", g.modified));
-            }
-            if g.untracked > 0 {
-                parts.push(format!("{} untracked", g.untracked));
-            }
-            if g.conflicts > 0 {
-                parts.push(format!("{} conflicted", g.conflicts));
-            }
-            l.push(sp(
-                format!("   {}", if parts.is_empty() { "working tree clean".to_string() } else { parts.join(" · ") }),
-                faint(),
-            ));
-            lines.push(lr(l, vec![], width));
-            if let Some(msg) = &g.last_commit {
-                lines.push(lr(
-                    vec![
-                        sp(" last commit ", faint()),
-                        sp(msg.clone(), text()),
-                        sp(g.last_commit_at.map(|t| format!("  · {}", ago(now, t))).unwrap_or_default(), faint()),
-                    ],
-                    vec![],
-                    width,
-                ));
-            }
-        }
-        None => lines.push(Line::from(sp(" not a git repository", faint()))),
-    }
-    f.render_widget(Paragraph::new(lines), inner);
-
-    let live = sessions.iter().filter(|s| s.state.is_live()).count();
-    let needs = sessions.iter().filter(|s| matches!(s.state, SessionState::NeedsYou { .. })).count();
-    let tools: u32 = sessions.iter().map(|s| s.tool_calls).sum();
-    let turns: u32 = sessions.iter().map(|s| s.turns).sum();
-    let mut files: Vec<FileTouch> = Vec::new();
-    for s in &sessions {
-        for ft in &s.files_touched {
-            match files.iter_mut().find(|x| x.path == ft.path) {
-                Some(x) => {
-                    x.edits += ft.edits;
-                    x.added += ft.added;
-                    x.removed += ft.removed;
-                    x.last_at = x.last_at.max(ft.last_at);
+            for (n, word) in [
+                (g.staged, "staged"),
+                (g.modified, "modified"),
+                (g.untracked, "untracked"),
+                (g.conflicts, "conflicted"),
+            ] {
+                if n > 0 {
+                    parts.push(format!("{n} {word}"));
                 }
-                None => files.push(ft.clone()),
+            }
+            let state = if parts.is_empty() { "clean".to_string() } else { parts.join(" · ") };
+            let ab = match (g.ahead, g.behind) {
+                (0, 0) => String::new(),
+                (a, b) => format!("  ↑{a} ↓{b}"),
+            };
+            lines.push(Line::from(vec![
+                sp(format!("  {}", g.branch.clone().unwrap_or_default()), text()),
+                sp(format!("  {state}"), if parts.is_empty() { fg(t.green) } else { fg(t.yellow) }),
+                sp(ab, faint()),
+            ]));
+            if let Some(m) = &g.last_commit {
+                lines.push(Line::from(vec![
+                    sp("  last commit ", faint()),
+                    sp(m.clone(), dim()),
+                    sp(g.last_commit_at.map(|a| format!("  {}", ago(now, a))).unwrap_or_default(), faint()),
+                ]));
+            }
+        }
+        None => lines.push(Line::from(sp("  not a git repository", faint()))),
+    }
+    lines.push(Line::raw(""));
+
+    let panes: Vec<Pane> = app.visible_panes(root).into_iter().cloned().collect();
+    let sessions: Vec<Session> = app.visible_sessions(root).into_iter().cloned().collect();
+    let counts = format!("{} · {}", plural(panes.len(), "pane"), plural(sessions.len(), "session"));
+    lines.push(section("HERE", Some(counts), width));
+    for x in &panes {
+        let mut l = vec![sp(format!("  ❯ {}", x.name), text())];
+        if let Some(s) = app.pane_session(&x.id).filter(|s| s.state.is_live()) {
+            l.push(sp("  ", text()));
+            l.extend(state_words(s, now));
+        }
+        lines.push(lr(l, vec![], width));
+    }
+    for s in &sessions {
+        let l = vec![
+            sp(format!("  {} ", state_glyph(&s.state, now)), bold(state_color(&s.state))),
+            sp(s.display_title(), text()),
+            sp(format!("  {}", s.state.label().to_lowercase()), faint()),
+        ];
+        lines.push(lr(l, vec![], width));
+    }
+    lines.push(Line::raw(""));
+
+    let mut files: Vec<FileTouch> = Vec::new();
+    for s in app.snap.iter().flat_map(|snap| snap.sessions.iter()).filter(|s| s.project_root == root) {
+        for x in &s.files_touched {
+            match files.iter_mut().find(|y| y.path == x.path) {
+                Some(y) => {
+                    y.added += x.added;
+                    y.removed += x.removed;
+                    y.last_at = y.last_at.max(x.last_at);
+                }
+                None => files.push(x.clone()),
             }
         }
     }
-    files.sort_by_key(|f| -f.last_at);
-    let tiles: Vec<(&str, String, Color, String)> = vec![
-        ("SESSIONS", sessions.len().to_string(), TEXT, String::new()),
-        ("LIVE", live.to_string(), CYAN, String::new()),
-        ("NEEDS YOU", needs.to_string(), if needs > 0 { AMBER } else { FAINT }, String::new()),
-        ("TURNS", turns.to_string(), TEXT, String::new()),
-        ("TOOL CALLS", tools.to_string(), CYAN, String::new()),
-        ("FILES", files.len().to_string(), VIOLET, String::new()),
-    ];
-    stat_tiles(f, rows[1], &tiles);
-
-    let refs: Vec<&Session> = sessions.iter().collect();
-    activity_panel(f, rows[2], now, &refs, vec![], None);
-
-    let bottom =
-        Layout::horizontal([Constraint::Percentage(55), Constraint::Length(1), Constraint::Min(0)]).split(rows[3]);
-    let block = panel("sessions");
-    let inner = block.inner(bottom[0]);
-    f.render_widget(block, bottom[0]);
-    let width = inner.width as usize;
-    let mut lines = Vec::new();
-    for s in &sessions {
-        let sc = live_state_color(&s.state, now);
-        lines.push(lr(
-            vec![sp(format!(" {} ", state_glyph(&s.state, now)), bold(sc)), sp(s.display_title(), text())],
-            vec![sp(s.state.label(), bold(sc)), sp(format!(" {:>5} ", short_duration(now - s.state_since)), dim())],
-            width,
-        ));
-        let mut detail = vec![sp("   ", text())];
-        detail.extend(session_detail_line(s, now));
-        lines.push(lr(
-            detail,
-            vec![sp(s.model.as_deref().map(short_model).unwrap_or_default(), faint()), sp(" ", text())],
-            width,
-        ));
-    }
-    f.render_widget(Paragraph::new(lines), inner);
-    let n = files.len();
-    files_panel(f, bottom[2], &files, n);
+    files.sort_by_key(|x| -x.last_at);
+    let used = (lines.len() as u16).min(area.height);
+    f.render_widget(Paragraph::new(lines), area);
+    let rest = Rect { y: area.y + used, height: area.height - used, ..area };
+    file_list(f, rest, &files);
 }
 
-// ---------------------------------------------------------------------------
-// Bottom: activity feed
-
-fn feed(f: &mut Frame, area: Rect, app: &App) {
+fn activity_tab(f: &mut Frame, area: Rect, app: &App) {
+    let t = theme::get();
     let now = app.now;
+    let width = area.width as usize;
     let Some(snap) = &app.snap else { return };
-    let live_dot = match app.conn {
-        Conn::Live | Conn::Demo => sp(" ● live ", Style::new().fg(lerp(GREEN, TEAL, pulse(now, 2000)))),
-        _ => sp(" ○ paused ", faint()),
+    let (root, session) = match &app.selected {
+        Some(RowRef::Project(r)) => (Some(r.clone()), None),
+        Some(_) => (app.selected_root(), app.selected_session_id()),
+        None => (None, None),
     };
-    let block = panel("activity feed").title(Line::from(live_dot).right_aligned());
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    let width = inner.width as usize;
-    let titles: std::collections::HashMap<&str, String> =
-        snap.sessions.iter().map(|s| (s.id.as_str(), s.display_title())).collect();
-    let name_w = snap.projects.iter().map(|p| w(&p.name)).max().unwrap_or(8).clamp(6, 18);
-    let title_w = if width > 140 { 30 } else { 20 };
-    let mut lines = Vec::new();
-    for e in snap.feed.iter().rev().take(inner.height as usize) {
-        let (glyph, color) = feed_style(e.kind);
-        let name = fit(&basename(&e.project_root), name_w);
-        let title = titles.get(e.session_id.as_str()).map(|t| fit(t, title_w)).unwrap_or_default();
-        let text_style = match e.kind {
-            FeedKind::Permission | FeedKind::Question => Style::new().fg(AMBER),
-            FeedKind::Error => Style::new().fg(RED),
-            FeedKind::Done => text(),
+    let sessions: Vec<&Session> = snap
+        .sessions
+        .iter()
+        .filter(|s| match (&session, &root) {
+            (Some(id), _) => &s.id == id,
+            (None, Some(r)) => &s.project_root == r,
+            _ => true,
+        })
+        .collect();
+    let (buckets, total) = activity(&sessions, now);
+    let mut lines = vec![
+        Line::raw(""),
+        section("LAST HOUR", Some(format!("{total} events")), width),
+        Line::from(vec![sp("  ", text()), sp(spark(&buckets, width.saturating_sub(4)), fg(t.blue))]),
+        Line::raw(""),
+        section("EVENTS", None, width),
+    ];
+    let ids: std::collections::HashSet<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+    let room = area.height.saturating_sub(lines.len() as u16) as usize;
+    let events: Vec<&FeedEvent> =
+        snap.feed.iter().rev().filter(|e| ids.contains(e.session_id.as_str())).take(room).collect();
+    if events.is_empty() {
+        lines.push(Line::from(sp("  nothing yet", faint())));
+    }
+    for e in events {
+        let (g, c) = theme::feed_style(e.kind);
+        let style = match e.kind {
+            FeedKind::Permission | FeedKind::Question => fg(t.yellow),
+            FeedKind::Error => fg(t.red),
             FeedKind::Start | FeedKind::End | FeedKind::Info => faint(),
             _ => dim(),
         };
-        lines.push(lr(
-            vec![
-                sp(format!(" {} ", clock(e.at)), faint()),
-                sp(format!(" {glyph} "), bold(color)),
-                sp(format!("{name:<name_w$}  "), bold(project_color(&e.project_root))),
-                sp(format!("{title:<title_w$}  "), faint()),
-                sp(e.text.clone(), text_style),
-            ],
-            vec![sp(format!("{} ", short_duration(now - e.at)), faint())],
-            width,
-        ));
+        let l =
+            vec![sp(format!("  {}  ", clock(e.at)), faint()), sp(format!("{g} "), fg(c)), sp(e.text.clone(), style)];
+        lines.push(lr(l, vec![sp(ago(now, e.at), faint())], width));
     }
-    if lines.is_empty() {
-        lines.push(Line::from(sp(" nothing yet", faint())));
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+fn conversation(f: &mut Frame, area: Rect, app: &mut App, session_id: &str) {
+    let t = theme::get();
+    let reading = app.mode == Mode::Reading;
+    let width = area.width;
+    let height = area.height as usize;
+    let Some(conv) = app.conversation(session_id) else {
+        f.render_widget(Paragraph::new(Line::from(sp("  no conversation yet", faint()))), area);
+        return;
+    };
+    let (selected, follow, unseen, mut scroll) = (conv.selected, conv.follow, conv.unseen, conv.scroll);
+    let rendered = conv.render(width.saturating_sub(1)).to_vec();
+    if rendered.is_empty() {
+        f.render_widget(Paragraph::new(Line::from(sp("  no messages yet", faint()))), area);
+        return;
     }
-    f.render_widget(Paragraph::new(lines), inner);
+    let total = rendered.len();
+    if follow {
+        scroll = total.saturating_sub(height);
+    } else {
+        let first = rendered.iter().position(|r| r.entry == selected).unwrap_or(0);
+        let last = rendered.iter().rposition(|r| r.entry == selected).unwrap_or(first);
+        if first < scroll {
+            scroll = first.saturating_sub(1);
+        } else if last >= scroll + height {
+            scroll = (last + 1).saturating_sub(height).min(first);
+        }
+    }
+    scroll = scroll.min(total.saturating_sub(height));
+    if let Some(c) = app.conversation(session_id) {
+        c.scroll = scroll;
+    }
+    let lines: Vec<Line> = rendered
+        .iter()
+        .skip(scroll)
+        .take(height)
+        .map(|r| {
+            let mut l = r.line.clone();
+            if reading && r.entry == selected {
+                let pad = (width as usize).saturating_sub(l.width());
+                l.spans.push(Span::raw(" ".repeat(pad)));
+                l = l.style(Style::new().bg(t.select));
+            }
+            l
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines), area);
+    if unseen > 0 && !follow {
+        let msg = format!(" ↓ {} · G for latest ", plural(unseen, "new message"));
+        let wd = (w(&msg) as u16).min(area.width);
+        let r = Rect { x: area.x + area.width - wd, y: area.y + area.height.saturating_sub(1), width: wd, height: 1 };
+        f.render_widget(Paragraph::new(Line::from(sp(msg, Style::new().fg(on_accent()).bg(t.accent)))), r);
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Footer, help, toast, empty state
+// Footer, overlays, empty state
 
 fn footer(f: &mut Frame, area: Rect, app: &App) {
-    let key = |k: &str| sp(format!(" {k} "), Style::new().fg(TEXT).bg(RAISED).add_modifier(Modifier::BOLD));
-    let lbl = |l: &str| sp(format!(" {l}  "), faint());
-    let left = if app.mode == Mode::Terminal {
-        let name = app.selected_pane().map(|p| p.name.clone()).unwrap_or_default();
-        vec![
-            sp(" TERMINAL ", Style::new().bg(TEAL).fg(BG).add_modifier(Modifier::BOLD)),
-            lbl(&format!(" keys go to {name}")),
-            key("ctrl-q"),
-            lbl("back to the dashboard"),
-        ]
-    } else if app.filtering {
-        vec![key("type"), lbl("to filter"), key("⏎"), lbl("keep"), key("esc"), lbl("clear")]
-    } else if let Some(p) = app.selected_pane() {
-        let mut v = vec![key("↑↓"), lbl("move"), key("⏎"), lbl("type in pane"), key("PgUp"), lbl("scroll")];
-        if p.is_running() {
-            v.extend([key("x"), lbl("kill")]);
-        } else {
-            v.extend([key("r"), lbl("restart"), key("x"), lbl("close")]);
+    let t = theme::get();
+    // A filled bar (tmux) uses its own text color, like tmux's status line.
+    let filled = t.bar_bg != Color::Reset && t.name == "tmux";
+    let key_style = if filled { bold(t.bar_fg) } else { bold(t.text) };
+    let lbl_style = if filled { fg(t.bar_fg) } else { faint() };
+    let key = |k: &str| sp(format!(" {k}"), key_style);
+    let lbl = |l: &str| sp(format!(" {l}  "), lbl_style);
+    let mut left = vec![sp(" ", text())];
+    match app.mode {
+        Mode::Terminal => {
+            let name = app.selected_pane().map(|p| p.name.clone()).unwrap_or_default();
+            left.extend([sp(format!(" keys go to {name}   "), dim()), key("ctrl-q"), lbl("back")]);
         }
-        v.extend([
-            key("z"),
-            lbl(if app.zoom { "unzoom" } else { "zoom" }),
-            key("c"),
-            lbl("shell"),
-            key("C"),
-            lbl("claude"),
-            key("o"),
-            lbl(&format!("open in {}", editor_name(app))),
-            key("?"),
-            lbl("help"),
-            key("q"),
-            lbl("quit"),
-        ]);
-        v
-    } else {
-        vec![
-            key("↑↓"),
-            lbl("move"),
-            key("⇥"),
-            lbl("project"),
+        Mode::Reading if app.searching => left.extend([
+            sp(" search ", bold(t.accent)),
+            sp(app.conv_query.clone(), text()),
+            sp("▏  ", fg(t.accent)),
             key("⏎"),
-            lbl(&format!("open in {}", editor_name(app))),
-            key("c"),
-            lbl("new shell"),
-            key("C"),
-            lbl("new claude"),
-            key("n"),
-            lbl("next alert"),
+            lbl("find"),
+            key("esc"),
+            lbl("cancel"),
+        ]),
+        Mode::Reading => left.extend([
+            key("↑↓"),
+            lbl("select"),
+            key("⏎"),
+            lbl("expand"),
+            key("[ ]"),
+            lbl("prompts"),
             key("/"),
-            lbl("filter"),
-            key("e"),
-            lbl(if app.show_ended { "hide ended" } else { "show ended" }),
-            key("h"),
-            lbl(if app.show_history { "hide history" } else { "history" }),
-            key("x"),
-            lbl("dismiss"),
-            key("?"),
-            lbl("help"),
-            key("q"),
-            lbl("quit"),
-        ]
-    };
-    let right = vec![sp("CerealNotFound/aulora ", faint())];
-    f.render_widget(Paragraph::new(lr(left, right, area.width as usize)).style(Style::new().bg(PANEL)), area);
+            lbl("search"),
+            key("y"),
+            lbl("copy"),
+            key("G"),
+            lbl("latest"),
+            key("esc"),
+            lbl("back"),
+        ]),
+        Mode::Navigate if app.filtering => {
+            left.extend([key("type"), lbl("to filter"), key("⏎"), lbl("keep"), key("esc"), lbl("clear")]);
+        }
+        Mode::Navigate => {
+            let enter = match &app.selected {
+                Some(RowRef::Pane(_)) if app.current_tab() == Tab::Terminal => "type",
+                Some(RowRef::Pane(_) | RowRef::Session(_)) if app.current_tab() == Tab::Conversation => "read",
+                Some(RowRef::Project(_)) => "open in editor",
+                Some(_) => "read",
+                None => "",
+            };
+            left.extend([key("↑↓"), lbl("move"), key("⇥"), lbl("tabs"), key("⏎"), lbl(enter)]);
+            left.extend([key("c"), lbl("shell"), key("C"), lbl("claude"), key("n"), lbl("next alert")]);
+            left.extend([key("t"), lbl("theme"), key("?"), lbl("help"), key("q"), lbl("quit")]);
+        }
+    }
+    let right = vec![sp(format!("{} ", t.name), lbl_style)];
+    f.render_widget(Paragraph::new(lr(left, right, area.width as usize)).style(Style::new().bg(t.bar_bg)), area);
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
@@ -1397,155 +1040,152 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     Rect { x: area.x + (area.width - w_) / 2, y: area.y + (area.height - h_) / 2, width: w_, height: h_ }
 }
 
-const LOGO: [&str; 3] = ["┌─┐┬ ┬┬  ┌─┐┬─┐┌─┐", "├─┤│ ││  │ │├┬┘├─┤", "┴ ┴└─┘┴─┘└─┘┴└─┴ ┴"];
-
-fn logo_lines(now: Ms) -> Vec<Line<'static>> {
-    let shift = (now as f32 / 4000.0).sin() * 0.15;
-    LOGO.iter()
-        .map(|row| {
-            let n = row.chars().count().max(2) - 1;
-            Line::from(
-                row.chars()
-                    .enumerate()
-                    .map(|(i, c)| {
-                        let t = (i as f32 / n as f32 + shift).clamp(0.0, 1.0);
-                        Span::styled(c.to_string(), Style::new().fg(aurora(t)).add_modifier(Modifier::BOLD))
-                    })
-                    .collect::<Vec<_>>(),
-            )
-            .centered()
-        })
-        .collect()
-}
-
-fn help(f: &mut Frame, area: Rect, app: &App) {
-    let r = centered(area, 72, 39);
+fn overlay(f: &mut Frame, r: Rect, title: &str) -> Rect {
+    let t = theme::get();
     f.render_widget(Clear, r);
-    let block = panel("help").border_style(Style::new().fg(BORDER_HI)).style(Style::new().bg(RAISED));
+    let bg = if t.raised == Color::Reset { Color::Black } else { t.raised };
+    let block = Block::bordered()
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_style(fg(t.border))
+        .style(Style::new().bg(bg))
+        .title(Line::from(sp(format!(" {title} "), bold(t.accent))));
     let inner = block.inner(r);
     f.render_widget(block, r);
-    let mut lines = logo_lines(app.now);
-    lines.push(Line::from(sp("every Claude Code session, one screen", dim())).centered());
-    lines.push(Line::raw(""));
-    let row = |k: &str, d: &str| Line::from(vec![sp(format!("  {k:<14}"), bold(TEXT)), sp(d.to_string(), dim())]);
+    inner
+}
+
+fn help(f: &mut Frame, area: Rect) {
+    let t = theme::get();
+    let inner = overlay(f, centered(area, 76, 31), "keys");
+    let row = |k: &str, d: &str| Line::from(vec![sp(format!("  {k:<14}"), bold(t.text)), sp(d.to_string(), dim())]);
+    let head = |h: &str| Line::from(sp(format!(" {h}"), label()));
+    let mut lines = vec![head("MOVING AROUND")];
     for (k, d) in [
-        ("↑ ↓  j k", "move between projects and sessions"),
-        ("⇥  ⇧⇥", "jump to next / previous project"),
-        ("g  G", "first / last"),
-        ("⏎", "type in the selected pane (ctrl-q leaves)"),
-        ("o", "open the project in your editor"),
-        ("c  C", "new shell / new Claude Code pane in this project"),
+        ("↑ ↓  j k", "move through projects, panes and sessions"),
+        ("J K", "next / previous project"),
+        ("⇥  1-4", "switch tabs"),
+        ("n", "jump to whatever needs you"),
+        ("/", "filter the sidebar"),
+        ("e  h", "show ended sessions / past sessions"),
+    ] {
+        lines.push(row(k, d));
+    }
+    lines.push(head("PANES"));
+    for (k, d) in [
+        ("⏎", "type into the pane (ctrl-q comes back)"),
+        ("c  C", "new shell / new Claude Code pane here"),
         ("z", "zoom the pane to the whole screen"),
-        ("PgUp PgDn", "scroll back through a pane's output"),
-        ("r", "restart an exited pane"),
-        ("n", "cycle through sessions that need you"),
-        ("/", "filter by project, title or prompt"),
-        ("e", "show or hide ended sessions"),
-        ("h", "show or hide past sessions (last 7 days)"),
-        ("x", "kill a pane (press twice), close it, or dismiss a session"),
-        ("X", "dismiss every ended session"),
-        ("q  ctrl-c", "quit (the daemon keeps running)"),
+        ("PgUp PgDn", "scroll back through its output"),
+        ("r  x", "restart an exited pane / kill (twice) or close"),
+    ] {
+        lines.push(row(k, d));
+    }
+    lines.push(head("CONVERSATION"));
+    for (k, d) in [
+        ("⏎", "start reading, then expand a tool call"),
+        ("[ ]", "previous / next prompt"),
+        ("/  y", "search / copy the selected message"),
+    ] {
+        lines.push(row(k, d));
+    }
+    lines.push(head("ELSEWHERE"));
+    for (k, d) in [
+        ("o", "open the project in your editor"),
+        ("t", "choose a theme"),
+        ("x  X", "dismiss a session / every ended session"),
+        ("q", "quit (panes and the daemon keep running)"),
     ] {
         lines.push(row(k, d));
     }
     lines.push(Line::raw(""));
-    let legend =
-        |g: &str, c: Color, d: &str| Line::from(vec![sp(format!("  {g:<3}"), bold(c)), sp(d.to_string(), dim())]);
-    lines.push(legend("◆", AMBER, "needs you: permission, question or plan review"));
-    lines.push(legend(spinner(app.now), CYAN, "working"));
-    lines.push(legend("✓", GREEN, "finished, your turn"));
-    lines.push(legend("○", DIM, "idle"));
-    lines.push(legend("✗", RED, "turn failed"));
-    lines.push(legend("·", FAINT, "ended"));
+    lines.push(Line::from(sp("  press any key to close", faint())));
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn theme_picker(f: &mut Frame, area: Rect, app: &App) {
+    let t = theme::get();
+    let Some(sel) = app.theme_picker else { return };
+    let h = theme::THEMES.len() as u16 + 4;
+    let inner = overlay(f, centered(area, 48, h), "theme");
+    let mut lines = Vec::new();
+    for (i, th) in theme::THEMES.iter().enumerate() {
+        let selected = i == sel;
+        let mut l = vec![
+            sp(if selected { " ▸ " } else { "   " }, bold(t.accent)),
+            sp(format!("{:<18}", th.name), if selected { bold(t.text) } else { dim() }),
+        ];
+        for c in [th.accent, th.blue, th.green, th.yellow, th.red, th.magenta] {
+            l.push(sp("■ ", fg(c)));
+        }
+        if th.light {
+            l.push(sp("light", faint()));
+        }
+        lines.push(Line::from(l));
+    }
     lines.push(Line::raw(""));
-    lines.push(Line::from(sp("press any key to close", faint())).centered());
+    lines.push(Line::from(vec![
+        sp("   ⏎", bold(t.text)),
+        sp(" keep   ", faint()),
+        sp("esc", bold(t.text)),
+        sp(" cancel", faint()),
+    ]));
     f.render_widget(Paragraph::new(lines), inner);
 }
 
 fn toast(f: &mut Frame, area: Rect, app: &App) {
+    let t = theme::get();
     let Some((msg, at)) = &app.toast else { return };
     if app.now - at > 2600 {
         return;
     }
     let width = (w(msg) + 4).min(area.width as usize) as u16;
     let r = Rect {
-        x: area.x + area.width.saturating_sub(width + 2),
-        y: area.y + area.height.saturating_sub(2),
+        x: area.x + area.width.saturating_sub(width + 1),
+        y: area.y + area.height.saturating_sub(1),
         width,
         height: 1,
     };
     f.render_widget(Clear, r);
-    f.render_widget(
-        Paragraph::new(Line::from(vec![sp(" ✦ ", bold(TEAL)), sp(format!("{msg} "), text())]))
-            .style(Style::new().bg(SELECT)),
-        r,
-    );
+    let bg = if t.raised == Color::Reset { Color::DarkGray } else { t.raised };
+    let line = Line::from(vec![sp(" ✦ ", bold(t.accent)), sp(format!("{msg} "), text())]);
+    f.render_widget(Paragraph::new(line).style(Style::new().bg(bg)), r);
 }
 
+const LOGO: [&str; 3] = ["┌─┐┬ ┬┬  ┌─┐┬─┐┌─┐", "├─┤│ ││  │ │├┬┘├─┤", "┴ ┴└─┘┴─┘└─┘┴└─┴ ┴"];
+
 fn empty_state(f: &mut Frame, area: Rect, app: &App) {
-    let r = centered(area, 76, 21);
-    let mut lines = logo_lines(app.now);
+    let t = theme::get();
+    let r = centered(area, 76, 14);
+    let mut lines: Vec<Line> = LOGO.iter().map(|l| Line::from(sp(*l, bold(t.accent))).centered()).collect();
     lines.push(Line::raw(""));
     lines.push(Line::from(sp("Every Claude Code session across your projects, in one place.", dim())).centered());
     lines.push(Line::raw(""));
     match &app.conn {
         Conn::Offline(why) => {
-            lines.push(Line::from(sp(format!("Can't reach the aulora daemon: {why}"), bold(RED))).centered());
+            lines.push(Line::from(sp(format!("Can't reach the aulora daemon: {why}"), bold(t.red))).centered());
             lines.push(Line::from(sp("Retrying… or run `aulora daemon start`", faint())).centered());
         }
         Conn::Connecting => {
             lines.push(Line::from(sp(format!("{} starting the daemon…", spinner(app.now)), dim())).centered());
         }
         _ if !app.hooks_installed => {
-            lines.push(Line::from(sp("Two steps to get started:", bold(TEXT))).centered());
-            lines.push(Line::raw(""));
-            lines.push(
-                Line::from(vec![
-                    sp("1  ", bold(TEAL)),
-                    sp("aulora hooks install", bold(TEXT)),
-                    sp("   connect Claude Code", faint()),
-                ])
-                .centered(),
-            );
-            lines.push(
-                Line::from(vec![
-                    sp("2  ", bold(VIOLET)),
-                    sp("claude", bold(TEXT)),
-                    sp("                 in any project", faint()),
-                ])
-                .centered(),
-            );
+            let l = vec![sp("aulora hooks install", bold(t.text)), sp("  connects Claude Code", faint())];
+            lines.push(Line::from(l).centered());
         }
         _ => {
-            lines.push(
-                Line::from(vec![
-                    sp(format!("{} ", spinner(app.now)), Style::new().fg(TEAL)),
-                    sp("Waiting for Claude Code sessions", bold(TEXT)),
-                ])
-                .centered(),
-            );
-            lines.push(Line::raw(""));
-            lines.push(
-                Line::from(sp("Start `claude` in any project, or send a prompt in one that's", faint())).centered(),
-            );
-            lines.push(Line::from(sp("already open. It will show up here within a second.", faint())).centered());
+            let msg = "No sessions yet. Start `claude` in any project and it shows up here.";
+            lines.push(Line::from(sp(msg, faint())).centered());
         }
     }
     lines.push(Line::raw(""));
     lines.push(
         Line::from(vec![
-            sp("c", bold(TEAL)),
-            sp(" open a shell here    ", faint()),
-            sp("C", bold(VIOLET)),
-            sp(" start Claude Code here", faint()),
-        ])
-        .centered(),
-    );
-    lines.push(
-        Line::from(vec![
-            sp("try ", faint()),
-            sp("aulora demo", bold(TEXT)),
-            sp(" to see it with sample data", faint()),
+            sp("c", bold(t.accent)),
+            sp(" shell here    ", faint()),
+            sp("C", bold(t.accent)),
+            sp(" Claude Code here    ", faint()),
+            sp("h", bold(t.accent)),
+            sp(" past sessions", faint()),
         ])
         .centered(),
     );
@@ -1557,16 +1197,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wraps_and_fits() {
-        assert_eq!(wrap("hello world foo", 11), vec!["hello world", "foo"]);
+    fn helpers() {
         assert_eq!(fit("abcdef", 4), "abc…");
         assert_eq!(spark(&[0, 4, 8], 3), "▁▅█");
         let l = lr(vec![sp("left side text", text())], vec![sp("R", text())], 10);
         assert_eq!(spans_width(&l.spans), 10);
-    }
-
-    #[test]
-    fn rel() {
-        assert_eq!(aulora_core::util::rel_path("/a/b", "/a"), "b");
     }
 }

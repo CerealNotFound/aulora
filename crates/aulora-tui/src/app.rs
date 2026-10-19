@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use aulora_core::model::*;
 
+use crate::conv::Conversation;
 use crate::term::Term;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +19,27 @@ pub enum Mode {
     Navigate,
     /// Keys go to the selected pane; Ctrl-Q returns to Navigate.
     Terminal,
+    /// Keys move through the Conversation tab; Esc returns to Navigate.
+    Reading,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tab {
+    Terminal,
+    Conversation,
+    Overview,
+    Activity,
+}
+
+impl Tab {
+    pub fn label(self) -> &'static str {
+        match self {
+            Tab::Terminal => "Terminal",
+            Tab::Conversation => "Conversation",
+            Tab::Overview => "Overview",
+            Tab::Activity => "Activity",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,6 +79,18 @@ pub struct App {
     pub view_size: Option<(String, u16, u16)>,
     /// A destructive action waiting for a second key press.
     pub confirm: Option<(char, String, Ms)>,
+    /// Last tab chosen for panes, sessions and projects.
+    pub pane_tab: Tab,
+    pub session_tab: Tab,
+    pub project_tab: Tab,
+    /// Conversations by session id, with when they were last read.
+    pub convs: HashMap<String, (Conversation, Ms)>,
+    /// Open theme picker: the highlighted theme, and the one to go back to.
+    pub theme_picker: Option<usize>,
+    pub theme_before: usize,
+    /// Typing a search in the Conversation tab.
+    pub searching: bool,
+    pub conv_query: String,
 }
 
 impl App {
@@ -82,7 +116,111 @@ impl App {
             pending_select: None,
             view_size: None,
             confirm: None,
+            pane_tab: Tab::Terminal,
+            session_tab: Tab::Overview,
+            project_tab: Tab::Overview,
+            convs: HashMap::new(),
+            theme_picker: None,
+            theme_before: 0,
+            searching: false,
+            conv_query: String::new(),
         }
+    }
+
+    /// Tabs offered for the selection.
+    pub fn tabs(&self) -> Vec<Tab> {
+        match &self.selected {
+            Some(RowRef::Pane(id)) => {
+                if self.pane_session(id).is_some() {
+                    vec![Tab::Terminal, Tab::Conversation, Tab::Overview, Tab::Activity]
+                } else {
+                    vec![Tab::Terminal, Tab::Activity]
+                }
+            }
+            Some(RowRef::Session(_)) => vec![Tab::Overview, Tab::Conversation, Tab::Activity],
+            Some(RowRef::Project(_)) => vec![Tab::Overview, Tab::Activity],
+            None => vec![],
+        }
+    }
+
+    pub fn current_tab(&self) -> Tab {
+        let tabs = self.tabs();
+        let pref = match &self.selected {
+            Some(RowRef::Pane(_)) => self.pane_tab,
+            Some(RowRef::Session(_)) => self.session_tab,
+            _ => self.project_tab,
+        };
+        if tabs.contains(&pref) { pref } else { tabs.first().copied().unwrap_or(Tab::Overview) }
+    }
+
+    pub fn set_tab(&mut self, tab: Tab) {
+        if !self.tabs().contains(&tab) {
+            return;
+        }
+        match &self.selected {
+            Some(RowRef::Pane(_)) => self.pane_tab = tab,
+            Some(RowRef::Session(_)) => self.session_tab = tab,
+            _ => self.project_tab = tab,
+        }
+    }
+
+    /// Move through the tabs, wrapping around.
+    pub fn cycle_tab(&mut self, delta: i32) {
+        let tabs = self.tabs();
+        if tabs.is_empty() {
+            return;
+        }
+        let cur = tabs.iter().position(|t| *t == self.current_tab()).unwrap_or(0) as i32;
+        let next = (cur + delta).rem_euclid(tabs.len() as i32) as usize;
+        self.set_tab(tabs[next]);
+    }
+
+    /// The session behind the selection, if any.
+    pub fn selected_session_id(&self) -> Option<String> {
+        match &self.selected {
+            Some(RowRef::Session(id)) => Some(id.clone()),
+            Some(RowRef::Pane(id)) => self.pane_session(id).map(|s| s.id.clone()),
+            _ => None,
+        }
+    }
+
+    /// Project name and selected item, for the header.
+    pub fn breadcrumb(&self) -> Option<(String, Option<String>)> {
+        let root = self.selected_root()?;
+        let project = self.project(&root).map(|p| p.name.clone()).unwrap_or_else(|| aulora_core::util::basename(&root));
+        let item = match &self.selected {
+            Some(RowRef::Pane(id)) => self.pane(id).map(|p| p.name.clone()),
+            Some(RowRef::Session(id)) => self.session(id).map(|s| s.display_title()),
+            _ => None,
+        };
+        Some((project, item))
+    }
+
+    /// The conversation for a session, read from its transcript (and kept
+    /// up to date), or pieced together from the snapshot when there is none.
+    pub fn conversation(&mut self, session_id: &str) -> Option<&mut Conversation> {
+        let s = self.session(session_id)?.clone();
+        let now = self.now;
+        let path = s.transcript_path.clone().filter(|p| std::path::Path::new(p).is_file());
+        match path {
+            Some(p) => {
+                let entry = self.convs.entry(session_id.to_string()).or_insert_with(|| (Conversation::new(Some(p)), 0));
+                if now - entry.1 > 400 {
+                    entry.0.refresh();
+                    entry.1 = now;
+                }
+            }
+            None => {
+                let mut fresh = Conversation::from_session(&s);
+                if let Some((old, _)) = self.convs.get(session_id) {
+                    fresh.selected = old.selected.min(fresh.entries.len().saturating_sub(1));
+                    fresh.follow = old.follow;
+                    fresh.expanded = old.expanded.clone();
+                }
+                self.convs.insert(session_id.to_string(), (fresh, now));
+            }
+        }
+        self.convs.get_mut(session_id).map(|(c, _)| c)
     }
 
     pub fn set_snapshot(&mut self, snap: Snapshot) {
@@ -103,6 +241,9 @@ impl App {
             self.selected = rows.iter().find(|r| !matches!(r, RowRef::Project(_))).cloned().or(rows.first().cloned());
         }
         if self.mode == Mode::Terminal && self.selected_pane().is_none() {
+            self.mode = Mode::Navigate;
+        }
+        if self.mode == Mode::Reading && self.selected_session_id().is_none() {
             self.mode = Mode::Navigate;
         }
         // Forget screens of panes that are gone.
@@ -366,10 +507,4 @@ pub struct Counts {
     pub ended: usize,
     pub history: usize,
     pub projects: usize,
-}
-
-impl Counts {
-    pub fn live(&self) -> usize {
-        self.needs_you + self.errored + self.your_turn + self.working + self.idle
-    }
 }
