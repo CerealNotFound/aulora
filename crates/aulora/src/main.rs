@@ -34,6 +34,9 @@ enum Cmd {
         /// Print one frame as plain text at WIDTHxHEIGHT and exit.
         #[arg(long, value_name = "WxH")]
         snapshot: Option<String>,
+        /// Select this pane on start (id, prefix, name or project/name).
+        #[arg(long)]
+        select: Option<String>,
     },
     /// Open the dashboard with made-up sessions.
     Demo,
@@ -153,10 +156,10 @@ fn dispatch(cli: Cli) -> Result<()> {
                 Cli::command().print_help()?;
                 return Ok(());
             }
-            tui(false, None)
+            tui(false, None, None)
         }
-        Some(Cmd::Tui { demo, snapshot }) => tui(demo, snapshot),
-        Some(Cmd::Demo) => tui(true, None),
+        Some(Cmd::Tui { demo, snapshot, select }) => tui(demo, snapshot, select),
+        Some(Cmd::Demo) => tui(true, None, None),
         Some(Cmd::Hook) => {
             hook::run();
             Ok(())
@@ -187,9 +190,14 @@ fn hooks_installed() -> bool {
     install::read(&install::default_settings_path()).map(|v| !install::installed_events(&v).is_empty()).unwrap_or(false)
 }
 
-fn tui(demo: bool, snapshot: Option<String>) -> Result<()> {
+fn tui(demo: bool, snapshot: Option<String>, select: Option<String>) -> Result<()> {
     let exe = exe()?;
+    let select = match (&select, demo) {
+        (Some(q), false) => Some(find_pane(q)?.id),
+        _ => None,
+    };
     let opts = aulora_tui::Options {
+        select: select.clone(),
         demo,
         socket: paths::socket(),
         hooks_installed: demo || hooks_installed(),
@@ -208,7 +216,8 @@ fn tui(demo: bool, snapshot: Option<String>) -> Result<()> {
             .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
             .context("--snapshot takes WIDTHxHEIGHT, e.g. 180x50")?;
         let live = if demo { None } else { request_snapshot().ok() };
-        print!("{}", aulora_tui::render_text(&opts, live, w, h));
+        let screens = select.iter().filter_map(|id| fetch_screen(id).ok()).collect();
+        print!("{}", aulora_tui::render_text(&opts, live, screens, w, h));
         return Ok(());
     }
     aulora_tui::run(opts)
@@ -244,6 +253,24 @@ fn request_snapshot() -> Result<Snapshot> {
     std::io::BufRead::read_line(&mut reader, &mut line)?;
     match serde_json::from_str::<ServerMsg>(&line)? {
         ServerMsg::Snapshot(s) => Ok(*s),
+        other => bail!("unexpected reply: {other:?}"),
+    }
+}
+
+/// One pane's current screen, for `tui --snapshot`.
+fn fetch_screen(pane_id: &str) -> Result<(String, u16, u16, Vec<u8>)> {
+    let mut s = UnixStream::connect(paths::socket()).context("the aulora daemon is not running")?;
+    s.set_read_timeout(Some(Duration::from_secs(3)))?;
+    let mut line = serde_json::to_string(&ClientMsg::Attach { pane_id: pane_id.to_string() })?;
+    line.push('\n');
+    s.write_all(line.as_bytes())?;
+    let mut reader = std::io::BufReader::new(s);
+    let mut reply = String::new();
+    std::io::BufRead::read_line(&mut reader, &mut reply)?;
+    match serde_json::from_str::<ServerMsg>(&reply)? {
+        ServerMsg::PaneScreen { pane_id, cols, rows, data } => {
+            Ok((pane_id, cols, rows, aulora_core::proto::decode(&data)))
+        }
         other => bail!("unexpected reply: {other:?}"),
     }
 }

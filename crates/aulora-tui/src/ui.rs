@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Sparkline};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, Conn, RowRef};
+use crate::app::{App, Conn, Mode, RowRef};
 use crate::theme::*;
 
 // ---------------------------------------------------------------------------
@@ -224,7 +224,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         alert_banner(f, rows[1], app);
     }
     let body = rows[2].inner(ratatui::layout::Margin { horizontal: 1, vertical: 0 });
-    let no_sessions = app.snap.as_ref().is_none_or(|s| s.sessions.is_empty());
+    let no_sessions = app.snap.as_ref().is_none_or(|s| s.sessions.is_empty() && s.panes.is_empty());
     if no_sessions {
         empty_state(f, body, app);
     } else {
@@ -327,7 +327,13 @@ fn editor_name(app: &App) -> String {
 }
 
 fn main_body(f: &mut Frame, area: Rect, app: &mut App) {
-    let show_feed = area.height >= 28;
+    let pane_selected = app.selected_pane().is_some();
+    if pane_selected && (app.zoom || (area.width < 118 && app.mode == Mode::Terminal)) {
+        pane_view(f, area, app);
+        return;
+    }
+    // A pane gets the full height; the feed would only take rows from it.
+    let show_feed = area.height >= 28 && !pane_selected;
     let feed_h = if area.height >= 44 { 10 } else { 7 };
     let rows =
         Layout::vertical([Constraint::Min(0), Constraint::Length(if show_feed { feed_h } else { 0 })]).split(area);
@@ -344,6 +350,7 @@ fn main_body(f: &mut Frame, area: Rect, app: &mut App) {
                 }
             }
             Some(RowRef::Project(root)) => project_detail(f, cols[2], app, &root),
+            Some(RowRef::Pane(_)) => pane_view(f, cols[2], app),
             None => {}
         }
     } else {
@@ -461,7 +468,16 @@ fn session_list(f: &mut Frame, area: Rect, app: &mut App) {
         let sessions: Vec<Session> = app.visible_sessions(&p.root).into_iter().cloned().collect();
         let selected = app.selected.as_ref() == Some(&RowRef::Project(p.root.clone()));
         let marker = if selected { sp("▌", Style::new().fg(pc)) } else { sp(" ", text()) };
-        let needs = sessions.iter().filter(|s| matches!(s.state, SessionState::NeedsYou { .. })).count();
+        let needs = app
+            .snap
+            .as_ref()
+            .map(|snap| {
+                snap.sessions
+                    .iter()
+                    .filter(|s| s.project_root == p.root && matches!(s.state, SessionState::NeedsYou { .. }))
+                    .count()
+            })
+            .unwrap_or(0);
         let mut l1 = vec![marker.clone(), sp(p.name.clone(), bold(pc))];
         if needs > 0 {
             l1.push(sp(format!("  ◆{needs}"), bold(AMBER)));
@@ -479,9 +495,62 @@ fn session_list(f: &mut Frame, area: Rect, app: &mut App) {
         lines.push(ListLine { line: lr(l2, vec![], width).style(bg), row: ri });
         ri += 1;
 
-        let n = sessions.len();
+        let panes: Vec<Pane> = app.visible_panes(&p.root).into_iter().cloned().collect();
+        let n = panes.len() + sessions.len();
+        for (pi, x) in panes.iter().enumerate() {
+            let last = pi + 1 == n;
+            let selected = app.selected.as_ref() == Some(&RowRef::Pane(x.id.clone()));
+            let marker = if selected { sp("▌", Style::new().fg(pc)) } else { sp(" ", text()) };
+            let linked = app.pane_session(&x.id).filter(|s| s.state.is_live()).cloned();
+            let active = now - x.last_output_at < 2_000;
+            let (glyph, gc, label_, since) = match (&x.exit, &linked) {
+                (Some(e), _) => ("■".to_string(), FAINT, format!("EXITED {}", e.code), e.at),
+                (None, Some(s)) => (
+                    state_glyph(&s.state, now).to_string(),
+                    live_state_color(&s.state, now),
+                    s.state.label().to_string(),
+                    s.state_since,
+                ),
+                (None, None) => (
+                    if x.kind == PaneKind::Command { "▶" } else { "❯" }.to_string(),
+                    if active { CYAN } else { TEAL },
+                    if active { "ACTIVE".to_string() } else { "READY".to_string() },
+                    x.last_output_at,
+                ),
+            };
+            let mut l1 = vec![
+                marker.clone(),
+                sp(if last { " └─ " } else { " ├─ " }, faint()),
+                sp(glyph, bold(gc)),
+                sp(" ", text()),
+                sp(x.name.clone(), if x.exit.is_some() { faint() } else { bold(TEXT) }),
+            ];
+            if let Some(s) = &linked {
+                l1.push(sp(format!(" · {}", s.display_title()), text()));
+            }
+            let r1 = vec![sp(label_, bold(gc)), sp(format!(" {:>5}", short_duration(now - since)), dim())];
+            let mut l2 = vec![marker, sp(if last { "      " } else { " │    " }, faint())];
+            match &linked {
+                Some(s) => l2.extend(session_detail_line(s, now)),
+                None => {
+                    let what = match (&x.title, x.kind) {
+                        (Some(t), _) => t.clone(),
+                        (None, PaneKind::Command) => x.args.join(" "),
+                        (None, PaneKind::Claude) => "claude".into(),
+                        (None, PaneKind::Shell) => aulora_core::util::rel_path(&x.cwd, &p.root),
+                    };
+                    l2.push(sp(if what.is_empty() { ".".into() } else { what }, faint()));
+                }
+            }
+            let r2 = vec![sp(format!("{}×{} · {}", x.cols, x.rows, x.id), faint())];
+            let bg = if selected { Style::new().bg(SELECT) } else { Style::new() };
+            lines.push(ListLine { line: lr(l1, r1, width).style(bg), row: ri });
+            lines.push(ListLine { line: lr(l2, r2, width).style(bg), row: ri });
+            ri += 1;
+        }
         for (si, s) in sessions.iter().enumerate() {
-            let last = si + 1 == n;
+            let last = panes.len() + si + 1 == n;
+
             let selected = app.selected.as_ref() == Some(&RowRef::Session(s.id.clone()));
             let marker = if selected { sp("▌", Style::new().fg(pc)) } else { sp(" ", text()) };
             let sc = live_state_color(&s.state, now);
@@ -533,6 +602,110 @@ fn session_list(f: &mut Frame, area: Rect, app: &mut App) {
     app.scroll = app.scroll.min(lines.len().saturating_sub(h));
     let visible: Vec<Line> = lines.into_iter().skip(app.scroll).take(h).map(|l| l.line).collect();
     f.render_widget(Paragraph::new(visible), inner);
+}
+
+// ---------------------------------------------------------------------------
+// Right: a live pane
+
+fn pane_view(f: &mut Frame, area: Rect, app: &mut App) {
+    let now = app.now;
+    let Some(p) = app.selected_pane().cloned() else { return };
+    let linked = app.pane_session(&p.id).filter(|s| s.state.is_live()).cloned();
+    let focused = app.mode == Mode::Terminal;
+    let needs = linked.as_ref().is_some_and(|s| matches!(s.state, SessionState::NeedsYou { .. }));
+    let border = if needs {
+        lerp(AMBER_DIM, AMBER, pulse(now, 1400))
+    } else if focused {
+        TEAL
+    } else {
+        BORDER_HI
+    };
+    let pc = project_color(&p.project_root);
+    let title = Line::from(vec![
+        sp(" ", text()),
+        sp(if focused { "● " } else { "❯ " }, bold(if focused { TEAL } else { pc })),
+        sp(p.name.clone(), bold(TEXT)),
+        sp(format!("  {}", basename(&p.project_root)), Style::new().fg(pc)),
+        sp(format!("  {} ", tildify(&p.cwd)), faint()),
+    ]);
+    let mut right = format!(" {}×{} · pane {}", p.cols, p.rows, p.id);
+    if let Some(pid) = p.pid {
+        right.push_str(&format!(" · pid {pid}"));
+    }
+    right.push(' ');
+    let hint = if focused {
+        Line::from(vec![
+            sp(" TERMINAL ", Style::new().bg(TEAL).fg(BG).add_modifier(Modifier::BOLD)),
+            sp(" ctrl-q to leave ", faint()),
+        ])
+    } else {
+        Line::from(vec![sp(" ⏎", bold(TEXT)), sp(" type here  ", faint()), sp("z", bold(TEXT)), sp(" zoom ", faint())])
+    };
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(border))
+        .style(Style::new().bg(BG))
+        .title(title)
+        .title(Line::from(sp(right, faint())).right_aligned())
+        .title_bottom(hint.right_aligned());
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let term_area = match &linked {
+        Some(s) if inner.height > 4 => {
+            let rows =
+                Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)]).split(inner);
+            let width = rows[0].width as usize;
+            let mut left = state_pill(s, now);
+            left.push(sp("  ", text()));
+            left.push(sp(s.display_title(), bold(TEXT)));
+            left.push(sp("  ", text()));
+            left.extend(session_detail_line(s, now));
+            let mut r = Vec::new();
+            if let Some(m) = &s.model {
+                r.push(sp(short_model(m), Style::new().fg(VIOLET)));
+            }
+            if let Some(c) = s.context_tokens {
+                r.push(sp(format!("  ctx {}", fmt_tokens(c)), Style::new().fg(TEAL)));
+            }
+            r.push(sp(format!("  {} tools ", s.tool_calls), faint()));
+            f.render_widget(Paragraph::new(lr(left, r, width)).style(Style::new().bg(PANEL)), rows[0]);
+            f.render_widget(Paragraph::new(Line::from(sp("─".repeat(width), Style::new().fg(BORDER)))), rows[1]);
+            rows[2]
+        }
+        _ => inner,
+    };
+    app.view_size = Some((p.id.clone(), term_area.width, term_area.height));
+
+    let Some(t) = app.terms.get(&p.id) else {
+        let msg = Paragraph::new(Line::from(vec![
+            sp(format!("{} ", spinner(now)), Style::new().fg(TEAL)),
+            sp("attaching…", dim()),
+        ]));
+        f.render_widget(msg, centered(term_area, 14, 1));
+        return;
+    };
+    let cursor = crate::term::render(t, term_area, f.buffer_mut());
+    if focused && let Some(pos) = cursor {
+        f.set_cursor_position(pos);
+    }
+    let scrolled = t.scrolled();
+    if scrolled > 0 {
+        let msg = format!(" ↑ {scrolled} lines up · PgDn or End to return ");
+        let wd = (w(&msg) as u16).min(term_area.width);
+        let r = Rect { x: term_area.x + term_area.width - wd, y: term_area.y, width: wd, height: 1 };
+        f.render_widget(Paragraph::new(Line::from(sp(msg, Style::new().fg(BG).bg(VIOLET)))), r);
+    }
+    if let Some(e) = &p.exit {
+        let msg = format!(
+            " process exited with code {}{} · r restart · x close ",
+            e.code,
+            e.signal.as_ref().map(|s| format!(" ({s})")).unwrap_or_default()
+        );
+        let wd = (w(&msg) as u16).min(term_area.width);
+        let r = Rect { x: term_area.x, y: term_area.y + term_area.height.saturating_sub(1), width: wd, height: 1 };
+        f.render_widget(Paragraph::new(Line::from(sp(msg, Style::new().fg(TEXT).bg(RAISED)))), r);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1136,8 +1309,38 @@ fn feed(f: &mut Frame, area: Rect, app: &App) {
 fn footer(f: &mut Frame, area: Rect, app: &App) {
     let key = |k: &str| sp(format!(" {k} "), Style::new().fg(TEXT).bg(RAISED).add_modifier(Modifier::BOLD));
     let lbl = |l: &str| sp(format!(" {l}  "), faint());
-    let left = if app.filtering {
+    let left = if app.mode == Mode::Terminal {
+        let name = app.selected_pane().map(|p| p.name.clone()).unwrap_or_default();
+        vec![
+            sp(" TERMINAL ", Style::new().bg(TEAL).fg(BG).add_modifier(Modifier::BOLD)),
+            lbl(&format!(" keys go to {name}")),
+            key("ctrl-q"),
+            lbl("back to the dashboard"),
+        ]
+    } else if app.filtering {
         vec![key("type"), lbl("to filter"), key("⏎"), lbl("keep"), key("esc"), lbl("clear")]
+    } else if let Some(p) = app.selected_pane() {
+        let mut v = vec![key("↑↓"), lbl("move"), key("⏎"), lbl("type in pane"), key("PgUp"), lbl("scroll")];
+        if p.is_running() {
+            v.extend([key("x"), lbl("kill")]);
+        } else {
+            v.extend([key("r"), lbl("restart"), key("x"), lbl("close")]);
+        }
+        v.extend([
+            key("z"),
+            lbl(if app.zoom { "unzoom" } else { "zoom" }),
+            key("c"),
+            lbl("shell"),
+            key("C"),
+            lbl("claude"),
+            key("o"),
+            lbl(&format!("open in {}", editor_name(app))),
+            key("?"),
+            lbl("help"),
+            key("q"),
+            lbl("quit"),
+        ]);
+        v
     } else {
         vec![
             key("↑↓"),
@@ -1146,6 +1349,10 @@ fn footer(f: &mut Frame, area: Rect, app: &App) {
             lbl("project"),
             key("⏎"),
             lbl(&format!("open in {}", editor_name(app))),
+            key("c"),
+            lbl("new shell"),
+            key("C"),
+            lbl("new claude"),
             key("n"),
             lbl("next alert"),
             key("/"),
@@ -1192,7 +1399,7 @@ fn logo_lines(now: Ms) -> Vec<Line<'static>> {
 }
 
 fn help(f: &mut Frame, area: Rect, app: &App) {
-    let r = centered(area, 72, 30);
+    let r = centered(area, 72, 39);
     f.render_widget(Clear, r);
     let block = panel("help").border_style(Style::new().fg(BORDER_HI)).style(Style::new().bg(RAISED));
     let inner = block.inner(r);
@@ -1205,11 +1412,17 @@ fn help(f: &mut Frame, area: Rect, app: &App) {
         ("↑ ↓  j k", "move between projects and sessions"),
         ("⇥  ⇧⇥", "jump to next / previous project"),
         ("g  G", "first / last"),
-        ("⏎  o", "open the project in your editor"),
+        ("⏎", "type in the selected pane (ctrl-q leaves)"),
+        ("o", "open the project in your editor"),
+        ("c  C", "new shell / new Claude Code pane in this project"),
+        ("z", "zoom the pane to the whole screen"),
+        ("PgUp PgDn", "scroll back through a pane's output"),
+        ("r", "restart an exited pane"),
         ("n", "cycle through sessions that need you"),
         ("/", "filter by project, title or prompt"),
         ("e", "show or hide ended sessions"),
-        ("x  X", "dismiss this ended session / all ended"),
+        ("x", "kill a pane (press twice), close it, or dismiss a session"),
+        ("X", "dismiss every ended session"),
         ("q  ctrl-c", "quit (the daemon keeps running)"),
     ] {
         lines.push(row(k, d));
@@ -1249,7 +1462,7 @@ fn toast(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn empty_state(f: &mut Frame, area: Rect, app: &App) {
-    let r = centered(area, 76, 20);
+    let r = centered(area, 76, 21);
     let mut lines = logo_lines(app.now);
     lines.push(Line::raw(""));
     lines.push(Line::from(sp("Every Claude Code session across your projects, in one place.", dim())).centered());
@@ -1298,6 +1511,15 @@ fn empty_state(f: &mut Frame, area: Rect, app: &App) {
         }
     }
     lines.push(Line::raw(""));
+    lines.push(
+        Line::from(vec![
+            sp("c", bold(TEAL)),
+            sp(" open a shell here    ", faint()),
+            sp("C", bold(VIOLET)),
+            sp(" start Claude Code here", faint()),
+        ])
+        .centered(),
+    );
     lines.push(
         Line::from(vec![
             sp("try ", faint()),
