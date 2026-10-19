@@ -153,6 +153,10 @@ aulora hooks install --settings /tmp/aulora-settings.json
 claude --settings /tmp/aulora-settings.json
 ```
 
+## Contributing
+
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and checks, and for the commit guidelines, which follow Zulip's commit discipline.
+
 ## License
 
 Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.

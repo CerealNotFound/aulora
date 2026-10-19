@@ -1,0 +1,10 @@
+
+# area: Imperative sentence that ends with a period.   (max 72 chars)
+#
+# Why is this change needed, and why is it safe? Full sentences,
+# wrapped at about 68 characters (never past 70).
+#
+# Fixes #123.
+#
+# Areas: core, daemon, tui, cli, hooks, docs, ci, build
+# Full rules: CONTRIBUTING.md (Zulip's commit discipline)
