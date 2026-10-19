@@ -68,6 +68,7 @@ pub fn run(mut opts: Options) -> Result<()> {
     if opts.demo {
         let d = demo::Demo::new();
         app.set_snapshot(d.snap.clone());
+        load_demo_screens(&mut app);
         demo = Some(d);
     } else {
         client::spawn(opts.socket.clone(), opts.spawn_daemon.take(), tx.clone());
@@ -131,6 +132,14 @@ pub fn run(mut opts: Options) -> Result<()> {
     let _ = execute!(out, DisableBracketedPaste);
     ratatui::restore();
     result
+}
+
+fn load_demo_screens(app: &mut App) {
+    for (id, cols, rows, data) in demo::screens() {
+        let mut t = Term::new(cols, rows, 0);
+        t.reset(cols, rows, &data);
+        app.terms.insert(id, t);
+    }
 }
 
 fn on_incoming(app: &mut App, msg: Incoming) {
@@ -270,6 +279,7 @@ fn pane_key(app: &mut App, key: KeyEvent, opts: &Options) -> bool {
     let Some(p) = app.selected_pane().cloned() else { return false };
     let demo = matches!(app.conn, Conn::Demo);
     match key.code {
+        KeyCode::Enter if demo => app.toast("Demo panes are pictures; run aulora for real ones"),
         KeyCode::Enter => {
             if p.is_running() {
                 app.mode = Mode::Terminal;
@@ -427,7 +437,10 @@ pub fn render_text(
         app.pending_select = Some((id.clone(), false));
     }
     match (opts.demo, live) {
-        (true, _) => app.set_snapshot(demo::Demo::new().snap),
+        (true, _) => {
+            app.set_snapshot(demo::Demo::new().snap);
+            load_demo_screens(&mut app);
+        }
         (false, Some(s)) => app.set_snapshot(s),
         (false, None) => app.conn = Conn::Offline("not running".into()),
     }

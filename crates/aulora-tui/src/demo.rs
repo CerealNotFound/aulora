@@ -366,6 +366,8 @@ impl Demo {
         );
         d.set_tokens("f0e1d2c3-b4a5-4968-8776-655443322110", 74_000, 15_200);
 
+        d.add_panes(now);
+
         for (id, text) in [
             (
                 "3f1d9a20-5b6c-4e1f-9d2a-8b7c6e5f4a31",
@@ -382,6 +384,45 @@ impl Demo {
         }
         d.snap.feed.sort_by_key(|e| e.at);
         d
+    }
+
+    fn add_panes(&mut self, now: Ms) {
+        let pane =
+            |id: &str, project: &str, name: &str, kind: PaneKind, args: &[&str], cols, rows, age_min: i64| Pane {
+                id: id.into(),
+                project_root: root(project),
+                cwd: root(project),
+                name: name.into(),
+                kind,
+                args: args.iter().map(|a| a.to_string()).collect(),
+                pid: Some(51_000 + cols as u32),
+                cols,
+                rows,
+                created_at: now - age_min * 60_000,
+                last_output_at: now - 1_500,
+                bytes_out: 0,
+                title: None,
+                bell_at: None,
+                exit: None,
+                generation: 0,
+            };
+        self.snap.panes = vec![
+            pane("a41c07", "aulora", "claude", PaneKind::Claude, &[], 104, 40, 140),
+            pane("5d2e19", "multibrain", "claude", PaneKind::Claude, &[], 104, 40, 95),
+            pane("c8f310", "multibrain", "dev server", PaneKind::Command, &["pnpm", "dev"], 104, 40, 96),
+        ];
+        for (session, pane_id) in
+            [("e8d9964f-fda5-46e8-a6fd-94ace0fd4a1f", "a41c07"), ("3f1d9a20-5b6c-4e1f-9d2a-8b7c6e5f4a31", "5d2e19")]
+        {
+            if let Some(s) = self.snap.sessions.iter_mut().find(|s| s.id == session) {
+                s.terminal = TerminalInfo {
+                    program: Some("aulora".into()),
+                    bundle_id: None,
+                    pane_id: Some(pane_id.into()),
+                    tmux: false,
+                };
+            }
+        }
     }
 
     /// Advance the script. Returns true when something changed.
@@ -455,4 +496,113 @@ impl Demo {
         self.snap.daemon.hooks_seen += 1;
         true
     }
+}
+
+const R: &str = "\x1b[0m";
+const DIM: &str = "\x1b[2m";
+const BOLD: &str = "\x1b[1m";
+const GREEN: &str = "\x1b[38;2;110;231;150m";
+const RED: &str = "\x1b[38;2;248;113;113m";
+const ORANGE: &str = "\x1b[38;2;217;119;87m";
+const BLUE: &str = "\x1b[38;2;125;166;255m";
+const GREY: &str = "\x1b[38;2;136;145;168m";
+
+fn lines(rows: &[String]) -> Vec<u8> {
+    rows.join("\r\n").into_bytes()
+}
+
+/// Canned screens for the demo panes: (pane id, cols, rows, bytes).
+pub fn screens() -> Vec<(String, u16, u16, Vec<u8>)> {
+    let claude_multibrain = lines(&[
+        format!("{ORANGE}✻{R} {BOLD}Credit billing → FastAPI{R}"),
+        String::new(),
+        format!("{GREY}>{R} now wire the wallet page to the new endpoint"),
+        String::new(),
+        "● The FastAPI endpoint is live and the tests pass. Three places in the web app".into(),
+        "  still deduct credits on the client; I'm moving them to the new endpoint.".into(),
+        String::new(),
+        format!("● {BOLD}Read{R}(web/app/billing/page.tsx)"),
+        format!("  {GREY}⎿  Read 214 lines{R}"),
+        String::new(),
+        format!("● {BOLD}Update{R}(web/app/billing/page.tsx)"),
+        format!("  {GREY}⎿  Updated web/app/billing/page.tsx with 12 additions and 4 removals{R}"),
+        format!("       {GREY}86{R}      const cost = estimateCost(model, tokens)"),
+        format!("       {GREY}87{R} {RED}-    const remaining = balance - cost{R}"),
+        format!("       {GREY}88{R} {RED}-    setBalance(remaining){R}"),
+        format!("       {GREY}87{R} {GREEN}+    const {{ remaining }} = await deductCredits(model, tokens){R}"),
+        format!("       {GREY}88{R} {GREEN}+    setBalance(remaining)   // server is the source of truth{R}"),
+        String::new(),
+        format!("● {BOLD}Bash{R}(pytest api/tests/test_credits.py -q)"),
+        format!("  {GREY}⎿  ........................                                  [100%]{R}"),
+        format!("     {GREY}24 passed in 1.84s{R}"),
+        String::new(),
+        format!("● {BOLD}Update{R}(web/app/billing/page.tsx)"),
+        String::new(),
+        format!("{ORANGE}✶ Wiring the wallet page…{R} {GREY}(1m 12s · ↓ 2.1k tokens · esc to interrupt){R}"),
+        String::new(),
+        format!(
+            "{GREY}╭──────────────────────────────────────────────────────────────────────────────────────────────────╮{R}"
+        ),
+        format!(
+            "{GREY}│{R} >                                                                                                {GREY}│{R}"
+        ),
+        format!(
+            "{GREY}╰──────────────────────────────────────────────────────────────────────────────────────────────────╯{R}"
+        ),
+        format!("  {GREY}⏵⏵ accept edits on (shift+tab to cycle){R}"),
+    ]);
+    let claude_aulora = lines(&[
+        format!("{ORANGE}✻{R} {BOLD}Daemon-owned terminals + screen state{R}"),
+        String::new(),
+        format!("{GREY}>{R} stream pane output to subscribed clients"),
+        String::new(),
+        "● Each pane now owns a vt100 parser that mirrors the PTY output, so a client".into(),
+        "  that attaches late gets the current screen instead of a raw byte replay.".into(),
+        String::new(),
+        format!("● {BOLD}Bash{R}(cargo test -p aulora-daemon pty::)"),
+        format!("  {GREY}⎿  running 4 tests{R}"),
+        format!("     test pty::tests::claude_panes_fall_back_to_a_shell ... {GREEN}ok{R}"),
+        format!("     test pty::tests::runs_a_command_and_reports_exit ... {GREEN}ok{R}"),
+        format!("     test pty::tests::resize_updates_screen_and_pty ... {GREEN}ok{R}"),
+        format!("     test pty::tests::input_reaches_the_program_and_attach_replays_the_screen ... {GREEN}ok{R}"),
+        format!("     {GREY}test result: {R}{GREEN}ok{R}{GREY}. 4 passed; 0 failed; finished in 0.35s{R}"),
+        String::new(),
+        format!("{ORANGE}✶ Running the pty tests…{R} {GREY}(14s · esc to interrupt){R}"),
+        String::new(),
+        format!(
+            "{GREY}╭──────────────────────────────────────────────────────────────────────────────────────────────────╮{R}"
+        ),
+        format!(
+            "{GREY}│{R} >                                                                                                {GREY}│{R}"
+        ),
+        format!(
+            "{GREY}╰──────────────────────────────────────────────────────────────────────────────────────────────────╯{R}"
+        ),
+    ]);
+    let dev = lines(&[
+        format!("{GREY}${R} pnpm dev"),
+        String::new(),
+        format!("{GREY}> multibrain-web@0.4.0 dev{R}"),
+        format!("{GREY}> next dev --turbopack{R}"),
+        String::new(),
+        format!("   {BOLD}▲ Next.js 16.0.10{R} (Turbopack)"),
+        format!("   - Local:        {BLUE}http://localhost:3000{R}"),
+        format!("   - Network:      {BLUE}http://192.168.1.12:3000{R}"),
+        String::new(),
+        format!(" {GREEN}✓{R} Starting..."),
+        format!(" {GREEN}✓{R} Ready in 812ms"),
+        format!(" {GREY}○ Compiling /billing ...{R}"),
+        format!(" {GREEN}✓{R} Compiled /billing in 1.2s"),
+        format!(" GET /billing {GREEN}200{R} in 1361ms"),
+        format!(" POST /api/credits/deduct {GREEN}200{R} in 48ms"),
+        format!(" POST /api/credits/deduct {GREEN}200{R} in 41ms"),
+        format!(" GET /api/wallet {GREEN}200{R} in 22ms"),
+        format!(" {DIM}○ Compiling /billing ...{R}"),
+        format!(" {GREEN}✓{R} Compiled /billing in 284ms"),
+    ]);
+    vec![
+        ("5d2e19".into(), 104, 40, claude_multibrain),
+        ("a41c07".into(), 104, 40, claude_aulora),
+        ("c8f310".into(), 104, 40, dev),
+    ]
 }
