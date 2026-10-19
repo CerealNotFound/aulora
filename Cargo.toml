@@ -27,6 +27,8 @@ sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 libc = "0.2"
 unicode-width = "0.2"
 dirs = "6"
+portable-pty = "0.9"
+vt100 = "0.18"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

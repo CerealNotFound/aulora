@@ -4,6 +4,7 @@
 pub mod git;
 pub mod hub;
 pub mod procs;
+pub mod pty;
 pub mod store;
 
 use std::collections::HashMap;

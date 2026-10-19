@@ -17,3 +17,5 @@ rusqlite.workspace = true
 sysinfo.workspace = true
 libc.workspace = true
 tracing.workspace = true
+portable-pty.workspace = true
+vt100.workspace = true
