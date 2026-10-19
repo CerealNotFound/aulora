@@ -119,10 +119,13 @@ Claude Code's own transcript, readable and scrollable. It shows for sessions run
 
 VS Code's Source Control panel, plus who did it.
 
-- A tree of changed files built from `git status`, folders compressed when they have one child and showing the most important status of their contents (lazygit, yazi). Groups: Staged, Changes, Conflicts.
-- Each file shows `+n −m` and a colored dot for the Claude session that changed it.
-- Selecting a file shows its diff: unified, syntax-highlighted (syntect with Catppuccin), changed words highlighted within lines (delta), hunk headers labeled with the session that wrote them. `n`/`N` jump between hunks, `s` toggles side by side on wide screens.
-- Attribution comes from the exact patch Claude Code passes to the PostToolUse hook for every edit. The daemon keeps a log of edits per session, so "what did this session change" is answerable even after later edits.
+- A tree of changed files built from `git status`, in VS Code's groups: Merge conflicts, Staged, Changes. Folders with a single folder inside are compressed (`app/billing`), sorted folders first, and colored by the most important change inside (VS Code, lazygit). File names take their status color, with VS Code's letters (M, A, D, R, U, !).
+- Each file shows a dot per Claude session that wrote it (a steady color per session), then `+n −m`.
+- Selecting a file shows its diff beside the tree: old and new line numbers (GitHub), syntax highlighting, changed words marked within lines (delta). Colors come from aulora's theme, not a separate syntax theme, so every theme gets a matching diff. When more than one session wrote a file, each hunk is labeled with the one that wrote it. `[` `]` jump between hunks, `o` opens the editor at the change, `space` stages or unstages a file or folder (VS Code's + and −).
+- With an agent selected, the tab shows that agent's changes; `a` switches to every change in the project. The tab you chose stays as you move between agents, so you can walk the sidebar reviewing each one.
+- Attribution reads the session transcripts Claude Code already keeps: every Edit and Write records its exact patch (`structuredPatch`) or the new file's content. A change belongs to the session whose recorded lines it contains. Transcripts are read incrementally, so this costs nothing after the first look, and it covers sessions from before aulora was installed.
+- git runs on a background thread: one `git status` and two `git diff -U0` calls give the whole tree, counts and attribution; the selected file's diff is read with context when you select it. The tab refreshes when the daemon's git poll sees something new, and every few seconds while it's shown.
+- Not yet: side-by-side diffs, discarding changes, committing.
 
 ## Files
 
