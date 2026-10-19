@@ -1,0 +1,19 @@
+[package]
+name = "aulora-daemon"
+description = "Background daemon for aulora: collects Claude Code hook events and serves live state"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+aulora-core.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+rusqlite.workspace = true
+sysinfo.workspace = true
+libc.workspace = true
+tracing.workspace = true
