@@ -6,7 +6,6 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use aulora_core::model::{FeedKind, SessionState};
 use ratatui::style::{Color, Modifier, Style};
 
 #[derive(Debug, Clone, Copy)]
@@ -21,8 +20,6 @@ pub struct Theme {
     pub select: Color,
     /// Popups and key caps.
     pub raised: Color,
-    /// Separators and rules.
-    pub border: Color,
     pub text: Color,
     pub dim: Color,
     pub faint: Color,
@@ -30,13 +27,22 @@ pub struct Theme {
     pub green: Color,
     pub yellow: Color,
     pub red: Color,
+    /// For links and syntax highlighting.
+    #[allow(dead_code)]
     pub blue: Color,
     pub cyan: Color,
     pub magenta: Color,
+    #[allow(dead_code)]
     pub orange: Color,
     /// Header and footer bar.
     pub bar_bg: Color,
     pub bar_fg: Color,
+    /// Tab bar, mode bar, modals and toasts (Herdr's panel_bg).
+    pub panel: Color,
+    /// The focused row while its region doesn't have focus (Herdr's active_row_bg).
+    pub active: Color,
+    /// Separators and scrollbar tracks (Herdr's surface_dim).
+    pub rule: Color,
 }
 
 const fn rgb(hex: u32) -> Color {
@@ -54,20 +60,22 @@ pub const THEMES: &[Theme] = &[
         surface: R,
         select: rgb(0x313244),
         raised: rgb(0x313244),
-        border: rgb(0x45475a),
         text: rgb(0xcdd6f4),
         dim: rgb(0xa6adc8),
         faint: rgb(0x6c7086),
-        accent: rgb(0xcba6f7),
+        accent: rgb(0x89b4fa),
         green: rgb(0xa6e3a1),
         yellow: rgb(0xf9e2af),
         red: rgb(0xf38ba8),
         blue: rgb(0x89b4fa),
         cyan: rgb(0x94e2d5),
-        magenta: rgb(0xf5c2e7),
+        magenta: rgb(0xcba6f7),
         orange: rgb(0xfab387),
         bar_bg: R,
         bar_fg: rgb(0xcdd6f4),
+        panel: rgb(0x181825),
+        active: rgb(0x1e1e2e),
+        rule: rgb(0x313244),
     },
     Theme {
         name: "catppuccin-latte",
@@ -76,7 +84,6 @@ pub const THEMES: &[Theme] = &[
         surface: rgb(0xe6e9ef),
         select: rgb(0xccd0da),
         raised: rgb(0xdce0e8),
-        border: rgb(0xbcc0cc),
         text: rgb(0x4c4f69),
         dim: rgb(0x6c6f85),
         faint: rgb(0x9ca0b0),
@@ -90,6 +97,9 @@ pub const THEMES: &[Theme] = &[
         orange: rgb(0xfe640b),
         bar_bg: rgb(0xe6e9ef),
         bar_fg: rgb(0x4c4f69),
+        panel: rgb(0xe6e9ef),
+        active: rgb(0xdce0e8),
+        rule: rgb(0xccd0da),
     },
     // The classic tmux look: your terminal's colors and a green status bar.
     Theme {
@@ -99,7 +109,6 @@ pub const THEMES: &[Theme] = &[
         surface: R,
         select: Color::Indexed(236),
         raised: Color::Indexed(236),
-        border: Color::Indexed(240),
         text: R,
         dim: Color::Gray,
         faint: Color::DarkGray,
@@ -113,6 +122,9 @@ pub const THEMES: &[Theme] = &[
         orange: Color::Yellow,
         bar_bg: Color::Green,
         bar_fg: Color::Black,
+        panel: Color::Indexed(235),
+        active: Color::Indexed(235),
+        rule: Color::Indexed(238),
     },
     // Only the terminal's 16 ANSI colors, so it follows your terminal theme.
     Theme {
@@ -122,7 +134,6 @@ pub const THEMES: &[Theme] = &[
         surface: R,
         select: Color::DarkGray,
         raised: Color::DarkGray,
-        border: Color::DarkGray,
         text: R,
         dim: Color::Gray,
         faint: Color::DarkGray,
@@ -136,6 +147,9 @@ pub const THEMES: &[Theme] = &[
         orange: Color::LightRed,
         bar_bg: R,
         bar_fg: R,
+        panel: Color::Black,
+        active: Color::Black,
+        rule: Color::DarkGray,
     },
     Theme {
         name: "github-dark",
@@ -144,7 +158,6 @@ pub const THEMES: &[Theme] = &[
         surface: rgb(0x010409),
         select: rgb(0x21262d),
         raised: rgb(0x161b22),
-        border: rgb(0x30363d),
         text: rgb(0xe6edf3),
         dim: rgb(0x9198a1),
         faint: rgb(0x6e7681),
@@ -158,6 +171,9 @@ pub const THEMES: &[Theme] = &[
         orange: rgb(0xdb6d28),
         bar_bg: rgb(0x010409),
         bar_fg: rgb(0xe6edf3),
+        panel: rgb(0x161b22),
+        active: rgb(0x161b22),
+        rule: rgb(0x21262d),
     },
     Theme {
         name: "github-light",
@@ -166,7 +182,6 @@ pub const THEMES: &[Theme] = &[
         surface: rgb(0xf6f8fa),
         select: rgb(0xddf4ff),
         raised: rgb(0xeff2f5),
-        border: rgb(0xd1d9e0),
         text: rgb(0x1f2328),
         dim: rgb(0x59636e),
         faint: rgb(0x818b98),
@@ -180,6 +195,9 @@ pub const THEMES: &[Theme] = &[
         orange: rgb(0xbc4c00),
         bar_bg: rgb(0xf6f8fa),
         bar_fg: rgb(0x1f2328),
+        panel: rgb(0xf6f8fa),
+        active: rgb(0xf6f8fa),
+        rule: rgb(0xd1d9e0),
     },
     Theme {
         name: "tokyo-night",
@@ -188,7 +206,6 @@ pub const THEMES: &[Theme] = &[
         surface: rgb(0x16161e),
         select: rgb(0x292e42),
         raised: rgb(0x24283b),
-        border: rgb(0x3b4261),
         text: rgb(0xc0caf5),
         dim: rgb(0xa9b1d6),
         faint: rgb(0x565f89),
@@ -202,6 +219,9 @@ pub const THEMES: &[Theme] = &[
         orange: rgb(0xff9e64),
         bar_bg: rgb(0x16161e),
         bar_fg: rgb(0xc0caf5),
+        panel: rgb(0x16161e),
+        active: rgb(0x1f2335),
+        rule: rgb(0x292e42),
     },
     Theme {
         name: "gruvbox",
@@ -210,7 +230,6 @@ pub const THEMES: &[Theme] = &[
         surface: rgb(0x1d2021),
         select: rgb(0x3c3836),
         raised: rgb(0x3c3836),
-        border: rgb(0x504945),
         text: rgb(0xebdbb2),
         dim: rgb(0xbdae93),
         faint: rgb(0x928374),
@@ -224,6 +243,9 @@ pub const THEMES: &[Theme] = &[
         orange: rgb(0xfe8019),
         bar_bg: rgb(0x1d2021),
         bar_fg: rgb(0xebdbb2),
+        panel: rgb(0x1d2021),
+        active: rgb(0x32302f),
+        rule: rgb(0x3c3836),
     },
     Theme {
         name: "nord",
@@ -232,7 +254,6 @@ pub const THEMES: &[Theme] = &[
         surface: rgb(0x292e39),
         select: rgb(0x3b4252),
         raised: rgb(0x3b4252),
-        border: rgb(0x4c566a),
         text: rgb(0xeceff4),
         dim: rgb(0xd8dee9),
         faint: rgb(0x7b88a1),
@@ -246,6 +267,9 @@ pub const THEMES: &[Theme] = &[
         orange: rgb(0xd08770),
         bar_bg: rgb(0x292e39),
         bar_fg: rgb(0xeceff4),
+        panel: rgb(0x272c36),
+        active: rgb(0x353b49),
+        rule: rgb(0x3b4252),
     },
     Theme {
         name: "dracula",
@@ -254,7 +278,6 @@ pub const THEMES: &[Theme] = &[
         surface: rgb(0x21222c),
         select: rgb(0x44475a),
         raised: rgb(0x343746),
-        border: rgb(0x44475a),
         text: rgb(0xf8f8f2),
         dim: rgb(0xbfbfd0),
         faint: rgb(0x6272a4),
@@ -268,6 +291,9 @@ pub const THEMES: &[Theme] = &[
         orange: rgb(0xffb86c),
         bar_bg: rgb(0x21222c),
         bar_fg: rgb(0xf8f8f2),
+        panel: rgb(0x21222c),
+        active: rgb(0x343746),
+        rule: rgb(0x44475a),
     },
     Theme {
         name: "one-dark",
@@ -276,7 +302,6 @@ pub const THEMES: &[Theme] = &[
         surface: rgb(0x21252b),
         select: rgb(0x2c313a),
         raised: rgb(0x2c313a),
-        border: rgb(0x3e4451),
         text: rgb(0xabb2bf),
         dim: rgb(0x9da5b4),
         faint: rgb(0x5c6370),
@@ -290,6 +315,9 @@ pub const THEMES: &[Theme] = &[
         orange: rgb(0xd19a66),
         bar_bg: rgb(0x21252b),
         bar_fg: rgb(0xabb2bf),
+        panel: rgb(0x21252b),
+        active: rgb(0x2c313a),
+        rule: rgb(0x3e4451),
     },
     // aulora's first look, toned down.
     Theme {
@@ -299,7 +327,6 @@ pub const THEMES: &[Theme] = &[
         surface: rgb(0x0b0e15),
         select: rgb(0x1b2234),
         raised: rgb(0x161c2b),
-        border: rgb(0x262d3f),
         text: rgb(0xd5dae6),
         dim: rgb(0x8f98b0),
         faint: rgb(0x5a6380),
@@ -313,6 +340,9 @@ pub const THEMES: &[Theme] = &[
         orange: rgb(0xe8a070),
         bar_bg: rgb(0x0b0e15),
         bar_fg: rgb(0xd5dae6),
+        panel: rgb(0x0b0e15),
+        active: rgb(0x161c2b),
+        rule: rgb(0x1b2234),
     },
 ];
 
@@ -352,76 +382,10 @@ pub fn default_for(light_terminal: bool) -> usize {
 // ---------------------------------------------------------------------------
 // Semantic colors and styles
 
-pub fn project_color(root: &str) -> Color {
-    let t = get();
-    let hues = [t.accent, t.blue, t.magenta, t.cyan, t.green, t.orange];
-    // FNV-1a: stable across runs.
-    let mut h: u32 = 0x811c9dc5;
-    for b in root.bytes() {
-        h ^= b as u32;
-        h = h.wrapping_mul(0x01000193);
-    }
-    hues[(h as usize) % hues.len()]
-}
-
-pub fn state_color(state: &SessionState) -> Color {
-    let t = get();
-    match state {
-        SessionState::NeedsYou { .. } => t.yellow,
-        SessionState::Errored { .. } => t.red,
-        SessionState::YourTurn => t.green,
-        SessionState::Working => t.blue,
-        SessionState::Compacting => t.magenta,
-        SessionState::Idle => t.dim,
-        SessionState::Ended { .. } => t.faint,
-    }
-}
-
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub fn spinner(now: i64) -> &'static str {
     SPINNER[((now / 90) as usize) % SPINNER.len()]
-}
-
-/// A slow blink for things that need you: the glyph alone, never a banner.
-pub fn blink(now: i64) -> bool {
-    (now / 700) % 2 == 0
-}
-
-pub fn state_glyph(state: &SessionState, now: i64) -> &'static str {
-    match state {
-        SessionState::NeedsYou { .. } => {
-            if blink(now) {
-                "◆"
-            } else {
-                "◇"
-            }
-        }
-        SessionState::Errored { .. } => "✗",
-        SessionState::YourTurn => "✓",
-        SessionState::Working => spinner(now),
-        SessionState::Compacting => "◌",
-        SessionState::Idle => "○",
-        SessionState::Ended { .. } => "·",
-    }
-}
-
-pub fn feed_style(kind: FeedKind) -> (&'static str, Color) {
-    let t = get();
-    match kind {
-        FeedKind::Permission => ("◆", t.yellow),
-        FeedKind::Question => ("?", t.yellow),
-        FeedKind::Done => ("✓", t.green),
-        FeedKind::Error => ("✗", t.red),
-        FeedKind::Edit => ("✎", t.magenta),
-        FeedKind::Tool => ("$", t.cyan),
-        FeedKind::Prompt => ("›", t.text),
-        FeedKind::Agent => ("⑂", t.magenta),
-        FeedKind::Compact => ("◌", t.magenta),
-        FeedKind::Start => ("▸", t.accent),
-        FeedKind::End => ("■", t.faint),
-        FeedKind::Info => ("i", t.dim),
-    }
 }
 
 pub fn fg(c: Color) -> Style {

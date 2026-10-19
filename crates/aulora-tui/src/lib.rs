@@ -5,31 +5,35 @@ mod attach;
 mod client;
 mod conv;
 mod demo;
+mod input;
+mod keymap;
 mod keys;
 mod term;
 mod theme;
 mod ui;
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use aulora_core::model::{PaneKind, Snapshot, now_ms};
-use aulora_core::proto::{self, ClientMsg, NewPane, ServerMsg};
+use aulora_core::model::{SessionState, Snapshot, now_ms};
+use aulora_core::proto::ClientMsg;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, KeyEventKind,
+    KeyboardEnhancementFlags, MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
-use ratatui::crossterm::{execute, terminal};
+use ratatui::crossterm::{SynchronizedUpdate, execute, terminal};
 
-use crate::app::{App, Conn, Mode, RowRef, Tab};
+use crate::app::{App, Conn, Focus, RowRef, Status, Tab};
 use crate::client::Incoming;
 use crate::term::Term;
 
 pub use attach::attach;
 pub use client::SpawnFn;
+pub use input::ConfirmAction;
 
 pub fn theme_names() -> Vec<&'static str> {
     theme::THEMES.iter().map(|t| t.name).collect()
@@ -41,7 +45,7 @@ pub fn theme_exists(name: &str) -> bool {
 
 /// Current terminal size in columns and rows.
 pub fn terminal_size() -> Option<(u16, u16)> {
-    ratatui::crossterm::terminal::size().ok()
+    terminal::size().ok()
 }
 
 pub struct Options {
@@ -50,11 +54,11 @@ pub struct Options {
     pub hooks_installed: bool,
     pub editor: String,
     pub spawn_daemon: Option<SpawnFn>,
-    /// Pane to select on start.
+    /// Pane or session to select on start.
     pub select: Option<String>,
     /// Theme name; otherwise the saved choice, otherwise matched to the terminal.
     pub theme: Option<String>,
-    /// Tab to show on start: terminal, conversation, overview or activity.
+    /// Tab to show on start: terminal, conversation or overview.
     pub tab: Option<String>,
 }
 
@@ -63,7 +67,6 @@ fn parse_tab(name: &str) -> Option<Tab> {
         "terminal" | "term" => Some(Tab::Terminal),
         "conversation" | "conv" | "chat" => Some(Tab::Conversation),
         "overview" => Some(Tab::Overview),
-        "activity" => Some(Tab::Activity),
         _ => None,
     }
 }
@@ -74,11 +77,16 @@ fn preselect(app: &mut App, select: Option<&str>, tab: Option<&str>) {
         if app.pane(q).is_some() {
             app.selected = Some(RowRef::Pane(q.to_string()));
         } else if let Some(s) = app.snap.as_ref().and_then(|s| s.sessions.iter().find(|s| s.id.starts_with(q))) {
-            app.selected = Some(RowRef::Session(s.id.clone()));
+            let r = match s.terminal.pane_id.clone().filter(|p| app.pane(p).is_some()) {
+                Some(p) => RowRef::Pane(p),
+                None => RowRef::Session(s.id.clone()),
+            };
+            app.selected = Some(r);
         }
     }
     if let Some(tab) = tab.and_then(parse_tab) {
         app.set_tab(tab);
+        app.focus = Focus::Main;
     }
 }
 
@@ -92,7 +100,7 @@ fn saved_theme() -> Option<String> {
     v.get("theme")?.as_str().map(str::to_string)
 }
 
-fn save_theme(name: &str) {
+pub(crate) fn save_theme(name: &str) {
     let path = config_path();
     let mut v: serde_json::Value = std::fs::read_to_string(&path)
         .ok()
@@ -116,18 +124,28 @@ fn choose_theme(explicit: Option<&str>, detect: bool) {
     theme::set(index);
 }
 
-/// Connection state the main loop needs besides `App`.
-struct Ctx {
+/// Connection state the input code needs besides `App`.
+pub(crate) struct Ctx {
     stream: Option<client::Stream>,
-    sent_size: Option<(String, u16, u16)>,
+    pub(crate) sent_size: Option<(String, u16, u16)>,
 }
 
 impl Ctx {
-    fn send(&self, msg: ClientMsg) {
+    pub(crate) fn send(&self, msg: ClientMsg) {
         if let Some(s) = &self.stream {
             s.send(msg);
         }
     }
+}
+
+/// Put the terminal back the way we found it.
+fn restore_terminal(enhanced: bool) {
+    let mut out = std::io::stdout();
+    if enhanced {
+        let _ = execute!(out, PopKeyboardEnhancementFlags);
+    }
+    let _ = execute!(out, DisableMouseCapture, DisableBracketedPaste);
+    ratatui::restore();
 }
 
 pub fn run(mut opts: Options) -> Result<()> {
@@ -150,52 +168,86 @@ pub fn run(mut opts: Options) -> Result<()> {
     }
     preselect(&mut app, opts.select.as_deref(), opts.tab.as_deref());
 
-    let mut terminal = ratatui::init();
+    let mut term = ratatui::init();
     choose_theme(opts.theme.as_deref(), true);
     let mut out = std::io::stdout();
-    let _ = execute!(out, EnableBracketedPaste);
-    // Lets us tell Shift+Enter from Enter, among others, where supported.
+    let _ = execute!(out, EnableBracketedPaste, EnableMouseCapture);
     let enhanced = matches!(terminal::supports_keyboard_enhancement(), Ok(true));
     if enhanced {
         let _ = execute!(out, PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES));
     }
+    // A panic must not leave the shell with mouse reporting on.
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_terminal(enhanced);
+        previous(info);
+    }));
+
+    let mut input = input::Input::default();
+    let mut dirty = true;
+    let mut last_draw = Instant::now() - Duration::from_secs(1);
+    let frame = Duration::from_millis(8);
 
     let result = (|| -> Result<()> {
         loop {
             app.now = now_ms();
             while let Ok(msg) = rx.try_recv() {
                 on_incoming(&mut app, msg);
+                dirty = true;
             }
             if let Some(d) = demo.as_mut()
                 && d.tick(app.now)
             {
                 app.set_snapshot(d.snap.clone());
+                dirty = true;
             }
-            sync_attach(&mut app, &mut ctx);
-            terminal.draw(|f| ui::draw(f, &mut app))?;
-            sync_size(&mut app, &mut ctx);
-
-            let wait = if app.mode == Mode::Terminal { 16 } else { 60 };
-            if !event::poll(Duration::from_millis(wait))? {
+            // Spinners and timers move a few times a second; nothing else redraws idly.
+            let since = last_draw.elapsed();
+            let animating = app.counts().get(&Status::Working).copied().unwrap_or(0) > 0
+                || app.toast.as_ref().is_some_and(|t| app.now.saturating_sub(t.at) < t.ttl.min(10_000));
+            if (animating && since >= Duration::from_millis(100)) || since >= Duration::from_secs(1) {
+                dirty = true;
+            }
+            if dirty && since >= frame {
+                sync_attach(&mut app, &mut ctx);
+                app.mark_seen();
+                std::io::stdout().sync_update(|_| term.draw(|f| ui::draw(f, &mut app)).map(|_| ()))??;
+                sync_size(&mut app, &mut ctx);
+                app.save_seen();
+                dirty = false;
+                last_draw = Instant::now();
+            }
+            let wait = if dirty {
+                frame.saturating_sub(last_draw.elapsed())
+            } else if animating {
+                Duration::from_millis(100)
+            } else {
+                Duration::from_millis(250)
+            };
+            if !event::poll(wait)? {
                 continue;
             }
             // Handle everything already queued before drawing again, so fast
-            // typing and pastes don't lag behind.
+            // typing, pastes and wheel bursts don't lag behind.
             loop {
                 match event::read()? {
                     Event::Key(key) if key.kind != KeyEventKind::Release => {
-                        if app.mode == Mode::Terminal {
-                            terminal_key(&mut app, key, &ctx);
-                        } else if key.kind != KeyEventKind::Press {
-                        } else if app.theme_picker.is_some() {
-                            picker_key(&mut app, key);
-                        } else if app.mode == Mode::Reading {
-                            reading_key(&mut app, key);
-                        } else if handle_key(&mut app, key, &opts, &ctx) {
+                        if (app.typing || key.kind == KeyEventKind::Press)
+                            && input::on_key(&mut app, key, &opts, &ctx, &mut input)
+                        {
                             return Ok(());
                         }
+                        dirty = true;
                     }
-                    Event::Paste(text) if app.mode == Mode::Terminal => paste(&mut app, &text, &ctx),
+                    Event::Mouse(m) if m.kind != MouseEventKind::Moved => {
+                        input::on_mouse(&mut app, m, &opts, &ctx, &mut input);
+                        dirty = true;
+                    }
+                    Event::Paste(text) => {
+                        input::paste(&mut app, &text, &ctx);
+                        dirty = true;
+                    }
+                    Event::Resize(..) => dirty = true,
                     _ => {}
                 }
                 if !event::poll(Duration::ZERO)? {
@@ -204,11 +256,10 @@ pub fn run(mut opts: Options) -> Result<()> {
             }
         }
     })();
-    if enhanced {
-        let _ = execute!(out, PopKeyboardEnhancementFlags);
-    }
-    let _ = execute!(out, DisableBracketedPaste);
-    ratatui::restore();
+    app.seen_dirty = true;
+    app.save_seen();
+    let _ = std::panic::take_hook();
+    restore_terminal(enhanced);
     result
 }
 
@@ -220,11 +271,44 @@ fn load_demo_screens(app: &mut App) {
     }
 }
 
+fn blocked_ids(app: &App) -> HashSet<String> {
+    app.snap
+        .as_ref()
+        .map(|s| {
+            s.sessions
+                .iter()
+                .filter(|s| matches!(s.state, SessionState::NeedsYou { .. }))
+                .map(|s| s.id.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn on_incoming(app: &mut App, msg: Incoming) {
     match msg {
         Incoming::Snapshot(s) => {
+            let first = app.snap.is_none();
+            let before = blocked_ids(app);
             app.conn = Conn::Live;
             app.set_snapshot(*s);
+            // Tell the user when something starts needing them, unless
+            // they're looking at it already (Herdr's attention toasts).
+            if !first {
+                let watching = app.selected_session_id();
+                for id in blocked_ids(app).difference(&before) {
+                    if watching.as_deref() == Some(id.as_str()) {
+                        continue;
+                    }
+                    if let Some(s) = app.session(id) {
+                        let msg = format!(
+                            "{} › {} needs you · n",
+                            aulora_core::util::basename(&s.project_root),
+                            s.display_title()
+                        );
+                        app.alert(msg);
+                    }
+                }
+            }
         }
         Incoming::Connecting => app.conn = Conn::Connecting,
         Incoming::Offline(why) => app.conn = Conn::Offline(why),
@@ -285,354 +369,6 @@ fn sync_size(app: &mut App, ctx: &mut Ctx) {
     ctx.sent_size = Some((id, cols, rows));
 }
 
-fn terminal_key(app: &mut App, key: KeyEvent, ctx: &Ctx) {
-    let Some((id, _)) = app.attached.clone() else {
-        app.mode = Mode::Navigate;
-        return;
-    };
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-    if ctrl && matches!(key.code, KeyCode::Char('q') | KeyCode::Char('Q')) {
-        app.mode = Mode::Navigate;
-        return;
-    }
-    let Some(t) = app.terms.get_mut(&id) else { return };
-    // Shift+PgUp/PgDn scroll back locally, like most terminals.
-    if shift && matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) {
-        let page = t.parser.screen().size().0.get() as i32 / 2;
-        t.scroll_by(if key.code == KeyCode::PageUp { page } else { -page });
-        return;
-    }
-    if t.scrolled() > 0 {
-        t.reset_scroll();
-    }
-    let app_cursor = t.parser.screen().application_cursor();
-    if let Some(bytes) = keys::encode(key, app_cursor) {
-        ctx.send(ClientMsg::Input { pane_id: id, data: proto::encode(&bytes) });
-    }
-}
-
-fn paste(app: &mut App, text: &str, ctx: &Ctx) {
-    let Some((id, _)) = app.attached.clone() else { return };
-    let bracketed = app.terms.get(&id).is_some_and(|t| t.parser.screen().bracketed_paste());
-    ctx.send(ClientMsg::Input { pane_id: id, data: proto::encode(&keys::paste(text, bracketed)) });
-}
-
-fn picker_key(app: &mut App, key: KeyEvent) {
-    let Some(sel) = app.theme_picker else { return };
-    let n = theme::THEMES.len();
-    match key.code {
-        KeyCode::Down | KeyCode::Char('j') => {
-            app.theme_picker = Some((sel + 1) % n);
-            theme::set((sel + 1) % n);
-        }
-        KeyCode::Up | KeyCode::Char('k') => {
-            app.theme_picker = Some((sel + n - 1) % n);
-            theme::set((sel + n - 1) % n);
-        }
-        KeyCode::Enter => {
-            let name = theme::get().name;
-            save_theme(name);
-            app.theme_picker = None;
-            app.toast(format!("Theme: {name}"));
-        }
-        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('t') => {
-            theme::set(app.theme_before);
-            app.theme_picker = None;
-        }
-        _ => {}
-    }
-}
-
-/// Copy text to the clipboard through the terminal (OSC 52), which works
-/// over SSH too.
-fn copy_to_clipboard(text: &str) {
-    use std::io::Write;
-    let mut out = std::io::stdout();
-    let _ = write!(out, "\x1b]52;c;{}\x07", proto::encode(text.as_bytes()));
-    let _ = out.flush();
-}
-
-fn reading_key(app: &mut App, key: KeyEvent) {
-    let Some(sid) = app.selected_session_id() else {
-        app.mode = Mode::Navigate;
-        return;
-    };
-    if app.searching {
-        match key.code {
-            KeyCode::Esc => app.searching = false,
-            KeyCode::Backspace => {
-                app.conv_query.pop();
-            }
-            KeyCode::Enter => {
-                app.searching = false;
-                let q = app.conv_query.clone();
-                let found = app.conversation(&sid).map(|c| {
-                    c.search = q;
-                    c.find_next()
-                });
-                if found == Some(false) {
-                    app.toast("No matches");
-                }
-            }
-            KeyCode::Char(c) => app.conv_query.push(c),
-            _ => {}
-        }
-        return;
-    }
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    if matches!(key.code, KeyCode::Esc | KeyCode::Left | KeyCode::Char('q')) || (ctrl && key.code == KeyCode::Char('q'))
-    {
-        app.mode = Mode::Navigate;
-        return;
-    }
-    let mut copied = None;
-    let mut not_found = false;
-    if let Some(c) = app.conversation(&sid) {
-        match key.code {
-            KeyCode::Down | KeyCode::Char('j') => c.move_by(1),
-            KeyCode::Up | KeyCode::Char('k') => c.move_by(-1),
-            KeyCode::PageDown | KeyCode::Char(' ') => c.move_by(5),
-            KeyCode::PageUp => c.move_by(-5),
-            KeyCode::Home | KeyCode::Char('g') => c.select(0),
-            KeyCode::End | KeyCode::Char('G') => c.select_last(),
-            KeyCode::Char('[') => c.jump_prompt(false),
-            KeyCode::Char(']') => c.jump_prompt(true),
-            KeyCode::Enter | KeyCode::Right => c.toggle(),
-            KeyCode::Char('n') => not_found = !c.find_next(),
-            KeyCode::Char('y') => copied = c.entries.get(c.selected).map(|e| e.plain()),
-            KeyCode::Char('/') => {}
-            _ => {}
-        }
-    }
-    if key.code == KeyCode::Char('/') {
-        app.searching = true;
-        app.conv_query.clear();
-    }
-    if not_found {
-        app.toast("No more matches");
-    }
-    if let Some(text) = copied {
-        copy_to_clipboard(&text);
-        app.toast("Copied");
-    }
-}
-
-fn new_pane(app: &mut App, opts: &Options, ctx: &Ctx, kind: PaneKind) {
-    let label = if kind == PaneKind::Claude { "Claude Code" } else { "a shell" };
-    if matches!(app.conn, Conn::Demo) {
-        app.toast(format!("Would start {label} (demo)"));
-        return;
-    }
-    let cwd = app.selected_root().or_else(|| std::env::current_dir().ok().map(|d| d.to_string_lossy().to_string()));
-    let Some(cwd) = cwd else { return };
-    // Start at the size it will be drawn at, so the first screen fits.
-    let (cols, rows) = match &ctx.sent_size {
-        Some((_, c, r)) => (*c, *r),
-        None => terminal_size()
-            .map(|(w, h)| (w.saturating_sub(if w >= 118 { 70 } else { 4 }), h.saturating_sub(6)))
-            .unwrap_or((100, 30)),
-    };
-    let req = NewPane { cwd, kind, args: vec![], name: None, cols: cols.max(20), rows: rows.max(5) };
-    match client::command(&opts.socket, &ClientMsg::NewPane(req)) {
-        Some(ServerMsg::PaneCreated { pane_id }) => {
-            app.pending_select = Some((pane_id, true));
-            app.toast(format!("Started {label}"));
-        }
-        Some(ServerMsg::Error { message }) => app.toast(format!("Couldn't start {label}: {message}")),
-        _ => app.toast("The daemon didn't answer"),
-    }
-}
-
-fn pane_action(app: &mut App, opts: &Options, msg: ClientMsg, done: &str) {
-    match client::command(&opts.socket, &msg) {
-        Some(ServerMsg::Error { message }) => app.toast(message),
-        Some(_) => app.toast(done.to_string()),
-        None => app.toast("The daemon didn't answer"),
-    }
-}
-
-/// Navigate-mode keys for the selected pane. Returns true if handled.
-fn pane_key(app: &mut App, key: KeyEvent, opts: &Options) -> bool {
-    let Some(p) = app.selected_pane().cloned() else { return false };
-    let demo = matches!(app.conn, Conn::Demo);
-    match key.code {
-        KeyCode::Enter if app.current_tab() != Tab::Terminal => return false,
-        KeyCode::Enter if demo => app.toast("Demo panes are pictures; run aulora for real ones"),
-        KeyCode::Enter => {
-            if p.is_running() {
-                app.mode = Mode::Terminal;
-            } else {
-                app.toast("The process has exited. Press r to restart it.");
-            }
-        }
-        KeyCode::Char('z') => app.zoom = !app.zoom,
-        KeyCode::Esc if app.zoom => app.zoom = false,
-        KeyCode::PageUp | KeyCode::PageDown => {
-            if let Some(t) = app.terms.get_mut(&p.id) {
-                let page = t.parser.screen().size().0.get() as i32 / 2;
-                t.scroll_by(if key.code == KeyCode::PageUp { page } else { -page });
-            }
-        }
-        KeyCode::End if app.terms.get(&p.id).is_some_and(|t| t.scrolled() > 0) => {
-            if let Some(t) = app.terms.get_mut(&p.id) {
-                t.reset_scroll();
-            }
-        }
-        KeyCode::Char('x') if !demo => {
-            if p.is_running() {
-                if app.confirmed('x', &p.id, &format!("Press x again to kill {}", p.name)) {
-                    pane_action(app, opts, ClientMsg::KillPane { pane_id: p.id.clone() }, "Stopped");
-                }
-            } else {
-                pane_action(app, opts, ClientMsg::ClosePane { pane_id: p.id.clone() }, "Closed");
-            }
-        }
-        KeyCode::Char('r') if !demo => {
-            if p.is_running() {
-                app.toast("Still running. Kill it first with x.");
-            } else {
-                pane_action(app, opts, ClientMsg::RestartPane { pane_id: p.id.clone() }, "Restarted");
-            }
-        }
-        _ => return false,
-    }
-    true
-}
-
-/// Returns true to quit.
-fn handle_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx) -> bool {
-    if app.help {
-        app.help = false;
-        return false;
-    }
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-        return true;
-    }
-    if app.filtering {
-        match key.code {
-            KeyCode::Esc => {
-                app.filter.clear();
-                app.filtering = false;
-            }
-            KeyCode::Enter => app.filtering = false,
-            KeyCode::Backspace => {
-                app.filter.pop();
-            }
-            KeyCode::Char(c) => app.filter.push(c),
-            _ => {}
-        }
-        app.move_selection(0);
-        return false;
-    }
-    if pane_key(app, key, opts) {
-        return false;
-    }
-    match key.code {
-        KeyCode::Char('q') => return true,
-        KeyCode::Esc if !app.filter.is_empty() => app.filter.clear(),
-        KeyCode::Down | KeyCode::Char('j') => app.move_selection(1),
-        KeyCode::Up | KeyCode::Char('k') => app.move_selection(-1),
-        KeyCode::PageDown => app.move_selection(8),
-        KeyCode::PageUp => app.move_selection(-8),
-        KeyCode::Char('g') | KeyCode::Home => app.select_edge(false),
-        KeyCode::Char('G') | KeyCode::End => app.select_edge(true),
-        KeyCode::Tab => app.cycle_tab(1),
-        KeyCode::BackTab => app.cycle_tab(-1),
-        KeyCode::Char(c @ '1'..='4') => {
-            if let Some(tab) = app.tabs().get(c as usize - '1' as usize).copied() {
-                app.set_tab(tab);
-            }
-        }
-        KeyCode::Char('J') => app.move_project(1),
-        KeyCode::Char('K') => app.move_project(-1),
-        KeyCode::Char('t') => {
-            app.theme_before = theme::current_index();
-            app.theme_picker = Some(theme::current_index());
-        }
-        KeyCode::Char('n') => app.next_attention(),
-        KeyCode::Char('/') => app.filtering = true,
-        KeyCode::Char('?') => app.help = true,
-        KeyCode::Char('c') => new_pane(app, opts, ctx, PaneKind::Shell),
-        KeyCode::Char('C') => new_pane(app, opts, ctx, PaneKind::Claude),
-        KeyCode::Char('z') => app.toast("Select a pane to zoom it"),
-        KeyCode::Char('h') => {
-            app.show_history = !app.show_history;
-            app.move_selection(0);
-            let n = app.counts().history;
-            app.toast(if app.show_history {
-                format!("Showing {n} past sessions from the last 7 days")
-            } else {
-                "Hiding past sessions".into()
-            });
-        }
-        KeyCode::Char('e') => {
-            app.show_ended = !app.show_ended;
-            app.move_selection(0);
-            app.toast(if app.show_ended { "Showing ended sessions" } else { "Hiding ended sessions" });
-        }
-        KeyCode::Enter => match app.selected {
-            Some(RowRef::Project(_)) => open_in_editor(app),
-            Some(_) if app.selected_session_id().is_some() => {
-                app.set_tab(Tab::Conversation);
-                app.mode = Mode::Reading;
-            }
-            _ => {}
-        },
-        KeyCode::Char('o') => open_in_editor(app),
-        KeyCode::Char('x') => dismiss(app, opts, false),
-        KeyCode::Char('X') => dismiss(app, opts, true),
-        _ => {}
-    }
-    false
-}
-
-fn open_in_editor(app: &mut App) {
-    let Some(root) = app.selected_root() else { return };
-    let editor = app.editor.clone();
-    let name = aulora_core::util::basename(&root);
-    if matches!(app.conn, Conn::Demo) {
-        app.toast(format!("Would open {name} in {editor} (demo)"));
-        return;
-    }
-    match std::process::Command::new(&editor)
-        .arg(&root)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
-        Ok(_) => app.toast(format!("Opened {name} in {editor}")),
-        Err(e) => app.toast(format!("Couldn't run `{editor}`: {e}. Set AULORA_EDITOR.")),
-    }
-}
-
-fn dismiss(app: &mut App, opts: &Options, all: bool) {
-    if all {
-        if matches!(app.conn, Conn::Demo) {
-            app.toast("Cleared ended sessions (demo)");
-        } else {
-            client::command(&opts.socket, &ClientMsg::ClearEnded);
-            app.toast("Cleared ended sessions");
-        }
-        return;
-    }
-    let Some(RowRef::Session(id)) = app.selected.clone() else { return };
-    let ended = app.session(&id).is_some_and(|s| !s.state.is_live());
-    if !ended {
-        app.toast("Only ended sessions can be dismissed");
-        return;
-    }
-    if matches!(app.conn, Conn::Demo) {
-        app.toast("Dismissed (demo)");
-    } else {
-        client::command(&opts.socket, &ClientMsg::Dismiss { session_id: id });
-        app.toast("Dismissed");
-    }
-}
-
-/// Render a single frame as plain text (for docs, tests and debugging).
-/// `screens` holds (pane id, cols, rows, screen bytes) for panes to show.
 pub fn render_text(
     opts: &Options,
     live: Option<Snapshot>,
@@ -662,7 +398,7 @@ fn color_json(c: ratatui::style::Color) -> serde_json::Value {
         C::Rgb(r, g, b) => serde_json::json!([r, g, b]),
         C::Indexed(i) => serde_json::json!(i),
         other => {
-            let i = [
+            let named = [
                 C::Black,
                 C::Red,
                 C::Green,
@@ -679,11 +415,8 @@ fn color_json(c: ratatui::style::Color) -> serde_json::Value {
                 C::LightMagenta,
                 C::LightCyan,
                 C::White,
-            ]
-            .iter()
-            .position(|x| *x == other)
-            .unwrap_or(7);
-            serde_json::json!(i)
+            ];
+            serde_json::json!(named.iter().position(|x| *x == other).unwrap_or(7))
         }
     }
 }
@@ -698,9 +431,6 @@ fn render(
 ) -> String {
     choose_theme(opts.theme.as_deref(), false);
     let mut app = App::new(if opts.demo { Conn::Demo } else { Conn::Live }, opts.hooks_installed, opts.editor.clone());
-    if let Some(id) = &opts.select {
-        app.pending_select = Some((id.clone(), false));
-    }
     match (opts.demo, live) {
         (true, _) => {
             app.set_snapshot(demo::Demo::new().snap);
@@ -716,38 +446,32 @@ fn render(
     }
     preselect(&mut app, opts.select.as_deref(), opts.tab.as_deref());
     let mut terminal = ratatui::Terminal::new(TestBackend::new(width, height)).expect("test backend");
+    // Twice: the first frame measures views (conversation height) the second uses.
+    terminal.draw(|f| ui::draw(f, &mut app)).expect("draw");
     terminal.draw(|f| ui::draw(f, &mut app)).expect("draw");
     let buf = terminal.backend().buffer();
-    if json {
-        let mut out = String::new();
-        for y in 0..height {
+    let mut out = String::new();
+    for y in 0..height {
+        if json {
             let row: Vec<serde_json::Value> = (0..width)
                 .map(|x| {
                     let c = &buf[(x, y)];
-                    serde_json::json!([
-                        c.symbol(),
-                        color_json(c.fg),
-                        color_json(c.bg),
-                        c.modifier.contains(ratatui::style::Modifier::BOLD)
-                    ])
+                    let bold = c.modifier.contains(ratatui::style::Modifier::BOLD);
+                    serde_json::json!([c.symbol(), color_json(c.fg), color_json(c.bg), bold])
                 })
                 .collect();
             out.push_str(&serde_json::to_string(&row).unwrap_or_default());
-            out.push('\n');
-        }
-        return out;
-    }
-    let mut out = String::new();
-    for y in 0..height {
-        let mut skip = 0;
-        for x in 0..width {
-            if skip > 0 {
-                skip -= 1;
-                continue;
+        } else {
+            let mut skip = 0;
+            for x in 0..width {
+                if skip > 0 {
+                    skip -= 1;
+                    continue;
+                }
+                let sym = buf[(x, y)].symbol();
+                out.push_str(sym);
+                skip = unicode_width::UnicodeWidthStr::width(sym).saturating_sub(1);
             }
-            let sym = buf[(x, y)].symbol();
-            out.push_str(sym);
-            skip = unicode_width::UnicodeWidthStr::width(sym).saturating_sub(1);
         }
         out.push('\n');
     }

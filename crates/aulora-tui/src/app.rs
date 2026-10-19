@@ -1,26 +1,30 @@
 use std::collections::HashMap;
 
 use aulora_core::model::*;
+use ratatui::layout::Rect;
 
-use crate::conv::Conversation;
+use crate::conv::{self, Conversation};
+use crate::keymap::Scope;
 use crate::term::Term;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RowRef {
     Project(String),
     Session(String),
     Pane(String),
 }
 
-/// Where key presses go.
+impl RowRef {
+    pub fn is_project(&self) -> bool {
+        matches!(self, RowRef::Project(_))
+    }
+}
+
+/// Which region keys go to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    /// Keys drive the dashboard.
-    Navigate,
-    /// Keys go to the selected pane; Ctrl-Q returns to Navigate.
-    Terminal,
-    /// Keys move through the Conversation tab; Esc returns to Navigate.
-    Reading,
+pub enum Focus {
+    Sidebar,
+    Main,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,7 +32,6 @@ pub enum Tab {
     Terminal,
     Conversation,
     Overview,
-    Activity,
 }
 
 impl Tab {
@@ -37,7 +40,39 @@ impl Tab {
             Tab::Terminal => "Terminal",
             Tab::Conversation => "Conversation",
             Tab::Overview => "Overview",
-            Tab::Activity => "Activity",
+        }
+    }
+}
+
+/// How the agents list is ordered (Herdr's `priority` / `grouped`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sort {
+    Priority,
+    Grouped,
+}
+
+/// The five states shown everywhere (Herdr).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Status {
+    /// Needs you.
+    Blocked,
+    /// Finished a turn you haven't looked at.
+    Done,
+    Working,
+    /// Finished and seen, or waiting for a first prompt.
+    Idle,
+    /// Not running.
+    Ended,
+}
+
+impl Status {
+    pub fn word(self) -> &'static str {
+        match self {
+            Status::Blocked => "blocked",
+            Status::Done => "done",
+            Status::Working => "working",
+            Status::Idle => "idle",
+            Status::Ended => "ended",
         }
     }
 }
@@ -50,177 +85,147 @@ pub enum Conn {
     Demo,
 }
 
+/// What a screen cell belongs to, recorded during drawing for the mouse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Hit {
+    Row(RowRef),
+    SortToggle,
+    Tab(Tab),
+    Terminal(String),
+    Conversation(String),
+    NewClaude,
+    NewShell,
+    Sidebar,
+    Main,
+}
+
+pub struct Toast {
+    pub msg: String,
+    pub at: Ms,
+    pub error: bool,
+    /// How long it stays; errors stay until the next key.
+    pub ttl: Ms,
+}
+
+pub struct HelpState {
+    pub query: String,
+    pub selected: usize,
+}
+
+pub struct Confirm {
+    pub title: String,
+    pub body: String,
+    pub action: crate::ConfirmAction,
+    /// Cancel is focused unless the user moves to the action (k9s).
+    pub on_action: bool,
+}
+
 pub struct App {
     pub snap: Option<Snapshot>,
     pub conn: Conn,
     pub now: Ms,
     pub selected: Option<RowRef>,
+    pub focus: Focus,
+    /// Keys go straight to the selected pane (Terminal tab, focused).
+    pub typing: bool,
+    pub sort: Sort,
     pub show_ended: bool,
-    /// Show past sessions found in transcripts.
     pub show_history: bool,
     pub filter: String,
     pub filtering: bool,
-    pub help: bool,
-    pub toast: Option<(String, Ms)>,
+    pub help: Option<HelpState>,
+    pub toast: Option<Toast>,
     pub hooks_installed: bool,
     pub editor: String,
-    /// First row drawn in the session list.
-    pub scroll: usize,
-    pub mode: Mode,
-    /// Hide the sidebar and give the pane the whole screen.
+    pub sidebar_scroll: usize,
     pub zoom: bool,
+    pub mouse: bool,
     /// Local screens of attached panes.
     pub terms: HashMap<String, Term>,
     /// Pane (and generation) this client is attached to.
     pub attached: Option<(String, u32)>,
-    /// Select (and focus) this pane as soon as it appears.
+    /// Select (and maybe focus) this pane as soon as it appears.
     pub pending_select: Option<(String, bool)>,
     /// Size of the pane view in the last frame.
     pub view_size: Option<(String, u16, u16)>,
-    /// A destructive action waiting for a second key press.
-    pub confirm: Option<(char, String, Ms)>,
-    /// Last tab chosen for panes, sessions and projects.
+    /// Height of the conversation viewport in the last frame.
+    pub conv_height: usize,
+    /// Last tab chosen for panes.
     pub pane_tab: Tab,
-    pub session_tab: Tab,
-    pub project_tab: Tab,
-    /// Conversations by session id, with when they were last read.
-    pub convs: HashMap<String, (Conversation, Ms)>,
-    /// Open theme picker: the highlighted theme, and the one to go back to.
+    pub conversations: HashMap<String, (Conversation, Ms)>,
     pub theme_picker: Option<usize>,
     pub theme_before: usize,
-    /// Typing a search in the Conversation tab.
     pub searching: bool,
-    pub conv_query: String,
+    pub query: String,
+    /// When each session was last looked at, for the "done" state.
+    pub seen: HashMap<String, Ms>,
+    pub seen_dirty: bool,
+    /// Mouse targets from the last frame, last drawn on top.
+    pub hits: Vec<(Rect, Hit)>,
+    /// A destructive action waiting for confirmation.
+    pub confirm: Option<Confirm>,
+}
+
+fn seen_path() -> std::path::PathBuf {
+    aulora_core::paths::home().join("seen.json")
 }
 
 impl App {
     pub fn new(conn: Conn, hooks_installed: bool, editor: String) -> Self {
+        let seen = if conn == Conn::Demo {
+            HashMap::new()
+        } else {
+            std::fs::read_to_string(seen_path())
+                .ok()
+                .and_then(|t| serde_json::from_str::<HashMap<String, Ms>>(&t).ok())
+                .unwrap_or_default()
+        };
         App {
             snap: None,
             conn,
             now: now_ms(),
             selected: None,
+            focus: Focus::Sidebar,
+            typing: false,
+            sort: Sort::Priority,
             show_ended: true,
             show_history: false,
             filter: String::new(),
             filtering: false,
-            help: false,
+            help: None,
             toast: None,
             hooks_installed,
             editor,
-            scroll: 0,
-            mode: Mode::Navigate,
+            sidebar_scroll: 0,
             zoom: false,
+            mouse: true,
             terms: HashMap::new(),
             attached: None,
             pending_select: None,
             view_size: None,
-            confirm: None,
+            conv_height: 20,
             pane_tab: Tab::Terminal,
-            session_tab: Tab::Overview,
-            project_tab: Tab::Overview,
-            convs: HashMap::new(),
+            conversations: HashMap::new(),
             theme_picker: None,
             theme_before: 0,
             searching: false,
-            conv_query: String::new(),
+            query: String::new(),
+            seen,
+            seen_dirty: false,
+            hits: Vec::new(),
+            confirm: None,
         }
     }
 
-    /// Tabs offered for the selection.
-    pub fn tabs(&self) -> Vec<Tab> {
-        match &self.selected {
-            Some(RowRef::Pane(id)) => {
-                if self.pane_session(id).is_some() {
-                    vec![Tab::Terminal, Tab::Conversation, Tab::Overview, Tab::Activity]
-                } else {
-                    vec![Tab::Terminal, Tab::Activity]
-                }
-            }
-            Some(RowRef::Session(_)) => vec![Tab::Overview, Tab::Conversation, Tab::Activity],
-            Some(RowRef::Project(_)) => vec![Tab::Overview, Tab::Activity],
-            None => vec![],
-        }
-    }
-
-    pub fn current_tab(&self) -> Tab {
-        let tabs = self.tabs();
-        let pref = match &self.selected {
-            Some(RowRef::Pane(_)) => self.pane_tab,
-            Some(RowRef::Session(_)) => self.session_tab,
-            _ => self.project_tab,
-        };
-        if tabs.contains(&pref) { pref } else { tabs.first().copied().unwrap_or(Tab::Overview) }
-    }
-
-    pub fn set_tab(&mut self, tab: Tab) {
-        if !self.tabs().contains(&tab) {
+    pub fn save_seen(&mut self) {
+        if !self.seen_dirty || self.conn == Conn::Demo {
             return;
         }
-        match &self.selected {
-            Some(RowRef::Pane(_)) => self.pane_tab = tab,
-            Some(RowRef::Session(_)) => self.session_tab = tab,
-            _ => self.project_tab = tab,
-        }
-    }
-
-    /// Move through the tabs, wrapping around.
-    pub fn cycle_tab(&mut self, delta: i32) {
-        let tabs = self.tabs();
-        if tabs.is_empty() {
-            return;
-        }
-        let cur = tabs.iter().position(|t| *t == self.current_tab()).unwrap_or(0) as i32;
-        let next = (cur + delta).rem_euclid(tabs.len() as i32) as usize;
-        self.set_tab(tabs[next]);
-    }
-
-    /// The session behind the selection, if any.
-    pub fn selected_session_id(&self) -> Option<String> {
-        match &self.selected {
-            Some(RowRef::Session(id)) => Some(id.clone()),
-            Some(RowRef::Pane(id)) => self.pane_session(id).map(|s| s.id.clone()),
-            _ => None,
-        }
-    }
-
-    /// Project name and selected item, for the header.
-    pub fn breadcrumb(&self) -> Option<(String, Option<String>)> {
-        let root = self.selected_root()?;
-        let project = self.project(&root).map(|p| p.name.clone()).unwrap_or_else(|| aulora_core::util::basename(&root));
-        let item = match &self.selected {
-            Some(RowRef::Pane(id)) => self.pane(id).map(|p| p.name.clone()),
-            Some(RowRef::Session(id)) => self.session(id).map(|s| s.display_title()),
-            _ => None,
-        };
-        Some((project, item))
-    }
-
-    /// The conversation for a session, read from its transcript (and kept
-    /// up to date), or pieced together from the snapshot when there is none.
-    pub fn conversation(&mut self, session_id: &str) -> Option<&mut Conversation> {
-        let s = self.session(session_id)?.clone();
-        let now = self.now;
-        let path = s.transcript_path.clone().filter(|p| std::path::Path::new(p).is_file());
-        match path {
-            Some(p) => {
-                let entry = self.convs.entry(session_id.to_string()).or_insert_with(|| (Conversation::new(Some(p)), 0));
-                if now - entry.1 > 400 {
-                    entry.0.refresh();
-                    entry.1 = now;
-                }
-            }
-            None => {
-                let mut fresh = Conversation::from_session(&s);
-                if let Some((old, _)) = self.convs.get(session_id) {
-                    fresh.selected = old.selected.min(fresh.entries.len().saturating_sub(1));
-                    fresh.follow = old.follow;
-                    fresh.expanded = old.expanded.clone();
-                }
-                self.convs.insert(session_id.to_string(), (fresh, now));
-            }
-        }
-        self.convs.get_mut(session_id).map(|(c, _)| c)
+        self.seen_dirty = false;
+        let cutoff = self.now - 14 * 24 * 3600 * 1000;
+        self.seen.retain(|_, at| *at > cutoff);
+        let _ = aulora_core::paths::ensure_home();
+        let _ = std::fs::write(seen_path(), serde_json::to_string(&self.seen).unwrap_or_default());
     }
 
     pub fn set_snapshot(&mut self, snap: Snapshot) {
@@ -229,27 +234,34 @@ impl App {
             && self.pane(&id).is_some()
         {
             self.selected = Some(RowRef::Pane(id));
+            self.pane_tab = Tab::Terminal;
             if focus {
-                self.mode = Mode::Terminal;
+                self.focus = Focus::Main;
+                self.typing = true;
             }
             self.pending_select = None;
         }
         let rows = self.rows();
-        let valid = self.selected.as_ref().is_some_and(|s| rows.contains(s));
-        if !valid {
-            // Prefer whatever needs attention most.
-            self.selected = rows.iter().find(|r| !matches!(r, RowRef::Project(_))).cloned().or(rows.first().cloned());
+        if !self.selected.as_ref().is_some_and(|s| rows.contains(s)) {
+            // Start on whatever needs attention most.
+            self.selected = self.agents().first().cloned().or(rows.first().cloned());
         }
-        if self.mode == Mode::Terminal && self.selected_pane().is_none() {
-            self.mode = Mode::Navigate;
+        if self.typing && self.selected_pane().is_none_or(|p| !p.is_running()) {
+            self.typing = false;
         }
-        if self.mode == Mode::Reading && self.selected_session_id().is_none() {
-            self.mode = Mode::Navigate;
-        }
-        // Forget screens of panes that are gone.
         let live: std::collections::HashSet<String> =
             self.snap.as_ref().map(|s| s.panes.iter().map(|p| p.id.clone()).collect()).unwrap_or_default();
         self.terms.retain(|id, _| live.contains(id));
+    }
+
+    // --- lookups ----------------------------------------------------------
+
+    pub fn session(&self, id: &str) -> Option<&Session> {
+        self.snap.as_ref()?.sessions.iter().find(|s| s.id == id)
+    }
+
+    pub fn project(&self, root: &str) -> Option<&Project> {
+        self.snap.as_ref()?.projects.iter().find(|p| p.root == root)
     }
 
     pub fn pane(&self, id: &str) -> Option<&Pane> {
@@ -263,7 +275,7 @@ impl App {
         }
     }
 
-    /// The Claude session running in a pane, if any: live ones first, then the latest.
+    /// The Claude session running in a pane: live ones first, then the latest.
     pub fn pane_session(&self, pane_id: &str) -> Option<&Session> {
         self.snap
             .as_ref()?
@@ -273,116 +285,180 @@ impl App {
             .max_by_key(|s| (s.state.is_live(), s.last_event_at))
     }
 
+    pub fn selected_session_id(&self) -> Option<String> {
+        match &self.selected {
+            Some(RowRef::Session(id)) => Some(id.clone()),
+            Some(RowRef::Pane(id)) => self.pane_session(id).map(|s| s.id.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn root_of(&self, r: &RowRef) -> Option<String> {
+        match r {
+            RowRef::Project(root) => Some(root.clone()),
+            RowRef::Session(id) => self.session(id).map(|s| s.project_root.clone()),
+            RowRef::Pane(id) => self.pane(id).map(|p| p.project_root.clone()),
+        }
+    }
+
+    pub fn selected_root(&self) -> Option<String> {
+        self.selected.as_ref().and_then(|r| self.root_of(r))
+    }
+
+    // --- states -----------------------------------------------------------
+
+    pub fn session_status(&self, s: &Session) -> Status {
+        match &s.state {
+            SessionState::NeedsYou { .. } | SessionState::Errored { .. } => Status::Blocked,
+            SessionState::Working | SessionState::Compacting => Status::Working,
+            SessionState::YourTurn => {
+                let seen = self.seen.get(&s.id).copied().unwrap_or(0);
+                if seen >= s.state_since { Status::Idle } else { Status::Done }
+            }
+            SessionState::Idle => Status::Idle,
+            SessionState::Ended { .. } => Status::Ended,
+        }
+    }
+
+    pub fn status(&self, r: &RowRef) -> Status {
+        match r {
+            RowRef::Session(id) => self.session(id).map(|s| self.session_status(s)).unwrap_or(Status::Ended),
+            RowRef::Pane(id) => {
+                let Some(p) = self.pane(id) else { return Status::Ended };
+                if !p.is_running() {
+                    return Status::Ended;
+                }
+                match self.pane_session(id).filter(|s| s.state.is_live()) {
+                    Some(s) => self.session_status(s),
+                    None if self.now - p.last_output_at < 2_000 => Status::Working,
+                    None => Status::Idle,
+                }
+            }
+            RowRef::Project(root) => self.agents_in(root).iter().map(|a| self.status(a)).min().unwrap_or(Status::Ended),
+        }
+    }
+
+    /// When an agent last changed state, for sorting and "4m" labels.
+    pub fn since(&self, r: &RowRef) -> Ms {
+        match r {
+            RowRef::Session(id) => self.session(id).map(|s| s.state_since).unwrap_or(0),
+            RowRef::Pane(id) => match self.pane_session(id).filter(|s| s.state.is_live()) {
+                Some(s) => s.state_since,
+                None => self.pane(id).map(|p| p.exit.as_ref().map(|e| e.at).unwrap_or(p.created_at)).unwrap_or(0),
+            },
+            RowRef::Project(_) => 0,
+        }
+    }
+
+    pub fn title(&self, r: &RowRef) -> String {
+        match r {
+            RowRef::Project(root) => self.project(root).map(|p| p.name.clone()).unwrap_or_default(),
+            RowRef::Session(id) => self.session(id).map(|s| s.display_title()).unwrap_or_default(),
+            RowRef::Pane(id) => {
+                let Some(p) = self.pane(id) else { return String::new() };
+                match self.pane_session(id).filter(|s| s.state.is_live()) {
+                    Some(s) => format!("{} · {}", p.name, s.display_title()),
+                    None => p.name.clone(),
+                }
+            }
+        }
+    }
+
+    /// Mark what's on screen as seen, so "done" settles into "idle".
+    pub fn mark_seen(&mut self) {
+        if let Some(id) = self.selected_session_id()
+            && let Some(s) = self.session(&id)
+            && self.session_status(s) == Status::Done
+        {
+            self.seen.insert(id, self.now);
+            self.seen_dirty = true;
+        }
+    }
+
+    // --- sidebar contents ---------------------------------------------------
+
+    fn matches_filter(&self, r: &RowRef) -> bool {
+        if self.filter.is_empty() {
+            return true;
+        }
+        let root = self.root_of(r).unwrap_or_default();
+        let hay = format!("{} {}", aulora_core::util::basename(&root), self.title(r)).to_lowercase();
+        hay.contains(&self.filter.to_lowercase())
+    }
+
     fn in_existing_pane(&self, s: &Session) -> bool {
         s.terminal.pane_id.as_deref().is_some_and(|id| self.pane(id).is_some())
     }
 
-    fn pane_matches_filter(&self, p: &Pane) -> bool {
-        if self.filter.is_empty() {
-            return true;
-        }
-        let f = self.filter.to_lowercase();
-        let title = self.pane_session(&p.id).map(|s| s.display_title()).unwrap_or_default();
-        format!(
-            "{} {} {} {}",
-            aulora_core::util::basename(&p.project_root),
-            p.name,
-            title,
-            p.title.as_deref().unwrap_or("")
-        )
-        .to_lowercase()
-        .contains(&f)
-    }
-
-    /// Panes in a project, oldest first.
-    pub fn visible_panes(&self, root: &str) -> Vec<&Pane> {
+    /// Everything running in one project.
+    pub fn agents_in(&self, root: &str) -> Vec<RowRef> {
         let Some(snap) = &self.snap else { return vec![] };
-        snap.panes.iter().filter(|p| p.project_root == root).filter(|p| self.pane_matches_filter(p)).collect()
-    }
-
-    /// Urgency of a pane for sorting projects.
-    pub fn pane_rank(&self, p: &Pane) -> u8 {
-        match self.pane_session(&p.id) {
-            Some(s) if s.state.is_live() => s.state.rank(),
-            _ if p.is_running() => 5,
-            _ => 8,
-        }
-    }
-
-    pub fn session(&self, id: &str) -> Option<&Session> {
-        self.snap.as_ref()?.sessions.iter().find(|s| s.id == id)
-    }
-
-    pub fn project(&self, root: &str) -> Option<&Project> {
-        self.snap.as_ref()?.projects.iter().find(|p| p.root == root)
-    }
-
-    fn matches_filter(&self, s: &Session) -> bool {
-        if self.filter.is_empty() {
-            return true;
-        }
-        let f = self.filter.to_lowercase();
-        let hay = format!(
-            "{} {} {} {}",
-            aulora_core::util::basename(&s.project_root),
-            s.display_title(),
-            s.last_prompt.as_deref().unwrap_or(""),
-            s.git_branch.as_deref().unwrap_or("")
-        )
-        .to_lowercase();
-        hay.contains(&f)
-    }
-
-    /// Visible sessions, sorted by urgency then recency.
-    pub fn visible_sessions(&self, root: &str) -> Vec<&Session> {
-        let Some(snap) = &self.snap else { return vec![] };
-        let mut v: Vec<&Session> = snap
+        let panes = snap.panes.iter().filter(|p| p.project_root == root).map(|p| RowRef::Pane(p.id.clone()));
+        let sessions = snap
             .sessions
             .iter()
-            .filter(|s| s.project_root == root)
-            .filter(|s| !self.in_existing_pane(s))
+            .filter(|s| s.project_root == root && !self.in_existing_pane(s))
             .filter(|s| self.show_ended || s.state.is_live())
             .filter(|s| self.show_history || s.origin != Origin::History)
-            .filter(|s| self.matches_filter(s))
-            .collect();
-        v.sort_by_key(|s| (s.state.rank(), -s.last_event_at));
-        v
+            .map(|s| RowRef::Session(s.id.clone()));
+        panes.chain(sessions).filter(|r| self.matches_filter(r)).collect()
     }
 
-    /// Projects that have visible sessions, most urgent first.
-    pub fn visible_projects(&self) -> Vec<&Project> {
+    /// Projects with something to show, most urgent first.
+    pub fn projects(&self) -> Vec<RowRef> {
         let Some(snap) = &self.snap else { return vec![] };
-        let mut v: Vec<(&Project, u8, Ms)> = snap
+        let mut v: Vec<(Status, Ms, String)> = snap
             .projects
             .iter()
             .filter_map(|p| {
-                let ss = self.visible_sessions(&p.root);
-                let ps = self.visible_panes(&p.root);
-                let rank = ss.iter().map(|s| s.state.rank()).chain(ps.iter().map(|x| self.pane_rank(x))).min()?;
-                let last = ss
-                    .iter()
-                    .map(|s| s.last_event_at)
-                    .chain(ps.iter().map(|x| x.created_at))
-                    .max()
-                    .unwrap_or(p.last_activity);
-                Some((p, rank, last))
+                let agents = self.agents_in(&p.root);
+                if agents.is_empty() {
+                    return None;
+                }
+                let status = agents.iter().map(|a| self.status(a)).min().unwrap_or(Status::Ended);
+                let last = agents.iter().map(|a| self.since(a)).max().unwrap_or(0);
+                Some((status, last, p.root.clone()))
             })
             .collect();
-        v.sort_by_key(|(p, rank, last)| (*rank, -*last, p.name.clone()));
-        v.into_iter().map(|(p, _, _)| p).collect()
+        v.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
+        v.into_iter().map(|(_, _, root)| RowRef::Project(root)).collect()
     }
 
-    pub fn rows(&self) -> Vec<RowRef> {
-        let mut rows = Vec::new();
-        for p in self.visible_projects() {
-            rows.push(RowRef::Project(p.root.clone()));
-            for x in self.visible_panes(&p.root) {
-                rows.push(RowRef::Pane(x.id.clone()));
-            }
-            for s in self.visible_sessions(&p.root) {
-                rows.push(RowRef::Session(s.id.clone()));
+    fn by_priority(&self, rows: &mut [RowRef]) {
+        rows.sort_by(|x, y| self.status(x).cmp(&self.status(y)).then(self.since(y).cmp(&self.since(x))));
+    }
+
+    /// All agents, by priority or grouped by project.
+    pub fn agents(&self) -> Vec<RowRef> {
+        let roots: Vec<String> = self
+            .projects()
+            .into_iter()
+            .filter_map(|p| match p {
+                RowRef::Project(root) => Some(root),
+                _ => None,
+            })
+            .collect();
+        match self.sort {
+            Sort::Grouped => roots
+                .iter()
+                .flat_map(|root| {
+                    let mut a = self.agents_in(root);
+                    self.by_priority(&mut a);
+                    a
+                })
+                .collect(),
+            Sort::Priority => {
+                let mut all: Vec<RowRef> = roots.iter().flat_map(|root| self.agents_in(root)).collect();
+                self.by_priority(&mut all);
+                all
             }
         }
+    }
+
+    /// Every selectable row, in sidebar order: projects, then agents.
+    pub fn rows(&self) -> Vec<RowRef> {
+        let mut rows = self.projects();
+        rows.extend(self.agents());
         rows
     }
 
@@ -394,27 +470,38 @@ impl App {
         }
         let cur = self.selected.as_ref().and_then(|s| rows.iter().position(|r| r == s)).unwrap_or(0) as i32;
         let next = (cur + delta).clamp(0, rows.len() as i32 - 1) as usize;
-        self.selected = Some(rows[next].clone());
+        self.select(rows[next].clone());
+    }
+
+    pub fn select(&mut self, r: RowRef) {
+        if self.selected.as_ref() != Some(&r) {
+            self.typing = false;
+        }
+        self.selected = Some(r);
     }
 
     pub fn select_edge(&mut self, last: bool) {
         let rows = self.rows();
-        self.selected = if last { rows.last().cloned() } else { rows.first().cloned() };
-    }
-
-    /// Jump between projects.
-    pub fn move_project(&mut self, delta: i32) {
-        let projects: Vec<String> = self.visible_projects().iter().map(|p| p.root.clone()).collect();
-        if projects.is_empty() {
-            return;
+        if let Some(r) = if last { rows.last() } else { rows.first() } {
+            self.select(r.clone());
         }
-        let cur_root = self.selected_root();
-        let cur = cur_root.and_then(|r| projects.iter().position(|p| *p == r)).unwrap_or(0) as i32;
-        let next = (cur + delta).rem_euclid(projects.len() as i32) as usize;
-        self.selected = Some(RowRef::Project(projects[next].clone()));
     }
 
-    /// Sessions that need you, most urgent first.
+    /// Cycle through what needs you, then what finished unseen.
+    pub fn next_attention(&mut self) -> bool {
+        let mut targets: Vec<RowRef> =
+            self.agents().into_iter().filter(|r| matches!(self.status(r), Status::Blocked | Status::Done)).collect();
+        targets.sort_by_key(|r| (self.status(r), self.since(r)));
+        if targets.is_empty() {
+            return false;
+        }
+        let cur = self.selected.as_ref().and_then(|s| targets.iter().position(|r| r == s));
+        let next = cur.map(|i| (i + 1) % targets.len()).unwrap_or(0);
+        self.select(targets[next].clone());
+        true
+    }
+
+    /// Sessions that are blocked, oldest first, for the alert line.
     pub fn alerts(&self) -> Vec<&Session> {
         let Some(snap) = &self.snap else { return vec![] };
         let mut v: Vec<&Session> =
@@ -423,88 +510,125 @@ impl App {
         v
     }
 
-    /// Cycle through sessions that need you, then ones whose turn is done.
-    pub fn next_attention(&mut self) {
-        let Some(snap) = &self.snap else { return };
-        let mut targets: Vec<&Session> = snap
-            .sessions
-            .iter()
-            .filter(|s| {
-                matches!(s.state, SessionState::NeedsYou { .. } | SessionState::Errored { .. } | SessionState::YourTurn)
-            })
-            .collect();
-        targets.sort_by_key(|s| (s.state.rank(), s.state_since));
-        if targets.is_empty() {
-            self.toast("Nothing needs you right now");
-            return;
-        }
-        let row_of = |s: &Session| match s.terminal.pane_id.as_deref().filter(|id| self.pane(id).is_some()) {
-            Some(pane) => RowRef::Pane(pane.to_string()),
-            None => RowRef::Session(s.id.clone()),
-        };
-        let rows: Vec<RowRef> = targets.iter().map(|s| row_of(s)).collect();
-        let cur = self.selected.as_ref().and_then(|sel| rows.iter().position(|r| r == sel));
-        let next = cur.map(|i| (i + 1) % rows.len()).unwrap_or(0);
-        self.selected = Some(rows[next].clone());
-    }
-
-    /// Ask for the second key press of a destructive action.
-    /// Returns true when this press confirms an earlier one.
-    pub fn confirmed(&mut self, key: char, target: &str, prompt: &str) -> bool {
-        if let Some((k, t, at)) = &self.confirm
-            && *k == key
-            && t == target
-            && self.now - at < 2_500
-        {
-            self.confirm = None;
-            return true;
-        }
-        self.confirm = Some((key, target.to_string(), self.now));
-        self.toast(prompt.to_string());
-        false
-    }
-
-    pub fn selected_root(&self) -> Option<String> {
-        match &self.selected {
-            Some(RowRef::Project(r)) => Some(r.clone()),
-            Some(RowRef::Session(id)) => self.session(id).map(|s| s.project_root.clone()),
-            Some(RowRef::Pane(id)) => self.pane(id).map(|p| p.project_root.clone()),
-            None => None,
-        }
-    }
-
-    pub fn toast(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), self.now));
-    }
-
-    pub fn counts(&self) -> Counts {
-        let mut c = Counts::default();
-        if let Some(snap) = &self.snap {
-            for s in snap.sessions.iter().filter(|s| s.origin != Origin::History) {
-                match s.state {
-                    SessionState::NeedsYou { .. } => c.needs_you += 1,
-                    SessionState::Errored { .. } => c.errored += 1,
-                    SessionState::YourTurn => c.your_turn += 1,
-                    SessionState::Working | SessionState::Compacting => c.working += 1,
-                    SessionState::Idle => c.idle += 1,
-                    SessionState::Ended { .. } => c.ended += 1,
-                }
-            }
-            c.history = snap.sessions.iter().filter(|s| s.origin == Origin::History).count();
-            c.projects = self.visible_projects().len();
+    pub fn counts(&self) -> HashMap<Status, usize> {
+        let mut c = HashMap::new();
+        for r in self.agents() {
+            *c.entry(self.status(&r)).or_insert(0) += 1;
         }
         c
     }
-}
 
-#[derive(Debug, Default, Clone, Copy)]
-pub struct Counts {
-    pub needs_you: usize,
-    pub errored: usize,
-    pub your_turn: usize,
-    pub working: usize,
-    pub idle: usize,
-    pub ended: usize,
-    pub history: usize,
-    pub projects: usize,
+    pub fn history_count(&self) -> usize {
+        self.snap.as_ref().map(|s| s.sessions.iter().filter(|s| s.origin == Origin::History).count()).unwrap_or(0)
+    }
+
+    // --- tabs and focus ---------------------------------------------------
+
+    pub fn tabs(&self) -> Vec<Tab> {
+        match &self.selected {
+            Some(RowRef::Pane(id)) if self.pane_session(id).is_some() => vec![Tab::Terminal, Tab::Conversation],
+            Some(RowRef::Pane(_)) => vec![Tab::Terminal],
+            Some(RowRef::Session(_)) => vec![Tab::Conversation],
+            Some(RowRef::Project(_)) => vec![Tab::Overview],
+            None => vec![],
+        }
+    }
+
+    pub fn current_tab(&self) -> Tab {
+        let tabs = self.tabs();
+        if matches!(self.selected, Some(RowRef::Pane(_))) && tabs.contains(&self.pane_tab) {
+            return self.pane_tab;
+        }
+        tabs.first().copied().unwrap_or(Tab::Overview)
+    }
+
+    pub fn set_tab(&mut self, tab: Tab) {
+        if self.tabs().contains(&tab) {
+            if matches!(self.selected, Some(RowRef::Pane(_))) {
+                self.pane_tab = tab;
+            }
+            if tab != Tab::Terminal {
+                self.typing = false;
+            }
+        }
+    }
+
+    pub fn cycle_tab(&mut self, delta: i32) {
+        let tabs = self.tabs();
+        if tabs.len() < 2 {
+            return;
+        }
+        let cur = tabs.iter().position(|t| *t == self.current_tab()).unwrap_or(0) as i32;
+        self.set_tab(tabs[(cur + delta).rem_euclid(tabs.len() as i32) as usize]);
+    }
+
+    /// The keymap scope for where focus is now.
+    pub fn scope(&self) -> Scope {
+        match self.focus {
+            Focus::Sidebar => Scope::Sidebar,
+            Focus::Main => match self.current_tab() {
+                Tab::Terminal => Scope::Pane,
+                Tab::Conversation => Scope::Conversation,
+                Tab::Overview => Scope::Overview,
+            },
+        }
+    }
+
+    // --- conversations ------------------------------------------------------
+
+    /// A session's conversation, read from its transcript and kept current,
+    /// or pieced together from the snapshot when there's no transcript.
+    pub fn conversation(&mut self, session_id: &str) -> Option<&mut Conversation> {
+        let s = self.session(session_id)?.clone();
+        let now = self.now;
+        let notes: Vec<FeedEvent> = self
+            .snap
+            .as_ref()
+            .map(|snap| conv::feed_for(&snap.feed, session_id).into_iter().cloned().collect())
+            .unwrap_or_default();
+        let path = s.transcript_path.clone().filter(|p| std::path::Path::new(p).is_file());
+        match path {
+            Some(p) => {
+                let entry =
+                    self.conversations.entry(session_id.to_string()).or_insert_with(|| (Conversation::new(Some(p)), 0));
+                if now - entry.1 > 250 {
+                    entry.0.refresh();
+                    entry.1 = now;
+                }
+            }
+            None => {
+                let mut fresh = Conversation::from_session(&s);
+                if let Some((old, _)) = self.conversations.get(session_id) {
+                    fresh.adopt_view(old);
+                }
+                self.conversations.insert(session_id.to_string(), (fresh, now));
+            }
+        }
+        let c = &mut self.conversations.get_mut(session_id)?.0;
+        let refs: Vec<&FeedEvent> = notes.iter().collect();
+        c.add_notes(&refs);
+        Some(c)
+    }
+
+    pub fn toast(&mut self, msg: impl Into<String>) {
+        self.toast = Some(Toast { msg: msg.into(), at: self.now, error: false, ttl: 2_500 });
+    }
+
+    pub fn error(&mut self, msg: impl Into<String>) {
+        self.toast = Some(Toast { msg: msg.into(), at: self.now, error: true, ttl: Ms::MAX });
+    }
+
+    /// An agent started needing you (Herdr: 8 s, red).
+    pub fn alert(&mut self, msg: impl Into<String>) {
+        self.toast = Some(Toast { msg: msg.into(), at: self.now, error: true, ttl: 8_000 });
+    }
+
+    /// The topmost mouse target at a cell.
+    pub fn hit(&self, col: u16, row: u16) -> Option<(Rect, Hit)> {
+        self.hits
+            .iter()
+            .rev()
+            .find(|(r, _)| col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height)
+            .cloned()
+    }
 }

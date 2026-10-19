@@ -69,8 +69,8 @@ impl Demo {
         }
         self.snap.feed.extend(feed);
         let len = self.snap.feed.len();
-        if len > 300 {
-            self.snap.feed.drain(0..len - 300);
+        if len > 5_000 {
+            self.snap.feed.drain(0..len - 5_000);
         }
     }
 
@@ -367,6 +367,7 @@ impl Demo {
         d.set_tokens("f0e1d2c3-b4a5-4968-8776-655443322110", 74_000, 15_200);
 
         d.add_panes(now);
+        d.write_transcripts(now);
 
         for (id, text) in [
             (
@@ -384,6 +385,75 @@ impl Demo {
         }
         d.snap.feed.sort_by_key(|e| e.at);
         d
+    }
+
+    /// Real transcript files for a few sessions, so the Conversation tab
+    /// shows the demo through the same code as a real session.
+    fn write_transcripts(&mut self, now: Ms) {
+        let dir = std::env::temp_dir().join("aulora-demo");
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        let iso = |ms: Ms| {
+            chrono::DateTime::from_timestamp_millis(ms)
+                .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+                .unwrap_or_default()
+        };
+        let min = 60_000;
+        let mut lines: Vec<(String, Vec<String>)> = Vec::new();
+        let user = |at: Ms, text: &str| {
+            json!({"type":"user","timestamp":iso(at),"message":{"role":"user","content":text}}).to_string()
+        };
+        let say = |at: Ms, id: &str, text: &str| {
+            json!({"type":"assistant","timestamp":iso(at),"message":{"id":id,"content":[{"type":"text","text":text}]}})
+                .to_string()
+        };
+        let tool = |at: Ms, id: &str, tid: &str, name: &str, input: Value| {
+            json!({"type":"assistant","timestamp":iso(at),"message":{"id":id,"content":[{"type":"tool_use","id":tid,"name":name,"input":input}]}}).to_string()
+        };
+        let result = |tid: &str, out: &str, err: bool| {
+            json!({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":tid,"content":out,"is_error":err}]}}).to_string()
+        };
+        let mb = root("multibrain");
+        let ad = root("adarshji");
+
+        lines.push(("3f1d9a20-5b6c-4e1f-9d2a-8b7c6e5f4a31".into(), vec![
+            json!({"type":"user","timestamp":iso(now - 94 * min),"cwd":mb,"message":{"role":"user","content":"move credit deduction from the Next.js API routes into FastAPI"}}).to_string(),
+            say(now - 93 * min, "m1", "I'll find every place credits are deducted today, then move the logic behind one FastAPI endpoint."),
+            tool(now - 93 * min, "m1", "t1", "Grep", json!({"pattern":"deductCredits|balance -", "path": format!("{mb}/web")})),
+            result("t1", "Found 4 files\nweb/app/api/chat/route.ts\nweb/app/api/compare/route.ts\nweb/app/billing/page.tsx\nweb/lib/credits.ts", false),
+            tool(now - 92 * min, "m2", "t2", "Read", json!({"file_path": format!("{mb}/web/lib/credits.ts")})),
+            result("t2", &"x\n".repeat(88), false),
+            tool(now - 90 * min, "m3", "t3", "Write", json!({"file_path": format!("{mb}/api/credits/route.py"), "content": "from fastapi import APIRouter, Depends\n\nrouter = APIRouter()\n\n@router.post('/credits/deduct')\nasync def deduct(req: DeductRequest, user=Depends(current_user)):\n    cost = price(req.model, req.tokens)\n    remaining = await wallet.debit(user.id, cost)\n    return {'remaining': remaining}\n"})),
+            result("t3", "File created successfully", false),
+            tool(now - 70 * min, "m4", "t4", "Bash", json!({"command":"pytest api/tests/test_credits.py -q"})),
+            result("t4", "........................                                  [100%]\n24 passed in 1.84s", false),
+            say(now - 69 * min, "m5", "The FastAPI endpoint is live and the tests pass. **Three places** in the web app still deduct credits on the client; I'll move them next."),
+            user(now - 30 * min, "now wire the wallet page to the new endpoint"),
+            tool(now - 29 * min, "m6", "t5", "Edit", json!({"file_path": format!("{mb}/web/app/billing/page.tsx"), "old_string":"    const remaining = balance - cost\n    setBalance(remaining)", "new_string":"    const { remaining } = await deductCredits(model, tokens)\n    setBalance(remaining) // the server is the source of truth"})),
+            result("t5", "The file web/app/billing/page.tsx has been updated.", false),
+            tool(now - 20 * min, "m7", "t6", "Bash", json!({"command":"pnpm lint --fix"})),
+            result("t6", "web/app/billing/page.tsx\n  91:9  error  'cost' is assigned a value but never used  no-unused-vars\n\n✖ 1 problem (1 error, 0 warnings)", true),
+            say(now - 19 * min, "m8", "One leftover variable. Removing it and updating the page so the balance refreshes from the server after each request."),
+            tool(now - 9_000, "m9", "live1", "Edit", json!({"file_path": format!("{mb}/web/app/billing/page.tsx"), "old_string":"    const cost = estimateCost(model, tokens)\n", "new_string":""})),
+        ]));
+        lines.push(("7c8a516b-acfa-4ec0-96c2-e502e7641008".into(), vec![
+            json!({"type":"user","timestamp":iso(now - 50 * min),"cwd":ad,"message":{"role":"user","content":"remove the template SEO keywords and the SoftwareApplication schema"}}).to_string(),
+            tool(now - 49 * min, "a1", "s1", "Edit", json!({"file_path": format!("{ad}/config/site.ts"), "old_string":"    \"Next.js portfolio template\",\n    \"Free portfolio template\",\n    \"Next.js 13 template\",", "new_string":""})),
+            result("s1", "updated", false),
+            say(now - 48 * min, "a2", "Removed the template keywords from `config/site.ts` and the template schema from the home page."),
+            user(now - 2 * min, "clear the Next.js cache and rebuild so I can check the new OG image"),
+            say(now - 2 * min + 3_000, "a3", "Clearing `.next` and rebuilding:"),
+            tool(now - 42_000, "a4", "s2", "Bash", json!({"command":"rm -rf .next && pnpm build"})),
+        ]));
+        for (id, rows) in lines {
+            let path = dir.join(format!("{id}.jsonl"));
+            if std::fs::write(&path, rows.join("\n") + "\n").is_ok()
+                && let Some(s) = self.snap.sessions.iter_mut().find(|s| s.id == id)
+            {
+                s.transcript_path = Some(path.to_string_lossy().to_string());
+            }
+        }
     }
 
     fn add_panes(&mut self, now: Ms) {

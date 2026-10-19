@@ -50,6 +50,11 @@ impl Term {
         screen.set_scrollback(next);
     }
 
+    /// Lines of scrollback kept above the screen.
+    pub fn history(&self) -> usize {
+        self.parser.screen().scrollback_len()
+    }
+
     pub fn scrolled(&self) -> usize {
         self.parser.screen().scrollback()
     }
