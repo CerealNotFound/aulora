@@ -16,6 +16,21 @@ pub const FEED_LIMIT: usize = 400;
 pub const ENDED_TTL_MS: Ms = 12 * 3600 * 1000;
 /// Live-looking sessions with no PID and no events for this long are stale.
 pub const STALE_MS: Ms = 6 * 3600 * 1000;
+/// How far back past sessions are shown.
+pub const HISTORY_MS: Ms = 7 * 24 * 3600 * 1000;
+
+/// Map a status from Claude's running-session list to a session state.
+fn state_for(status: Option<&str>, turns: u32) -> SessionState {
+    match status.unwrap_or("") {
+        "busy" | "working" | "running" => SessionState::Working,
+        s if s.contains("wait") || s.contains("permission") || s.contains("input") => SessionState::NeedsYou {
+            reason: Attention::Input,
+            detail: "waiting for you (from Claude's session list)".into(),
+        },
+        _ if turns > 0 => SessionState::YourTurn,
+        _ => SessionState::Idle,
+    }
+}
 
 pub struct Hub {
     pub started_at: Ms,
@@ -24,6 +39,8 @@ pub struct Hub {
     pub projects: HashMap<String, Project>,
     pub feed: VecDeque<FeedEvent>,
     pub panes: HashMap<String, Pane>,
+    /// History sessions the user dismissed; not rediscovered.
+    dismissed: std::collections::HashSet<String>,
     transcripts: HashMap<String, (transcript::Cursor, transcript::Summary)>,
     store: Sender<StoreCmd>,
 }
@@ -37,6 +54,7 @@ impl Hub {
             projects: HashMap::new(),
             feed: feed.into_iter().collect(),
             panes: HashMap::new(),
+            dismissed: Default::default(),
             transcripts: HashMap::new(),
             store,
         };
@@ -113,11 +131,97 @@ impl Hub {
         match transcript::read_new(&path, &mut entry.0, &mut entry.1) {
             Ok(true) => {
                 let before = sess.clone();
-                entry.1.apply_to(sess);
+                // Without hooks, the transcript is the only source of counts.
+                if sess.origin == Origin::Hooks {
+                    entry.1.apply_to(sess);
+                } else {
+                    entry.1.apply_history(sess);
+                }
                 *sess != before
             }
             _ => false,
         }
+    }
+
+    pub fn knows(&self, id: &str) -> bool {
+        self.sessions.contains_key(id) || self.dismissed.contains(id)
+    }
+
+    pub fn transcript_path(&self, id: &str) -> Option<String> {
+        self.sessions.get(id).and_then(|s| s.transcript_path.clone())
+    }
+
+    /// A session found in Claude's running-session list. Hooks win: this only
+    /// fills in sessions that no hook has described yet. Returns true when
+    /// something changed.
+    pub fn upsert_running(&mut self, r: &crate::discover::Running, root: &str, transcript: Option<String>) -> bool {
+        let id = r.session_id.clone();
+        if let Some(s) = self.sessions.get_mut(&id) {
+            if s.origin == Origin::Hooks {
+                if s.pid.is_none() && s.state.is_live() {
+                    s.pid = Some(r.pid);
+                    return true;
+                }
+                return false;
+            }
+            let before = s.clone();
+            s.origin = Origin::Running;
+            s.pid = Some(r.pid);
+            let next = state_for(r.status.as_deref(), s.turns);
+            if !s.state.same_kind(&next) {
+                s.state_since = r.status_updated_at.unwrap_or_else(now_ms);
+            }
+            s.state = next;
+            if s.transcript_path.is_none() {
+                s.transcript_path = transcript;
+            }
+            let changed = *s != before;
+            self.refresh_transcript(&id);
+            if changed {
+                self.persist(&id);
+            }
+            return changed;
+        }
+        let started = r.started_at.unwrap_or_else(now_ms);
+        let mut s = Session::new(&id, root, &r.cwd, started);
+        s.origin = Origin::Running;
+        s.pid = Some(r.pid);
+        s.transcript_path = transcript;
+        s.state_since = r.status_updated_at.unwrap_or(started);
+        self.sessions.insert(id.clone(), s);
+        self.refresh_transcript(&id);
+        if let Some(s) = self.sessions.get_mut(&id) {
+            s.state = state_for(r.status.as_deref(), s.turns);
+            let at = s.last_event_at;
+            self.ensure_project(root, at);
+        }
+        self.persist(&id);
+        true
+    }
+
+    /// A past session read from its transcript. Returns true if it was added.
+    pub fn add_history(
+        &mut self,
+        id: &str,
+        path: &str,
+        root: &str,
+        cursor: transcript::Cursor,
+        summary: transcript::Summary,
+    ) -> bool {
+        if self.knows(id) {
+            return false;
+        }
+        let cwd = summary.cwd.clone().unwrap_or_else(|| root.to_string());
+        let mut s = Session::new(id, root, &cwd, summary.first_at.unwrap_or(0));
+        s.origin = Origin::History;
+        s.transcript_path = Some(path.to_string());
+        summary.apply_history(&mut s);
+        let at = s.last_event_at;
+        self.sessions.insert(id.to_string(), s);
+        self.transcripts.insert(id.to_string(), (cursor, summary));
+        self.ensure_project(root, at);
+        self.persist(id);
+        true
     }
 
     pub fn live_pids(&self) -> Vec<u32> {
@@ -177,7 +281,14 @@ impl Hub {
         }
     }
 
+    /// The user removed a session: keep it from being rediscovered.
     pub fn dismiss(&mut self, id: &str) -> bool {
+        self.dismissed.insert(id.to_string());
+        self.remove(id)
+    }
+
+    /// Forget a session. Expired ones can come back as history.
+    fn remove(&mut self, id: &str) -> bool {
         let removed = self.sessions.remove(id).is_some();
         if removed {
             self.transcripts.remove(id);
@@ -214,11 +325,14 @@ impl Hub {
         let expired: Vec<String> = self
             .sessions
             .values()
-            .filter(|s| !s.state.is_live() && now - s.last_event_at > ENDED_TTL_MS)
+            .filter(|s| {
+                let ttl = if s.origin == Origin::History { HISTORY_MS } else { ENDED_TTL_MS };
+                !s.state.is_live() && now - s.last_event_at > ttl
+            })
             .map(|s| s.id.clone())
             .collect();
         for id in expired {
-            changed |= self.dismiss(&id);
+            changed |= self.remove(&id);
         }
         changed
     }

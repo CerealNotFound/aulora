@@ -1,6 +1,7 @@
 //! The aulora daemon. Receives hook events over a Unix socket, keeps the
 //! state of every Claude Code session, and streams snapshots to clients.
 
+pub mod discover;
 pub mod git;
 pub mod hub;
 pub mod procs;
@@ -273,6 +274,7 @@ pub async fn run() -> Result<()> {
     tokio::spawn(git_loop(shared.clone()));
     tokio::spawn(liveness_loop(shared.clone()));
     tokio::spawn(transcript_loop(shared.clone()));
+    tokio::spawn(discover_loop(shared.clone()));
 
     loop {
         tokio::select! {
@@ -516,6 +518,82 @@ async fn git_loop(shared: Arc<Shared>) {
             _ = tokio::time::sleep(Duration::from_secs(3)) => {}
             _ = shared.git_kick.notified() => {}
         }
+    }
+}
+
+/// Pick up sessions hooks haven't reported: running ones from Claude's
+/// session list every few seconds, past ones from transcripts every minute.
+async fn discover_loop(shared: Arc<Shared>) {
+    let mut live = procs::Liveness::default();
+    let mut scanned: HashMap<std::path::PathBuf, i64> = HashMap::new();
+    let mut tick = 0u64;
+    loop {
+        let mut changed = false;
+        let mut new_project = false;
+
+        let entries = tokio::task::spawn_blocking(discover::running).await.unwrap_or_default();
+        let pids: Vec<u32> = entries.iter().map(|e| e.pid).collect();
+        let dead = live.dead(&pids);
+        for e in entries.iter().filter(|e| !dead.contains(&e.pid)) {
+            let root = shared.root_for(&e.cwd).await;
+            let known_path = shared.hub.lock().unwrap().transcript_path(&e.session_id);
+            let transcript = match known_path {
+                Some(p) => Some(p),
+                None => {
+                    let id = e.session_id.clone();
+                    tokio::task::spawn_blocking(move || discover::find_transcript(&id))
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|p| p.to_string_lossy().to_string())
+                }
+            };
+            let mut hub = shared.hub.lock().unwrap();
+            let is_new = !hub.knows(&e.session_id);
+            if hub.upsert_running(e, &root, transcript) {
+                changed = true;
+                new_project |= is_new;
+            }
+        }
+
+        if tick.is_multiple_of(30) {
+            let since = now_ms() - hub::HISTORY_MS;
+            let files = tokio::task::spawn_blocking(move || discover::transcripts(since)).await.unwrap_or_default();
+            for (id, path, mtime) in files {
+                if scanned.get(&path) == Some(&mtime) || shared.hub.lock().unwrap().knows(&id) {
+                    continue;
+                }
+                scanned.insert(path.clone(), mtime);
+                let p = path.to_string_lossy().to_string();
+                let parsed = tokio::task::spawn_blocking(move || {
+                    let (mut cur, mut sum) = (aulora_core::transcript::Cursor::default(), Default::default());
+                    aulora_core::transcript::read_new(&p, &mut cur, &mut sum).ok().map(|_| (p, cur, sum))
+                })
+                .await
+                .ok()
+                .flatten();
+                let Some((p, cur, sum)) = parsed else { continue };
+                // Transcripts without a single prompt are noise (e.g. aborted starts).
+                if sum.prompt_count == 0 {
+                    continue;
+                }
+                let Some(cwd) = sum.cwd.clone() else { continue };
+                let root = shared.root_for(&cwd).await;
+                if shared.hub.lock().unwrap().add_history(&id, &p, &root, cur, sum) {
+                    changed = true;
+                    new_project = true;
+                }
+            }
+        }
+
+        if new_project {
+            shared.git_kick.notify_one();
+        }
+        if changed {
+            shared.changed();
+        }
+        tick += 1;
+        tokio::time::sleep(Duration::from_secs(2)).await;
     }
 }
 
