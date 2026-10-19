@@ -50,6 +50,14 @@ The transcript (`transcript_path`) is read incrementally from a saved byte offse
 - Background loops: git status every 3 s for active projects (`--no-optional-locks`, so it never fights your own git commands), process liveness every 3 s (start time guards against PID reuse), transcript refresh every 2 s for busy sessions.
 - SQLite in WAL mode on a writer thread, batching writes per transaction. Sessions and the feed survive daemon restarts. Ended sessions expire after 12 hours.
 
+## Discovery
+
+Hooks only describe sessions that fire an event after the hooks are installed. `crates/aulora-daemon/src/discover.rs` fills the gaps from two files Claude Code keeps. Neither is a documented interface, so both are read best-effort and hooks always win.
+
+- `~/.claude/sessions/<pid>.json` lists running sessions with their id, folder and a busy/idle status. It's polled every 2 s. A listed session whose process is alive and that no hook has described becomes a session with origin `running`. Its state follows the listed status, and its counts come from its transcript.
+- `~/.claude/projects/<dir>/<id>.jsonl` transcripts from the last 7 days are scanned every minute, skipping files whose mtime hasn't changed. Ones with at least one prompt become sessions with origin `history`: ended, but with their title, prompts, last reply, tool calls and edited files rebuilt from the transcript. The dashboard hides them until you press `h`.
+- The first hook event for a session switches its origin to `hooks`. Dismissing a session keeps it from being rediscovered, while sessions that simply expire can come back as history.
+
 ## Panes
 
 The daemon runs terminals itself (`crates/aulora-daemon/src/pty.rs`), so they outlive any client.

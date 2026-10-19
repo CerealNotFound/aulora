@@ -92,11 +92,11 @@ Sessions show up as soon as they start or you send a prompt. To try the dashboar
 |---|---|
 | `aulora` | Open the dashboard. Starts the daemon if it isn't running. |
 | `aulora demo` | Dashboard with sample sessions. |
-| `aulora status [--json]` | Print every session and its state. |
+| `aulora status [--json] [--all]` | Print every live session and its state. `--all` adds past sessions. |
 | `aulora hooks install [--dry-run]` | Add the hooks. Leaves your other hooks and settings untouched. |
 | `aulora hooks uninstall` | Remove only aulora's hooks. |
 | `aulora hooks status` | Show whether the hooks are installed. |
-| `aulora daemon start\|stop\|status` | Control the background daemon. |
+| `aulora daemon start\|stop\|status` | Control the background daemon. `stop` refuses while panes run, unless `--force`. |
 | `aulora doctor` | Check hooks, daemon, editor and `claude` on PATH. |
 | `aulora new [--claude] [-n NAME] [--cwd DIR] [-a] [-- CMD…]` | Start a pane: a shell, Claude Code, or any command. `-a` attaches right away. |
 | `aulora ls [--json]` | List panes. |
@@ -120,6 +120,7 @@ Sessions show up as soon as they start or you send a prompt. To try the dashboar
 | <kbd>n</kbd> | Cycle through sessions that need you |
 | <kbd>/</kbd> | Filter by project, title, prompt or branch |
 | <kbd>e</kbd> | Show / hide ended sessions |
+| <kbd>h</kbd> | Show / hide past sessions from the last 7 days |
 | <kbd>x</kbd> | Kill a pane (press twice), close an exited one, or dismiss an ended session |
 | <kbd>X</kbd> | Dismiss all ended sessions |
 | <kbd>?</kbd> | Help |
@@ -136,7 +137,8 @@ Sessions show up as soon as they start or you send a prompt. To try the dashboar
 1. Claude Code runs `aulora hook` on each event: session start, prompt, tool call, permission request, notification, stop, compaction, subagent start and stop, and session end. The hook reads the event, drops large fields like file contents and tool output, and sends it to the daemon in about 4 ms. It never prints anything. If the daemon is down, the event is saved and the daemon is started.
 2. The daemon turns events into session state, reads new lines from each session's transcript (for the AI title, model and token usage), polls `git status` for active projects, and checks whether each Claude process is still alive.
 3. The dashboard subscribes over the socket and gets a fresh snapshot after every change.
-4. Panes are terminals the daemon runs itself. It keeps a copy of each screen, so the dashboard or `aulora attach` can show a pane instantly, and keystrokes go back the same way.
+4. It also reads Claude Code's list of running sessions and recent transcripts, so sessions that were already open when you installed the hooks show up, and so do past sessions from the last 7 days (<kbd>h</kbd>).
+5. Panes are terminals the daemon runs itself. It keeps a copy of each screen, so the dashboard or `aulora attach` can show a pane instantly, and keystrokes go back the same way.
 
 Everything stays on your machine. aulora makes no network requests.
 
