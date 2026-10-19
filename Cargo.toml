@@ -29,6 +29,7 @@ unicode-width = "0.2"
 dirs = "6"
 portable-pty = "0.9"
 vt100 = "0.18"
+base64 = "0.23"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

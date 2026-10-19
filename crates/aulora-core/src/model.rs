@@ -359,6 +359,9 @@ pub struct Snapshot {
     pub sessions: Vec<Session>,
     /// Newest last.
     pub feed: Vec<FeedEvent>,
+    /// Terminals run by the daemon.
+    #[serde(default)]
+    pub panes: Vec<Pane>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -11,26 +11,49 @@ use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use aulora_core::model::now_ms;
+use aulora_core::model::{Pane, PaneKind, Snapshot, now_ms};
 use aulora_core::paths;
-use aulora_core::proto::{ClientMsg, HookEnvelope, PROTOCOL_VERSION, ServerMsg};
+use aulora_core::proto::{self, ClientMsg, HookEnvelope, NewPane, PROTOCOL_VERSION, ServerMsg};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{Notify, watch};
+use tokio::sync::broadcast::error::{RecvError, TryRecvError};
+use tokio::sync::{Notify, mpsc, watch};
 
 use crate::hub::Hub;
+use crate::pty::{PaneEvent, Proc, Spec};
 
 struct Shared {
     hub: Mutex<Hub>,
+    /// Running (or exited but still viewable) pane processes.
+    procs: Mutex<HashMap<String, Arc<Proc>>>,
     /// Bumped on every state change.
     version: watch::Sender<u64>,
     roots: Mutex<HashMap<String, String>>,
     git_kick: Notify,
     shutdown: Notify,
+}
+
+fn expand_home(dir: &str) -> String {
+    match (dir.strip_prefix('~'), std::env::var("HOME")) {
+        (Some(rest), Ok(home)) if rest.is_empty() || rest.starts_with('/') => format!("{home}{rest}"),
+        _ => dir.to_string(),
+    }
+}
+
+fn new_pane_id(taken: &HashMap<String, Arc<Proc>>) -> String {
+    let mut seed = now_ms() as u64 ^ ((std::process::id() as u64) << 32);
+    loop {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let id = format!("{:06x}", (seed >> 40) & 0xff_ffff);
+        if !taken.contains_key(&id) {
+            return id;
+        }
+    }
 }
 
 impl Shared {
@@ -63,6 +86,136 @@ impl Shared {
             self.git_kick.notify_one();
         }
         self.changed();
+    }
+
+    /// The hub's snapshot plus live numbers from the pane processes.
+    fn snapshot(&self) -> Snapshot {
+        let mut snap = self.hub.lock().unwrap().snapshot();
+        let procs = self.procs.lock().unwrap();
+        for pane in &mut snap.panes {
+            if let Some(p) = procs.get(&pane.id) {
+                pane.last_output_at = p.last_output_at();
+                pane.bytes_out = p.bytes_out.load(Ordering::Relaxed);
+                pane.title = p.title();
+                (pane.cols, pane.rows) = p.size();
+            }
+        }
+        snap
+    }
+
+    fn proc_(&self, id: &str) -> Option<Arc<Proc>> {
+        self.procs.lock().unwrap().get(id).cloned()
+    }
+
+    fn start(self: &Arc<Self>, spec: &Spec, generation: u32) -> Result<Arc<Proc>> {
+        let (on_exit, on_wake) = (Arc::downgrade(self), Arc::downgrade(self));
+        let id = spec.id.clone();
+        let proc_ = Proc::spawn(
+            spec,
+            move |exit| {
+                if let Some(s) = on_exit.upgrade()
+                    && s.hub.lock().unwrap().pane_exited(&id, generation, exit)
+                {
+                    s.changed();
+                }
+            },
+            move || {
+                if let Some(s) = on_wake.upgrade() {
+                    s.changed();
+                }
+            },
+        )?;
+        self.procs.lock().unwrap().insert(spec.id.clone(), proc_.clone());
+        Ok(proc_)
+    }
+
+    async fn new_pane(self: &Arc<Self>, req: NewPane) -> Result<String> {
+        let cwd = expand_home(req.cwd.trim_end_matches('/'));
+        let cwd = if cwd.is_empty() { "/".to_string() } else { cwd };
+        if !Path::new(&cwd).is_dir() {
+            bail!("{cwd} is not a directory");
+        }
+        if req.kind == PaneKind::Command && req.args.is_empty() {
+            bail!("a command pane needs a command to run");
+        }
+        let root = self.root_for(&cwd).await;
+        let id = new_pane_id(&self.procs.lock().unwrap());
+        let base = match (&req.name, req.kind) {
+            (Some(n), _) if !n.trim().is_empty() => n.trim().to_string(),
+            (_, PaneKind::Shell) => "shell".into(),
+            (_, PaneKind::Claude) => "claude".into(),
+            (_, PaneKind::Command) => aulora_core::util::basename(&req.args[0]),
+        };
+        let name = self.hub.lock().unwrap().pane_name(&root, &base);
+        let spec = Spec {
+            id: id.clone(),
+            cwd: cwd.clone(),
+            kind: req.kind,
+            args: req.args.clone(),
+            cols: req.cols,
+            rows: req.rows,
+        };
+        let proc_ = self.start(&spec, 0)?;
+        let now = now_ms();
+        let pane = Pane {
+            id: id.clone(),
+            project_root: root,
+            cwd,
+            name,
+            kind: req.kind,
+            args: req.args,
+            pid: proc_.pid,
+            cols: req.cols,
+            rows: req.rows,
+            created_at: now,
+            last_output_at: now,
+            bytes_out: 0,
+            title: None,
+            bell_at: None,
+            exit: None,
+            generation: 0,
+        };
+        if self.hub.lock().unwrap().add_pane(pane) {
+            self.git_kick.notify_one();
+        }
+        tracing::info!("started pane {id}");
+        self.changed();
+        Ok(id)
+    }
+
+    fn restart_pane(self: &Arc<Self>, id: &str) -> Result<()> {
+        let pane = self.hub.lock().unwrap().panes.get(id).cloned().with_context(|| format!("no pane {id}"))?;
+        if pane.is_running() {
+            bail!("pane {id} is still running");
+        }
+        let (cols, rows) = self.proc_(id).map(|p| p.size()).unwrap_or((pane.cols, pane.rows));
+        let generation = pane.generation + 1;
+        let spec = Spec { id: id.to_string(), cwd: pane.cwd, kind: pane.kind, args: pane.args, cols, rows };
+        let proc_ = self.start(&spec, generation)?;
+        if let Some(p) = self.hub.lock().unwrap().panes.get_mut(id) {
+            p.generation = generation;
+            p.exit = None;
+            p.pid = proc_.pid;
+        }
+        self.changed();
+        Ok(())
+    }
+
+    fn close_pane(&self, id: &str) -> bool {
+        if let Some(p) = self.procs.lock().unwrap().remove(id) {
+            p.kill();
+        }
+        let removed = self.hub.lock().unwrap().remove_pane(id).is_some();
+        if removed {
+            self.changed();
+        }
+        removed
+    }
+
+    fn kill_all(&self) {
+        for p in self.procs.lock().unwrap().values() {
+            p.kill();
+        }
     }
 }
 
@@ -108,6 +261,7 @@ pub async fn run() -> Result<()> {
     let (version, _) = watch::channel(0u64);
     let shared = Arc::new(Shared {
         hub: Mutex::new(hub),
+        procs: Mutex::new(HashMap::new()),
         version,
         roots: Mutex::new(HashMap::new()),
         git_kick: Notify::new(),
@@ -139,6 +293,7 @@ pub async fn run() -> Result<()> {
             _ = tokio::signal::ctrl_c() => break,
         }
     }
+    shared.kill_all();
     let _ = std::fs::remove_file(&sock);
     tracing::info!("aulora daemon stopped");
     Ok(())
@@ -170,64 +325,174 @@ async fn send(w: &mut tokio::net::unix::OwnedWriteHalf, msg: &ServerMsg) -> Resu
     Ok(())
 }
 
+/// Stream one pane to a client until it exits or the client detaches.
+async fn forward(p: Arc<Proc>, pane_id: String, out: mpsc::Sender<ServerMsg>) {
+    loop {
+        let (screen, cols, rows, mut rx) = p.attach();
+        let msg = ServerMsg::PaneScreen { pane_id: pane_id.clone(), cols, rows, data: proto::encode(&screen) };
+        if out.send(msg).await.is_err() {
+            return;
+        }
+        'stream: loop {
+            let mut next = match rx.recv().await {
+                Ok(ev) => Some(ev),
+                // Too slow to keep up: start over from a fresh screen.
+                Err(RecvError::Lagged(_)) => break,
+                Err(RecvError::Closed) => return,
+            };
+            while let Some(ev) = next.take() {
+                match ev {
+                    PaneEvent::Output(chunk) => {
+                        // Merge whatever else is already queued into one message.
+                        let mut buf = chunk.to_vec();
+                        let mut lagged = false;
+                        while buf.len() < 256 * 1024 {
+                            match rx.try_recv() {
+                                Ok(PaneEvent::Output(more)) => buf.extend_from_slice(&more),
+                                Ok(other) => {
+                                    next = Some(other);
+                                    break;
+                                }
+                                Err(TryRecvError::Lagged(_)) => {
+                                    lagged = true;
+                                    break;
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                        let msg = ServerMsg::PaneOutput { pane_id: pane_id.clone(), data: proto::encode(&buf) };
+                        if out.send(msg).await.is_err() {
+                            return;
+                        }
+                        if lagged {
+                            break 'stream;
+                        }
+                    }
+                    PaneEvent::Exited(exit) => {
+                        let _ = out.send(ServerMsg::PaneExited { pane_id: pane_id.clone(), code: exit.code }).await;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
 async fn handle_conn(shared: Arc<Shared>, stream: UnixStream) -> Result<()> {
     let (r, mut w) = stream.into_split();
+    // One writer per connection, so snapshots and every attached pane can
+    // share the socket without interleaving partial lines.
+    let (out, mut out_rx) = mpsc::channel::<ServerMsg>(512);
+    let writer = tokio::spawn(async move {
+        while let Some(msg) = out_rx.recv().await {
+            if send(&mut w, &msg).await.is_err() {
+                break;
+            }
+        }
+    });
     let mut lines = BufReader::new(r).lines();
     let mut subscribed = false;
     let mut rx = shared.version.subscribe();
+    let mut attached: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
 
-    loop {
+    let result: Result<()> = loop {
         tokio::select! {
             line = lines.next_line() => {
-                let Some(line) = line? else { return Ok(()) };
+                let line = match line {
+                    Ok(Some(l)) => l,
+                    Ok(None) => break Ok(()),
+                    Err(e) => break Err(e.into()),
+                };
                 if line.trim().is_empty() { continue; }
                 let msg: ClientMsg = match serde_json::from_str(&line) {
                     Ok(m) => m,
                     Err(e) => {
-                        send(&mut w, &ServerMsg::Error { message: format!("bad message: {e}") }).await?;
+                        let _ = out.send(ServerMsg::Error { message: format!("bad message: {e}") }).await;
                         continue;
                     }
                 };
-                match msg {
-                    ClientMsg::Hook(env) => shared.handle_hook(env).await,
-                    ClientMsg::Ping => {
-                        send(&mut w, &ServerMsg::Pong { version: aulora_core::VERSION.into(), protocol: PROTOCOL_VERSION }).await?;
+                let err = |e: anyhow::Error| Some(ServerMsg::Error { message: format!("{e:#}") });
+                let ack = if subscribed { None } else { Some(ServerMsg::Ok) };
+                let reply = match msg {
+                    ClientMsg::Hook(env) => {
+                        shared.handle_hook(env).await;
+                        None
                     }
-                    ClientMsg::Snapshot => {
-                        let snap = shared.hub.lock().unwrap().snapshot();
-                        send(&mut w, &ServerMsg::Snapshot(Box::new(snap))).await?;
-                    }
+                    ClientMsg::Ping => Some(ServerMsg::Pong { version: aulora_core::VERSION.into(), protocol: PROTOCOL_VERSION }),
+                    ClientMsg::Snapshot => Some(ServerMsg::Snapshot(Box::new(shared.snapshot()))),
                     ClientMsg::Subscribe => {
                         subscribed = true;
                         rx.mark_unchanged();
-                        let snap = shared.hub.lock().unwrap().snapshot();
-                        send(&mut w, &ServerMsg::Snapshot(Box::new(snap))).await?;
+                        Some(ServerMsg::Snapshot(Box::new(shared.snapshot())))
                     }
                     ClientMsg::Dismiss { session_id } => {
                         if shared.hub.lock().unwrap().dismiss(&session_id) { shared.changed(); }
-                        if !subscribed { send(&mut w, &ServerMsg::Ok).await?; }
+                        ack
                     }
                     ClientMsg::ClearEnded => {
                         if shared.hub.lock().unwrap().clear_ended() { shared.changed(); }
-                        if !subscribed { send(&mut w, &ServerMsg::Ok).await?; }
+                        ack
                     }
                     ClientMsg::Shutdown => {
-                        send(&mut w, &ServerMsg::Ok).await?;
+                        let _ = out.send(ServerMsg::Ok).await;
                         shared.shutdown.notify_one();
-                        return Ok(());
+                        break Ok(());
                     }
-                }
+                    ClientMsg::NewPane(req) => match shared.new_pane(req).await {
+                        Ok(pane_id) => Some(ServerMsg::PaneCreated { pane_id }),
+                        Err(e) => err(e),
+                    },
+                    ClientMsg::RestartPane { pane_id } => match shared.restart_pane(&pane_id) {
+                        Ok(()) => ack,
+                        Err(e) => err(e),
+                    },
+                    ClientMsg::KillPane { pane_id } => match shared.proc_(&pane_id) {
+                        Some(p) => { p.kill(); ack }
+                        None => err(anyhow::anyhow!("no pane {pane_id}")),
+                    },
+                    ClientMsg::ClosePane { pane_id } => {
+                        if shared.close_pane(&pane_id) { ack } else { err(anyhow::anyhow!("no pane {pane_id}")) }
+                    }
+                    ClientMsg::Attach { pane_id } => match shared.proc_(&pane_id) {
+                        Some(p) => {
+                            if let Some(old) = attached.remove(&pane_id) { old.abort(); }
+                            attached.insert(pane_id.clone(), tokio::spawn(forward(p, pane_id, out.clone())));
+                            None
+                        }
+                        None => err(anyhow::anyhow!("no pane {pane_id}")),
+                    },
+                    ClientMsg::Detach { pane_id } => {
+                        if let Some(h) = attached.remove(&pane_id) { h.abort(); }
+                        None
+                    }
+                    ClientMsg::Input { pane_id, data } => {
+                        if let Some(p) = shared.proc_(&pane_id) { p.write(proto::decode(&data)); }
+                        None
+                    }
+                    ClientMsg::Resize { pane_id, cols, rows } => {
+                        if let Some(p) = shared.proc_(&pane_id)
+                            && let Err(e) = p.resize(cols, rows) { tracing::debug!("resize {pane_id}: {e}"); }
+                        None
+                    }
+                };
+                if let Some(reply) = reply
+                    && out.send(reply).await.is_err() { break Ok(()); }
             }
             changed = rx.changed(), if subscribed => {
-                changed?;
+                if changed.is_err() { break Ok(()); }
                 // Coalesce bursts of events into one snapshot.
                 tokio::time::sleep(Duration::from_millis(40)).await;
                 rx.mark_unchanged();
-                let snap = shared.hub.lock().unwrap().snapshot();
-                send(&mut w, &ServerMsg::Snapshot(Box::new(snap))).await?;
+                if out.send(ServerMsg::Snapshot(Box::new(shared.snapshot()))).await.is_err() { break Ok(()); }
             }
         }
+    };
+    for (_, h) in attached {
+        h.abort();
     }
+    drop(out);
+    let _ = writer.await;
+    result
 }
 
 async fn git_loop(shared: Arc<Shared>) {

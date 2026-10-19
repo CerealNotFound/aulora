@@ -167,6 +167,7 @@ impl Demo {
                 projects: Vec::new(),
                 sessions: Vec::new(),
                 feed: Vec::new(),
+                panes: Vec::new(),
             },
             next_step: now + 2_500,
             step: 0,

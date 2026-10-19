@@ -23,6 +23,7 @@ pub struct Hub {
     pub sessions: HashMap<String, Session>,
     pub projects: HashMap<String, Project>,
     pub feed: VecDeque<FeedEvent>,
+    pub panes: HashMap<String, Pane>,
     transcripts: HashMap<String, (transcript::Cursor, transcript::Summary)>,
     store: Sender<StoreCmd>,
 }
@@ -35,6 +36,7 @@ impl Hub {
             sessions: HashMap::new(),
             projects: HashMap::new(),
             feed: feed.into_iter().collect(),
+            panes: HashMap::new(),
             transcripts: HashMap::new(),
             store,
         };
@@ -222,8 +224,50 @@ impl Hub {
     }
 
     fn drop_empty_projects(&mut self) {
-        let roots: std::collections::HashSet<&String> = self.sessions.values().map(|s| &s.project_root).collect();
+        let roots: std::collections::HashSet<&String> = self
+            .sessions
+            .values()
+            .map(|s| &s.project_root)
+            .chain(self.panes.values().map(|p| &p.project_root))
+            .collect();
         self.projects.retain(|root, _| roots.contains(root));
+    }
+
+    /// Register a new pane. Returns true when this created a new project.
+    pub fn add_pane(&mut self, pane: Pane) -> bool {
+        let new_project = self.ensure_project(&pane.project_root, pane.created_at);
+        self.panes.insert(pane.id.clone(), pane);
+        new_project
+    }
+
+    /// Record a pane's exit, unless it has been restarted since.
+    pub fn pane_exited(&mut self, id: &str, generation: u32, exit: PaneExit) -> bool {
+        match self.panes.get_mut(id) {
+            Some(p) if p.generation == generation => {
+                p.exit = Some(exit);
+                p.pid = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn remove_pane(&mut self, id: &str) -> Option<Pane> {
+        let p = self.panes.remove(id);
+        if p.is_some() {
+            self.drop_empty_projects();
+        }
+        p
+    }
+
+    /// A unique name for a new pane in a project: "claude", "claude 2"…
+    pub fn pane_name(&self, root: &str, base: &str) -> String {
+        let taken: std::collections::HashSet<&str> =
+            self.panes.values().filter(|p| p.project_root == root).map(|p| p.name.as_str()).collect();
+        if !taken.contains(base) {
+            return base.to_string();
+        }
+        (2..).map(|n| format!("{base} {n}")).find(|n| !taken.contains(n.as_str())).expect("a free name")
     }
 
     pub fn snapshot(&self) -> Snapshot {
@@ -231,6 +275,8 @@ impl Hub {
         projects.sort_by(|a, b| a.root.cmp(&b.root));
         let mut sessions: Vec<Session> = self.sessions.values().cloned().collect();
         sessions.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut panes: Vec<Pane> = self.panes.values().cloned().collect();
+        panes.sort_by_key(|p| (p.created_at, p.id.clone()));
         Snapshot {
             daemon: DaemonInfo {
                 version: aulora_core::VERSION.to_string(),
@@ -241,6 +287,7 @@ impl Hub {
             projects,
             sessions,
             feed: self.feed.iter().cloned().collect(),
+            panes,
         }
     }
 }
