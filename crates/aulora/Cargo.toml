@@ -1,0 +1,28 @@
+[package]
+name = "aulora"
+description = "See every Claude Code session across all your projects, and what each one needs from you"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+keywords = ["claude", "claude-code", "tui", "agents", "terminal"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "aulora"
+path = "src/main.rs"
+
+[dependencies]
+aulora-core.workspace = true
+aulora-daemon.workspace = true
+aulora-tui.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+sysinfo.workspace = true
+libc.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio.workspace = true
