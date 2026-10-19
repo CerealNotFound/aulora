@@ -126,6 +126,8 @@ impl TerminalInfo {
             "kitty"
         } else if b.contains("alacritty") {
             "Alacritty"
+        } else if p == "aulora" {
+            "aulora"
         } else if !p.is_empty() {
             return self.program.clone();
         } else {
@@ -357,4 +359,52 @@ pub struct Snapshot {
     pub sessions: Vec<Session>,
     /// Newest last.
     pub feed: Vec<FeedEvent>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneKind {
+    /// An interactive login shell.
+    Shell,
+    /// Claude Code, dropping back to a shell when it exits.
+    Claude,
+    /// Any other command.
+    Command,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneExit {
+    pub code: u32,
+    pub signal: Option<String>,
+    pub at: Ms,
+}
+
+/// A terminal whose process is owned by the daemon.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pane {
+    pub id: String,
+    pub project_root: String,
+    pub cwd: String,
+    pub name: String,
+    pub kind: PaneKind,
+    /// Extra arguments (Claude) or the command line (Command).
+    pub args: Vec<String>,
+    pub pid: Option<u32>,
+    pub cols: u16,
+    pub rows: u16,
+    pub created_at: Ms,
+    pub last_output_at: Ms,
+    pub bytes_out: u64,
+    /// Title set by the program with an OSC escape sequence.
+    pub title: Option<String>,
+    pub bell_at: Option<Ms>,
+    pub exit: Option<PaneExit>,
+    /// Bumped on every restart so clients know to re-attach.
+    pub generation: u32,
+}
+
+impl Pane {
+    pub fn is_running(&self) -> bool {
+        self.exit.is_none()
+    }
 }
