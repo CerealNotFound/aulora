@@ -33,6 +33,12 @@ pub fn spool() -> PathBuf {
     home().join("spool.jsonl")
 }
 
+/// Written when the daemon is stopped on purpose, so hooks firing as its
+/// panes shut down don't start it again.
+pub fn stopped_marker() -> PathBuf {
+    home().join("stopped")
+}
+
 pub fn lock() -> PathBuf {
     home().join("daemon.lock")
 }

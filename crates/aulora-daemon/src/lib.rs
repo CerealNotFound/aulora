@@ -248,6 +248,7 @@ pub fn spawn_detached(exe: &Path) -> std::io::Result<()> {
 pub async fn run() -> Result<()> {
     paths::ensure_home()?;
     let _lock = acquire_lock()?;
+    let _ = std::fs::remove_file(paths::stopped_marker());
     let sock = paths::socket();
     let _ = std::fs::remove_file(&sock);
     let listener = UnixListener::bind(&sock).with_context(|| format!("binding {}", sock.display()))?;
@@ -436,6 +437,7 @@ async fn handle_conn(shared: Arc<Shared>, stream: UnixStream) -> Result<()> {
                         ack
                     }
                     ClientMsg::Shutdown => {
+                        let _ = std::fs::write(paths::stopped_marker(), now_ms().to_string());
                         let _ = out.send(ServerMsg::Ok).await;
                         shared.shutdown.notify_one();
                         break Ok(());

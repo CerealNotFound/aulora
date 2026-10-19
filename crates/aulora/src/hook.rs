@@ -70,9 +70,26 @@ pub fn run() {
     }) {
         spool(&env);
     }
-    if let Ok(exe) = std::env::current_exe() {
+    if should_start_daemon(&msg)
+        && let Ok(exe) = std::env::current_exe()
+    {
         let _ = aulora_daemon::spawn_detached(&exe);
     }
+}
+
+/// Start the daemon for a hook event unless it was just stopped on purpose,
+/// or the event is a session ending (nothing to show for it).
+fn should_start_daemon(msg: &ClientMsg) -> bool {
+    let ClientMsg::Hook(env) = msg else { return false };
+    if aulora_core::reduce::event_name(&env.payload) == "SessionEnd" {
+        return false;
+    }
+    let recently_stopped = std::fs::metadata(paths::stopped_marker())
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age < Duration::from_secs(15));
+    !recently_stopped
 }
 
 fn send(line: &str) -> std::io::Result<()> {
