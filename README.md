@@ -21,7 +21,7 @@ If you run Claude Code in several projects at once, you end up with a VS Code wi
 aulora watches every session through Claude Code's hooks and shows them all in one terminal dashboard:
 
 - **What needs you.** Permission prompts, questions (`AskUserQuestion`) and plans waiting for review show in amber at the top, with what Claude is asking for.
-- **What's happening where.** Each project shows its branch and git status. For each session, tabs show the whole conversation (scrollable, searchable, with every tool call), an overview (current tool call, your last prompt, Claude's latest reply, recent tool calls with timings, files edited with `+/−` lines, context size) and its activity.
+- **What's happening where.** One tree: each project with its branch and git status, and under it every agent running there. Every agent is a terminal. Sessions that have ended open again with `claude --resume`, in the folder they ran in. Sessions running in another app (VS Code, Ghostty) show their whole conversation, scrollable and searchable, with every tool call.
 - **Run Claude and your shells inside it.** <kbd>C</kbd> starts Claude Code in a pane and <kbd>c</kbd> starts a shell. The daemon owns these terminals, so they keep running when you close the dashboard, and `aulora attach` puts any of them in another terminal. A Claude session in a pane shows its live status right above its screen.
 - **Jump straight there.** <kbd>⏎</kbd> opens the project in your editor, and VS Code brings that project's window to the front. <kbd>n</kbd> cycles through the sessions that need you.
 
@@ -29,7 +29,7 @@ It works with Claude Code running anywhere: VS Code, Cursor, Ghostty, iTerm, tmu
 
 ## Screenshots
 
-| A Claude Code pane, live | The whole conversation |
+| A Claude Code pane, live | A session running in VS Code |
 |---|---|
 | ![pane](docs/screenshots/pane.png) | ![conversation](docs/screenshots/conversation.png) |
 | **GitHub Light** | **tmux** |
@@ -70,18 +70,19 @@ Sessions show up as soon as they start or you send a prompt. To try the dashboar
 
 ### Keys
 
-aulora follows Herdr: a sidebar of **projects** above **agents** (Claude sessions, Claude panes, shells), and a main area with tabs. The mouse works everywhere: click to select or focus, wheel to scroll whatever is under the pointer, click a pane to type into it.
+aulora follows Herdr: a sidebar with each **project** and the **agents** running in it (Claude panes, shells, Claude sessions elsewhere), and a main area with tabs. The mouse works everywhere: click to select or focus, wheel to scroll whatever is under the pointer, click a pane to type into it, <kbd>×</kbd> to close, right-click for a menu.
 
 | Key | Action |
 |---|---|
 | <kbd>↑</kbd> <kbd>↓</kbd> / <kbd>j</kbd> <kbd>k</kbd> | Move in the sidebar; scroll a line in the main area |
-| <kbd>⏎</kbd> | Open: focus the main area, type into a pane, expand a tool call |
+| <kbd>⏎</kbd> | Open: type into a pane, resume an ended session, expand a tool call |
 | <kbd>⇥</kbd> | Switch focus between the sidebar and the main area |
-| <kbd>1</kbd>–<kbd>4</kbd> | Switch tabs (Terminal, Conversation) |
+| <kbd>1</kbd>–<kbd>4</kbd> | Switch tabs |
 | <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Leave a terminal you're typing into (press it again to send Ctrl-Q to the program) |
 | <kbd>c</kbd> / <kbd>C</kbd> | New shell / new Claude Code pane in the selected project |
 | <kbd>n</kbd> | Jump to the next agent that needs you |
-| <kbd>s</kbd> | Sort agents by priority, or group them by project |
+| <kbd>r</kbd> | Restart an exited pane; resume a session in a new terminal |
+| <kbd>m</kbd> | Menu for the selection (same as right-click) |
 | <kbd>x</kbd> | Kill a pane (asks first), close an exited one, or dismiss an ended session |
 | <kbd>z</kbd> | Zoom the main area to the whole screen |
 | <kbd>/</kbd> | Filter the sidebar; search a conversation |

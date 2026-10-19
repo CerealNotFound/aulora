@@ -13,23 +13,27 @@ aulora should feel like **home**: familiar from the first minute because it beha
 ## Layout
 
 ```
- aulora   multibrain › claude                       ● 1 blocked  ● 2 working   23:41
- PROJECTS                      │ claude · Credit billing → FastAPI       ● working 4m
- ● adarshji                    │ multibrain  ~/…/multibrain  opus 5.5  ctx 142k
-   main ↑1                     │ Terminal   Conversation   Changes 7   Files
- ● multibrain                  │ ─────────────────────────────────────────────────
-   feat/credit-billing ↑3      │
- ──────────────────────────────│   (one view at a time)
- AGENTS               priority │
- ● claude · billing  multibrain│
-   Edit page.tsx 9s            │
- ● README + demo GIF    aulora │
- ○ dev server       multibrain │
+ aulora                  23:41 │ 1 Terminal   2 Changes 7   3 Files      ● working 4m
+ projects                    3 │ claude · Credit billing → FastAPI   ~/…/multibrain
+                               │
+ ● multibrain                + │  (the agent's terminal, live)
+   feat/credit-billing ↑3 ●7   │
+ ├ ● claude · billing    32m × │
+ │   Edit page.tsx             │
+ └ ○ dev server         1h36   │
+     pnpm dev                  │
+                               │
+ ● adarshji                  1 │
+   main ↑1 ●4                  │
+ └ · Remove SEO keywords       │
+     past session · 2h ago     │
 ```
 
-- **Sidebar, two sections** (Herdr: spaces above agents). `PROJECTS` lists projects with their rolled-up state and a second line for branch and ahead/behind. `AGENTS` lists everything that runs: Claude sessions, Claude panes, shells and commands. Agents sort by priority (blocked, done, working, idle) or group by project, toggled from the header (Herdr's `priority` / `grouped`).
-- **Selecting a project** filters the agents list to it and shows the project in the main area. Selecting it again clears the filter.
-- **Main area** shows the selected agent or project: a title line, a meta line, a tab bar, and the tab's content. Tabs: **Terminal · Conversation · Changes · Files**. There is no Activity tab: events appear in the conversation where they happened (Claude Code's own transcript does this).
+- **Sidebar, one tree** (VS Code's explorer, Herdr's spaces). Each project shows its rolled-up state and a second line for branch, ahead/behind and changes. Under it, `├`/`└` branches list everything that runs there, most urgent first: Claude panes, shells, commands, and Claude sessions running elsewhere. Projects sort the same way, so whatever needs you is near the top. A flat priority list was tried and dropped: it hid which project an agent belongs to, and that's the first thing you need when switching.
+- **The project is where new things start.** With a project or any of its agents selected, `C`, `c`, the `+` on the project row and the menu's *New Claude here* / *New shell here* start in that project's folder.
+- **Every agent is a terminal.** An agent aulora runs shows its live terminal. A session that has ended (or a past one, `h`) opens as a terminal running `claude --resume <id>` in the folder it ran in, so you continue it rather than read it. A session still running somewhere else (VS Code, Ghostty) shows its conversation read-only, with `r` to fork it here (`claude --resume <id> --fork-session`): resuming it outright would put two processes on one transcript.
+- **Closing** is a `×` on the hovered or selected row (VS Code's editor tabs), `x`, or the menu. Killing a running pane asks first; closing an exited pane or dismissing an ended session doesn't.
+- **Main area** shows the selected agent or project: a tab bar, a title and meta line, and the tab's content. Tabs: **Terminal · Changes · Files** for agents, **Overview** for projects, **Conversation** only for sessions running outside aulora. There is no Activity tab: events appear in the conversation where they happened (Claude Code's own transcript does this).
 - **Rows** are two lines: `● name · detail` then an indented second line, tokens joined by ` · `. When space runs out, whole tokens drop before text is cut with `…` (Herdr).
 - **Narrow terminals** (< 90 columns): the sidebar collapses to glyphs and counts, and focus shows one region at a time (Herdr's compact sidebar, lazygit's portrait mode).
 
@@ -63,7 +67,7 @@ One keymap table drives key handling, the footer hints and the `?` help, so they
 |---|---|---|
 | `↑` `↓` / `j` `k` | move in the focused list, or scroll by line | everywhere |
 | `⇥` / `⇧⇥` | next / previous region | lazygit panels |
-| `1`–`4` | Terminal, Conversation, Changes, Files | Herdr `prefix+1..9`, lazygit panel jumps |
+| `1`–`4` | switch tabs | Herdr `prefix+1..9`, lazygit panel jumps |
 | `[` `]` | previous / next tab | vim-unimpaired, Herdr `n`/`p` |
 | `⏎` | open: type into a pane, focus a view, expand an item | |
 | `Ctrl-Q` | leave a terminal | claude-squad |
@@ -75,6 +79,8 @@ One keymap table drives key handling, the footer hints and the `?` help, so they
 | `e` | edit the selected file in a terminal editor pane | lazygit `e` |
 | `o` | open in VS Code at the line | lazygit `o` |
 | `x` | close / kill (asks first when it would interrupt work) | k9s |
+| `r` | restart an exited pane; resume a session in a new terminal | k9s `r` |
+| `m` | the selection's menu (same as right-click) | lazygit `?`-menus, VS Code context menu |
 | `t` | themes | Herdr settings |
 | `?` | help, searchable, runs the binding on Enter | lazygit |
 | `q` | quit; panes keep running | |
@@ -83,7 +89,9 @@ The footer shows 5–7 hints for the focused region and `? more`, shortening lab
 
 ## Mouse
 
-- Mouse capture is on (Herdr, zellij). Click focuses and selects; clicking a tab switches to it; right-click opens a context menu.
+- Mouse capture is on (Herdr, zellij). Click focuses and selects; clicking a selected row (or double-clicking) opens it; clicking a tab switches to it.
+- Hovering a row shows its button: `×` on agents, `+` on projects (VS Code's tabs and explorer). Only the hovered or selected row shows one, so the list stays calm.
+- Right-click opens a menu for what's under the pointer: Type here, Resume in a terminal, Restart, Close, New Claude here, New shell here, Open in VS Code (VS Code's context menu). In a program that reads the mouse, right-click goes to the program instead.
 - **The wheel scrolls whatever is under the pointer**, not whatever has focus (VS Code, Herdr).
 - In a terminal pane the wheel goes to the program if it asked for mouse events, becomes arrow keys if it runs full-screen, and otherwise scrolls aulora's copy of the scrollback (xterm.js, zellij, Herdr).
 - 3 lines per wheel notch. Fast trackpad streams scroll about 1 line per event and speed up gently; fractions carry over and reset on direction change (helix, codex).
@@ -101,7 +109,7 @@ The footer shows 5–7 hints for the focused region and `? more`, shortening lab
 
 ## Conversation
 
-Claude Code's own transcript, readable and scrollable.
+Claude Code's own transcript, readable and scrollable. It shows for sessions running outside aulora; everything else is a terminal.
 
 - Your prompts, Claude's replies with light markdown, and every tool call in place, with its result: commands with exit status, duration and the first lines of output; edits with `+n −m` and a short colored diff; reads and searches as one-line summaries. `⏎` expands any of them.
 - Permission requests, questions and your answers, subagents, compaction, interruptions and session start and end appear inline as quiet notes.
