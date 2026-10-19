@@ -131,8 +131,12 @@ enum DaemonCmd {
     Run,
     /// Start in the background if it isn't running.
     Start,
-    /// Stop the running daemon.
-    Stop,
+    /// Stop the running daemon. Refuses while panes are running.
+    Stop {
+        /// Stop anyway, ending every running pane.
+        #[arg(long)]
+        force: bool,
+    },
     /// Show whether the daemon is running.
     Status,
 }
@@ -320,16 +324,23 @@ fn daemon(action: DaemonCmd) -> Result<()> {
             println!("daemon started (v{v})");
             Ok(())
         }
-        DaemonCmd::Stop => match request(&ClientMsg::Shutdown) {
-            Ok(_) => {
-                println!("daemon stopped");
-                Ok(())
-            }
-            Err(_) => {
+        DaemonCmd::Stop { force } => {
+            let Ok(snap) = request_snapshot() else {
                 println!("daemon is not running");
-                Ok(())
+                return Ok(());
+            };
+            let running: Vec<String> = snap.panes.iter().filter(|p| p.is_running()).map(pane_label).collect();
+            if !running.is_empty() && !force {
+                bail!(
+                    "{} running pane(s) would be ended: {}\nThey can't be brought back yet. Use --force to stop anyway.",
+                    running.len(),
+                    running.join(", ")
+                );
             }
-        },
+            request(&ClientMsg::Shutdown)?;
+            println!("daemon stopped");
+            Ok(())
+        }
         DaemonCmd::Status => {
             match daemon_running() {
                 Some(v) => println!("running · v{v} · {}", paths::socket().display()),
