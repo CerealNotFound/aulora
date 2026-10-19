@@ -349,6 +349,8 @@ fn daemon(action: DaemonCmd) -> Result<()> {
             if let Err(e) = &res {
                 tracing::error!("daemon failed: {e:#}");
             }
+            // Don't let a stuck background task keep the process (and its lock) alive.
+            rt.shutdown_timeout(Duration::from_secs(1));
             res
         }
         DaemonCmd::Start => {
@@ -374,8 +376,15 @@ fn daemon(action: DaemonCmd) -> Result<()> {
                 );
             }
             request(&ClientMsg::Shutdown)?;
-            println!("daemon stopped");
-            Ok(())
+            // Report success only once it's really gone.
+            for _ in 0..60 {
+                if daemon_running().is_none() && std::os::unix::net::UnixStream::connect(paths::socket()).is_err() {
+                    println!("daemon stopped");
+                    return Ok(());
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            bail!("the daemon didn't exit within 3 seconds; see {}", paths::log().display())
         }
         DaemonCmd::Status => {
             match daemon_running() {
