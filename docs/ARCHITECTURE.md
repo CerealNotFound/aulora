@@ -50,8 +50,23 @@ The transcript (`transcript_path`) is read incrementally from a saved byte offse
 - Background loops: git status every 3 s for active projects (`--no-optional-locks`, so it never fights your own git commands), process liveness every 3 s (start time guards against PID reuse), transcript refresh every 2 s for busy sessions.
 - SQLite in WAL mode on a writer thread, batching writes per transaction. Sessions and the feed survive daemon restarts. Ended sessions expire after 12 hours.
 
+## Panes
+
+The daemon runs terminals itself (`crates/aulora-daemon/src/pty.rs`), so they outlive any client.
+
+- Each pane is a pseudo-terminal from `portable-pty` running the user's login shell: `$SHELL -l` for a shell, `$SHELL -l -i -c 'claude …; exec $SHELL -l'` for Claude, so a pane drops back to a shell when Claude exits, and `$SHELL -l -c …` for a command.
+- The environment is cleaned of variables a pane must not inherit from whoever started the daemon, which is often a Claude Code hook inside another terminal (`CLAUDECODE`, `TERM_PROGRAM`, `VSCODE_*` and similar). Then `TERM_PROGRAM=aulora` and `AULORA_PANE_ID` are set. Hooks pass `AULORA_PANE_ID` back, which is how a Claude session is linked to the exact pane it runs in.
+- A reader thread feeds all output through a `vt100` parser that mirrors the screen, with 5,000 lines of scrollback, and publishes it on a broadcast channel. Both happen under one lock, so `attach()` can take the current screen and subscribe atomically: a client never misses or double-applies a byte.
+- Attaching sends the screen redrawn from blank (`state_formatted`, which includes input modes such as application cursor keys and bracketed paste), then raw output. Output already queued is merged into one message. A client that falls behind the channel gets a fresh screen instead of a gap.
+- Writes go through their own thread, because writing to a terminal blocks when the program isn't reading.
+- The PTY size follows the last client to resize it.
+- Panes don't survive the daemon stopping. Bringing them back is step 4.
+
+Clients use two kinds of connection. The dashboard keeps one for snapshots and one for pane streams (attach, input, resize), which reconnects and re-attaches on its own. `aulora attach` passes bytes straight through in both directions, so mouse modes, bracketed paste and every key combination work as if the program ran in that terminal.
+
 ## Dashboard
 
 - Gets snapshots on a background thread and redraws at about 16 fps, so spinners and timers move without daemon traffic.
 - Layout: header with counters, alert banner, project/session tree, then for the selected session a detail card, stats tiles, now panel, activity sparkline, conversation, recent tools and files. The activity feed runs along the bottom. Narrow terminals get the list only.
+- A selected pane is drawn from the dashboard's own `vt100` copy of its screen. In terminal mode, keys are encoded to the bytes a terminal sends (xterm modifier codes, application cursor mode, Shift+Enter as `ESC CR` for Claude Code) and pastes are wrapped when the program asked for bracketed paste. The pane is resized to exactly the space it's drawn in.
 - `--snapshot WxH` renders one frame to text with Ratatui's `TestBackend`. It's useful for docs and checking the layout.
