@@ -70,26 +70,29 @@ Sessions show up as soon as they start or you send a prompt. To try the dashboar
 
 ### Keys
 
+aulora follows Herdr: a sidebar of **projects** above **agents** (Claude sessions, Claude panes, shells), and a main area with tabs. The mouse works everywhere: click to select or focus, wheel to scroll whatever is under the pointer, click a pane to type into it.
+
 | Key | Action |
 |---|---|
-| <kbd>↑</kbd> <kbd>↓</kbd> / <kbd>j</kbd> <kbd>k</kbd> | Move through projects, panes and sessions |
-| <kbd>J</kbd> <kbd>K</kbd> | Next / previous project |
-| <kbd>⇥</kbd> / <kbd>1</kbd>–<kbd>4</kbd> | Switch tabs: Terminal, Conversation, Overview, Activity |
-| <kbd>⏎</kbd> | Terminal tab: type into the pane (<kbd>Ctrl</kbd>+<kbd>Q</kbd> comes back). Conversation: start reading. Project: open it in your editor |
-| <kbd>o</kbd> | Open the project in your editor (`$AULORA_EDITOR`, default `code`) |
+| <kbd>↑</kbd> <kbd>↓</kbd> / <kbd>j</kbd> <kbd>k</kbd> | Move in the sidebar; scroll a line in the main area |
+| <kbd>⏎</kbd> | Open: focus the main area, type into a pane, expand a tool call |
+| <kbd>⇥</kbd> | Switch focus between the sidebar and the main area |
+| <kbd>1</kbd>–<kbd>4</kbd> | Switch tabs (Terminal, Conversation) |
+| <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Leave a terminal you're typing into (press it again to send Ctrl-Q to the program) |
 | <kbd>c</kbd> / <kbd>C</kbd> | New shell / new Claude Code pane in the selected project |
-| <kbd>z</kbd> | Zoom the selected pane to the whole screen |
-| <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Scroll back through a pane's output (<kbd>⇧</kbd> + <kbd>PgUp</kbd> while typing in it) |
-| <kbd>r</kbd> | Restart an exited pane |
-| <kbd>n</kbd> | Jump to whatever needs you |
-| <kbd>/</kbd> | Filter the sidebar by project, title, prompt or branch |
-| <kbd>e</kbd> / <kbd>h</kbd> | Show / hide ended sessions / past sessions from the last 7 days |
-| <kbd>t</kbd> | Choose a theme (previews as you move, saved when you press <kbd>⏎</kbd>) |
-| <kbd>x</kbd> | Kill a pane (press twice), close an exited one, or dismiss an ended session |
-| <kbd>X</kbd> | Dismiss all ended sessions |
-| <kbd>?</kbd> | Help |
+| <kbd>n</kbd> | Jump to the next agent that needs you |
+| <kbd>s</kbd> | Sort agents by priority, or group them by project |
+| <kbd>x</kbd> | Kill a pane (asks first), close an exited one, or dismiss an ended session |
+| <kbd>z</kbd> | Zoom the main area to the whole screen |
+| <kbd>/</kbd> | Filter the sidebar; search a conversation |
+| <kbd>h</kbd> / <kbd>e</kbd> | Show past sessions / ended sessions |
+| <kbd>t</kbd> | Choose a theme |
+| <kbd>F12</kbd> | Turn mouse capture off so your terminal can select text |
+| <kbd>?</kbd> | All keys: type to filter, <kbd>⏎</kbd> to run one |
 
-While reading a conversation: <kbd>↑</kbd> <kbd>↓</kbd> select a message, <kbd>⏎</kbd> expands a tool call to show what it ran and what came back, <kbd>[</kbd> <kbd>]</kbd> jump between your prompts, <kbd>/</kbd> searches and <kbd>n</kbd> finds the next match, <kbd>y</kbd> copies the selected message, <kbd>G</kbd> goes to the latest, and <kbd>Esc</kbd> goes back. At the bottom it follows new messages as they arrive; scrolled up, it stays put and tells you how many are new.
+In a conversation: <kbd>[</kbd> <kbd>]</kbd> jump between your prompts, <kbd>y</kbd> copies the message at the cursor, <kbd>G</kbd> goes to the latest and follows new messages, <kbd>Esc</kbd> goes back to the sidebar.
+
+States, as in Herdr: <span>●</span> red **blocked** (needs you) · yellow **working** · teal **done** (finished, and you haven't looked yet) · <span>○</span> green **idle** · <span>·</span> **ended**.
 
 ### Themes
 
