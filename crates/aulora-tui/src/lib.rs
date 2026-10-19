@@ -366,6 +366,16 @@ fn handle_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx) -> bool {
         KeyCode::Char('c') => new_pane(app, opts, ctx, PaneKind::Shell),
         KeyCode::Char('C') => new_pane(app, opts, ctx, PaneKind::Claude),
         KeyCode::Char('z') => app.toast("Select a pane to zoom it"),
+        KeyCode::Char('h') => {
+            app.show_history = !app.show_history;
+            app.move_selection(0);
+            let n = app.counts().history;
+            app.toast(if app.show_history {
+                format!("Showing {n} past sessions from the last 7 days")
+            } else {
+                "Hiding past sessions".into()
+            });
+        }
         KeyCode::Char('e') => {
             app.show_ended = !app.show_ended;
             app.move_selection(0);

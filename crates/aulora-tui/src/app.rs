@@ -34,6 +34,8 @@ pub struct App {
     pub now: Ms,
     pub selected: Option<RowRef>,
     pub show_ended: bool,
+    /// Show past sessions found in transcripts.
+    pub show_history: bool,
     pub filter: String,
     pub filtering: bool,
     pub help: bool,
@@ -65,6 +67,7 @@ impl App {
             now: now_ms(),
             selected: None,
             show_ended: true,
+            show_history: false,
             filter: String::new(),
             filtering: false,
             help: false,
@@ -198,6 +201,7 @@ impl App {
             .filter(|s| s.project_root == root)
             .filter(|s| !self.in_existing_pane(s))
             .filter(|s| self.show_ended || s.state.is_live())
+            .filter(|s| self.show_history || s.origin != Origin::History)
             .filter(|s| self.matches_filter(s))
             .collect();
         v.sort_by_key(|s| (s.state.rank(), -s.last_event_at));
@@ -335,7 +339,7 @@ impl App {
     pub fn counts(&self) -> Counts {
         let mut c = Counts::default();
         if let Some(snap) = &self.snap {
-            for s in &snap.sessions {
+            for s in snap.sessions.iter().filter(|s| s.origin != Origin::History) {
                 match s.state {
                     SessionState::NeedsYou { .. } => c.needs_you += 1,
                     SessionState::Errored { .. } => c.errored += 1,
@@ -345,7 +349,8 @@ impl App {
                     SessionState::Ended { .. } => c.ended += 1,
                 }
             }
-            c.projects = snap.projects.len();
+            c.history = snap.sessions.iter().filter(|s| s.origin == Origin::History).count();
+            c.projects = self.visible_projects().len();
         }
         c
     }
@@ -359,6 +364,7 @@ pub struct Counts {
     pub working: usize,
     pub idle: usize,
     pub ended: usize,
+    pub history: usize,
     pub projects: usize,
 }
 

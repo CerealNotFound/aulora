@@ -932,6 +932,17 @@ fn now_panel(f: &mut Frame, area: Rect, app: &App, s: &Session) {
                 Line::from(sp("   waiting for your first prompt", faint())),
             ],
         ),
+        SessionState::Ended { .. } if s.origin == Origin::History => (
+            FAINT,
+            vec![
+                Line::from(vec![sp(" ◷ ", dim()), sp("Past session, not running", bold(DIM))]),
+                Line::from(sp(
+                    format!("   last active {}  ·  read from its transcript", ago(now, s.last_event_at)),
+                    faint(),
+                )),
+                Line::from(vec![sp("   resume with ", faint()), sp(format!("claude --resume {}", s.id), text())]),
+            ],
+        ),
         SessionState::Ended { reason } => (
             FAINT,
             vec![
@@ -940,6 +951,13 @@ fn now_panel(f: &mut Frame, area: Rect, app: &App, s: &Session) {
             ],
         ),
     };
+    let mut lines = lines;
+    if s.origin == Origin::Running && s.state.is_live() {
+        lines.push(Line::from(sp(
+            "   found in Claude's session list; details arrive with its next hook event",
+            faint(),
+        )));
+    }
     let block = panel("now").border_style(Style::new().fg(title_color));
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -1359,6 +1377,8 @@ fn footer(f: &mut Frame, area: Rect, app: &App) {
             lbl("filter"),
             key("e"),
             lbl(if app.show_ended { "hide ended" } else { "show ended" }),
+            key("h"),
+            lbl(if app.show_history { "hide history" } else { "history" }),
             key("x"),
             lbl("dismiss"),
             key("?"),
@@ -1421,6 +1441,7 @@ fn help(f: &mut Frame, area: Rect, app: &App) {
         ("n", "cycle through sessions that need you"),
         ("/", "filter by project, title or prompt"),
         ("e", "show or hide ended sessions"),
+        ("h", "show or hide past sessions (last 7 days)"),
         ("x", "kill a pane (press twice), close it, or dismiss a session"),
         ("X", "dismiss every ended session"),
         ("q  ctrl-c", "quit (the daemon keeps running)"),
