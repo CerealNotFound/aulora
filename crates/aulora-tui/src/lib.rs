@@ -2,15 +2,20 @@
 
 mod app;
 mod attach;
+mod attrib;
+mod changes;
 mod client;
 mod conv;
 mod demo;
+mod git;
+mod highlight;
 mod input;
 mod keymap;
 mod keys;
 mod term;
 mod theme;
 mod ui;
+mod view_changes;
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -67,11 +72,13 @@ fn parse_tab(name: &str) -> Option<Tab> {
         "terminal" | "term" => Some(Tab::Terminal),
         "conversation" | "conv" | "chat" => Some(Tab::Conversation),
         "overview" => Some(Tab::Overview),
+        "changes" | "git" | "diff" => Some(Tab::Changes),
         _ => None,
     }
 }
 
-/// Select a pane id, or a session by id prefix, then switch to `tab`.
+/// Select a pane id, a session by id prefix, or a project by name or
+/// path, then switch to `tab`.
 fn preselect(app: &mut App, select: Option<&str>, tab: Option<&str>) {
     if let Some(q) = select {
         if app.pane(q).is_some() {
@@ -82,6 +89,8 @@ fn preselect(app: &mut App, select: Option<&str>, tab: Option<&str>) {
                 None => RowRef::Session(s.id.clone()),
             };
             app.selected = Some(r);
+        } else if let Some(p) = app.snap.as_ref().and_then(|s| s.projects.iter().find(|p| p.name == q || p.root == q)) {
+            app.selected = Some(RowRef::Project(p.root.clone()));
         }
     }
     if let Some(tab) = tab.and_then(parse_tab) {
@@ -195,6 +204,7 @@ pub fn run(mut opts: Options) -> Result<()> {
                 on_incoming(&mut app, msg);
                 dirty = true;
             }
+            dirty |= app.poll_changes();
             if let Some(d) = demo.as_mut()
                 && d.tick(app.now)
             {
@@ -219,6 +229,9 @@ pub fn run(mut opts: Options) -> Result<()> {
             }
             let wait = if dirty {
                 frame.saturating_sub(last_draw.elapsed())
+            } else if app.changes_busy() {
+                // Git is running in the background; show its answer promptly.
+                Duration::from_millis(15)
             } else if animating {
                 Duration::from_millis(100)
             } else {
@@ -454,6 +467,15 @@ fn render(
     let mut terminal = ratatui::Terminal::new(TestBackend::new(width, height)).expect("test backend");
     // Twice: the first frame measures views (conversation height) the second uses.
     terminal.draw(|f| ui::draw(f, &mut app)).expect("draw");
+    // Wait for background git work the frame asked for (each answer can
+    // ask for more: status, then the selected file's diff).
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while app.changes_busy() && Instant::now() < deadline {
+        if app.poll_changes() {
+            terminal.draw(|f| ui::draw(f, &mut app)).expect("draw");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
     terminal.draw(|f| ui::draw(f, &mut app)).expect("draw");
     let buf = terminal.backend().buffer();
     let mut out = String::new();

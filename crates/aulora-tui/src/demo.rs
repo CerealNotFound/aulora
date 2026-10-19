@@ -5,6 +5,8 @@ use aulora_core::proto::{HookEnv, HookEnvelope};
 use aulora_core::reduce::{apply_hook, push_context, trim_payload};
 use serde_json::{Value, json};
 
+use crate::git::{Group, Kind};
+
 struct Lcg(u64);
 impl Lcg {
     fn next(&mut self) -> u64 {
@@ -188,7 +190,7 @@ impl Demo {
         for (name, g) in [
             ("adarshji", git("main", 1, 0, 3, 1, "fix: update GitHub username", 140)),
             ("multibrain", git("feat/credit-billing", 3, 2, 5, 0, "feat: per-request credit deduction", 35)),
-            ("aulora", git("step-1-dashboard", 0, 0, 7, 4, "feat(daemon): hook ingest + sqlite store", 18)),
+            ("aulora", git("step-1-dashboard", 0, 0, 3, 2, "feat(daemon): hook ingest + sqlite store", 18)),
             ("cloudcast", git("main", 0, 0, 0, 0, "fix: shorter signed URL expiry", 300)),
             ("erwins-hire-ai", git("main", 0, 0, 1, 0, "perf: stream TTS chunks to avatar", 1500)),
         ] {
@@ -675,4 +677,241 @@ pub fn screens() -> Vec<(String, u16, u16, Vec<u8>)> {
         ("a41c07".into(), 104, 40, claude_aulora),
         ("c8f310".into(), 104, 40, dev),
     ]
+}
+
+// ---------------------------------------------------------------------------
+// Changes for the demo's projects, so the Changes tab has something real-
+// looking without reading the folders on this machine.
+
+const MB_BILLING: &str = "3f1d9a20-5b6c-4e1f-9d2a-8b7c6e5f4a31";
+const MB_STREAM: &str = "9c2e4b7a-1d3f-4a5b-8c6d-2e1f0a9b8c7d";
+const AD_SEO: &str = "7c8a516b-acfa-4ec0-96c2-e502e7641008";
+const AU_STEP: &str = "e8d9964f-fda5-46e8-a6fd-94ace0fd4a1f";
+
+/// (project, group, kind, path, sessions, diff body or new file's content)
+type DemoChange = (&'static str, Group, Kind, &'static str, &'static [&'static str], &'static str);
+
+const DEMO_CHANGES: &[DemoChange] = &[
+    ("multibrain", Group::Staged, Kind::Modified, "api/billing/credits.py", &[MB_BILLING], "@@ -18,9 +18,21 @@ from .models import Wallet
+ 
+ 
+-def deduct(wallet: Wallet, cost: int) -> int:
+-    wallet.balance -= cost
+-    return wallet.balance
++async def deduct_credits(user_id: str, model: str, tokens: int) -> Deduction:
++    \"\"\"Charge a request on the server, so the client can't skip it.\"\"\"
++    cost = estimate_cost(model, tokens)
++    async with db.transaction():
++        wallet = await Wallet.for_update(user_id)
++        if wallet.balance < cost:
++            raise InsufficientCredits(needed=cost, balance=wallet.balance)
++        wallet.balance -= cost
++        await wallet.save()
++    return Deduction(remaining=wallet.balance, cost=cost)
++
++
++PRICES = {\"opus\": 15, \"sonnet\": 3, \"haiku\": 1}
+"),
+    ("multibrain", Group::Staged, Kind::Added, "api/tests/test_credits.py", &[MB_BILLING], "@@ -0,0 +1,12 @@
++import pytest
++
++from api.billing.credits import InsufficientCredits, deduct_credits
++
++
++async def test_deducts_on_the_server(wallet):
++    result = await deduct_credits(wallet.user_id, \"sonnet\", 1200)
++    assert result.remaining == 96
++
++async def test_refuses_when_short(empty_wallet):
++    with pytest.raises(InsufficientCredits):
++        await deduct_credits(empty_wallet.user_id, \"opus\", 9000)
+"),
+    ("multibrain", Group::Changes, Kind::Modified, "web/app/billing/page.tsx", &[MB_BILLING], "@@ -84,12 +84,14 @@ export default function BillingPage() {
+   const { balance, setBalance } = useWallet();
+   const [busy, setBusy] = useState(false);
+ 
+   async function run(model: string, tokens: number) {
+     setBusy(true);
+-    const cost = estimateCost(model, tokens);
+-    const remaining = balance - cost;
+-    setBalance(remaining);
++    const { remaining } = await deductCredits(model, tokens);
++    setBalance(remaining); // the server is the source of truth
+     setBusy(false);
+   }
+ 
++  if (balance === undefined) return <BalanceSkeleton />;
++
+   return (
+     <main className=\"mx-auto max-w-3xl p-8\">
+@@ -131,7 +133,7 @@ export default function BillingPage() {
+       <PlanCard
+         plan={plan}
+-        onUpgrade={() => router.push(\"/pricing\")}
++        onUpgrade={() => router.push(\"/billing/upgrade\")}
+         balance={balance}
+       />
+"),
+    ("multibrain", Group::Changes, Kind::Modified, "web/lib/credits.ts", &[MB_BILLING], "@@ -1,8 +1,15 @@
+-export function estimateCost(model: string, tokens: number): number {
+-  return Math.ceil((tokens / 1000) * PRICES[model]);
++import { api } from \"./api\";
++
++export type Deduction = { remaining: number; cost: number };
++
++/** Charge a request through the API; never trust a client-side balance. */
++export async function deductCredits(model: string, tokens: number): Promise<Deduction> {
++  const res = await api.post(\"/billing/deduct\", { model, tokens });
++  if (res.status === 402) throw new InsufficientCreditsError(await res.json());
++  return res.json();
+ }
+"),
+    ("multibrain", Group::Changes, Kind::Modified, "web/lib/stream.ts", &[MB_STREAM], "@@ -42,10 +42,14 @@ export async function streamAll(models: string[], prompt: string) {
+-  const controller = new AbortController();
+   return Promise.all(
+     models.map(async (model, column) => {
+-      const res = await fetch(`/api/chat/${model}`, { signal: controller.signal, body: prompt });
++      // One controller and request id per stream, so chunks can't cross columns.
++      const controller = new AbortController();
++      const requestId = crypto.randomUUID();
++      controllers.set(column, controller);
++      const res = await fetch(`/api/chat/${model}`, { signal: controller.signal, body: prompt, headers: { \"x-request-id\": requestId } });
+       for await (const chunk of readChunks(res)) {
+-        push(column, chunk);
++        if (chunk.requestId === requestId) push(column, chunk);
+       }
+     }),
+   );
+"),
+    ("multibrain", Group::Changes, Kind::Modified, "web/components/chat/parallel-view.tsx", &[MB_STREAM], "@@ -27,6 +27,7 @@ export function ParallelView({ models }: Props) {
+   const columns = useColumns(models);
++  useEffect(() => () => abortAll(), []);
+   return (
+     <div className=\"grid grid-cols-3 gap-3\">
+"),
+    ("multibrain", Group::Changes, Kind::Modified, "README.md", &[], "@@ -12,3 +12,4 @@ Run six models side by side.
+ ## Billing
+ 
+ Credits are charged per request.
++Balances live on the server; the client only shows them.
+"),
+    ("adarshji", Group::Changes, Kind::Modified, "config/site.ts", &[AD_SEO], "@@ -9,11 +9,6 @@ export const siteConfig = {
+   description: \"Adarsh Pandey: full-stack and AI engineer.\",
+   keywords: [
+-    \"Next.js portfolio template\",
+-    \"Free portfolio template\",
+-    \"Next.js 13 template\",
+     \"Adarsh Pandey\",
+     \"AI engineer\",
+-    \"Tailwind CSS\",
+-    \"shadcn/ui\",
+   ],
+"),
+    ("adarshji", Group::Changes, Kind::Modified, "app/page.tsx", &[AD_SEO], "@@ -4,12 +4,6 @@ import { Hero } from \"@/components/hero\";
+ export default function Home() {
+-  const schema = {
+-    \"@context\": \"https://schema.org\",
+-    \"@type\": \"SoftwareApplication\",
+-    name: \"Portfolio template\",
+-  };
+   return (
+     <>
+-      <script type=\"application/ld+json\">{JSON.stringify(schema)}</script>
+       <Hero />
+"),
+    ("adarshji", Group::Changes, Kind::Modified, "app/opengraph-image.tsx", &[AD_SEO], "@@ -20,3 +20,3 @@ export default async function Image() {
+-      <div style={{ fontSize: 64 }}>Portfolio</div>
++      <div style={{ fontSize: 64, fontWeight: 700 }}>Adarsh Pandey</div>
+"),
+    ("adarshji", Group::Changes, Kind::Untracked, "public/og-background.png", &[], ""),
+    ("aulora", Group::Changes, Kind::Modified, "crates/aulora-daemon/src/pty.rs", &[AU_STEP], "@@ -88,6 +88,12 @@ impl Proc {
+         let reader = pair.master.try_clone_reader()?;
++        // Mirror the screen so a client that attaches late sees it at once.
++        let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 5000)));
++        let (tx, _) = broadcast::channel(256);
++        spawn_reader(reader, parser.clone(), tx.clone());
+         Ok(Proc { pair, child, parser, tx })
+     }
+"),
+    ("aulora", Group::Changes, Kind::Modified, "crates/aulora-daemon/src/hub.rs", &[AU_STEP], "@@ -140,7 +140,9 @@ impl Hub {
+     pub fn attach(&mut self, pane: &str) -> Option<Attach> {
+-        let p = self.panes.get(pane)?;
+-        Some(Attach { screen: p.screen(), rx: p.subscribe() })
++        let p = self.panes.get(pane)?;
++        // Snapshot and subscribe under one lock, so no output falls between.
++        let (screen, rx) = p.snapshot_and_subscribe();
++        Some(Attach { screen, rx })
+     }
+"),
+    ("aulora", Group::Changes, Kind::Modified, "README.md", &["b5a4c3d2-e1f0-4a9b-8c7d-6e5f4a3b2c1d"], "@@ -1,4 +1,6 @@
+ # aulora
+ 
+ A dashboard for every Claude Code session on your machine.
++
++![aulora](docs/screenshots/overview.png)
+"),
+    ("aulora", Group::Changes, Kind::Untracked, "crates/aulora-daemon/src/screen.rs", &[AU_STEP], "//! A pane's screen, kept current from its output.
+
+use std::sync::{Arc, Mutex};
+
+pub struct Screen {
+    parser: Arc<Mutex<vt100::Parser>>,
+}
+
+impl Screen {
+    pub fn new(rows: u16, cols: u16) -> Screen {
+        Screen { parser: Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 5000))) }
+    }
+
+    pub fn feed(&self, bytes: &[u8]) {
+        self.parser.lock().expect(\"screen lock\").process(bytes);
+    }
+}
+"),
+    ("aulora", Group::Changes, Kind::Untracked, "docs/screenshots/demo.gif", &[], ""),
+    ("erwins-hire-ai", Group::Changes, Kind::Modified, "avatar/tts.py", &["f0e1d2c3-b4a5-4968-8776-655443322110"], "@@ -30,4 +30,6 @@ async def speak(text: str):
+-    audio = await synthesize(text)
+-    await avatar.play(audio)
++    # Start playing the first sentence while the rest is synthesized.
++    async for chunk in synthesize_stream(text):
++        await avatar.play(chunk)
+"),
+];
+
+fn demo_diff(path: &str, kind: Kind, body: &str) -> crate::git::FileDiff {
+    if kind == Kind::Untracked {
+        if body.is_empty() {
+            return crate::git::FileDiff { path: path.into(), binary: true, ..Default::default() };
+        }
+        return crate::git::added_file(path, body);
+    }
+    let text = format!("diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n{body}");
+    crate::git::parse_diff(&text).pop().unwrap_or_default()
+}
+
+pub fn changes(root_path: &str) -> Vec<crate::changes::FileChange> {
+    let project = root_path.rsplit('/').next().unwrap_or("");
+    DEMO_CHANGES
+        .iter()
+        .filter(|c| c.0 == project)
+        .map(|(_, group, kind, path, sessions, body)| {
+            let d = demo_diff(path, *kind, body);
+            let (added, removed) = d.counts();
+            crate::changes::FileChange {
+                entry: crate::git::Entry { group: *group, kind: *kind, path: path.to_string(), orig: None },
+                added,
+                removed,
+                binary: d.binary,
+                sessions: sessions.iter().map(|s| s.to_string()).collect(),
+                sig: 1,
+            }
+        })
+        .collect()
+}
+
+pub fn diff(f: &crate::changes::FileChange) -> crate::highlight::Styled {
+    let body = DEMO_CHANGES.iter().find(|c| c.3 == f.entry.path && c.1 == f.entry.group).map(|c| c.5).unwrap_or("");
+    let d = demo_diff(&f.entry.path, f.entry.kind, body);
+    let first = f.sessions.first().cloned();
+    crate::highlight::style(&d, |_| first.clone())
 }

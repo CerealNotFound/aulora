@@ -132,6 +132,9 @@ pub fn on_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx, input: &m
 /// Run an action. Returns true to quit.
 pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool {
     let scope = app.scope();
+    if scope == keymap::Scope::Changes && changes_action(app, action) {
+        return false;
+    }
     let h = conv_height(app);
     match action {
         Action::Up | Action::Down => {
@@ -267,6 +270,8 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
                 None => return perform(app, Action::NextAlert, opts, ctx),
             }
         }
+        // Only meaningful in the Changes tab, handled above.
+        Action::Stage | Action::ToggleAll | Action::PrevHunk | Action::NextHunk | Action::Left => {}
         Action::ToggleMouse => {
             app.mouse = !app.mouse;
             set_mouse(app.mouse);
@@ -334,6 +339,9 @@ fn open(app: &mut App, opts: &Options, ctx: &Ctx) {
                 if let Some(root) = app.selected_root() {
                     open_in_editor(app, &root);
                 }
+            }
+            Tab::Changes => {
+                changes_action(app, Action::Open);
             }
         },
     }
@@ -645,6 +653,195 @@ pub fn open_in_editor(app: &mut App, root: &str) {
 }
 
 // ---------------------------------------------------------------------------
+// Changes
+
+/// Handle an action in the Changes tab. Returns false to fall through to
+/// the general handling (focus, tabs, help and so on).
+fn changes_action(app: &mut App, action: Action) -> bool {
+    use crate::changes::Node;
+    let Some(root) = app.selected_root() else { return false };
+    let rows = app.change_rows(&root);
+    let sel = app.change_selected(&root, &rows);
+    let diff_focused = app.view_mut(&root).focus_diff;
+    let row = sel.map(|i| rows[i].clone());
+    let select = |app: &mut App, i: usize| {
+        if let Some(r) = rows.get(i) {
+            let v = app.view_mut(&root);
+            if v.selected.as_ref() != Some(&r.id) {
+                v.selected = Some(r.id.clone());
+                v.diff_scroll = 0;
+            }
+        }
+    };
+    let scroll_diff = |app: &mut App, d: isize| {
+        let v = app.view_mut(&root);
+        v.diff_scroll = (v.diff_scroll as isize + d).max(0) as usize;
+    };
+    match action {
+        Action::Up | Action::Down => {
+            let d = if action == Action::Up { -1 } else { 1 };
+            if diff_focused {
+                scroll_diff(app, d);
+            } else if let Some(i) = sel {
+                select(app, (i as isize + d).clamp(0, rows.len() as isize - 1) as usize);
+            }
+        }
+        Action::PageUp | Action::PageDown => {
+            let page = app.view_mut(&root).diff_height.saturating_sub(2).max(1) as isize;
+            scroll_diff(app, if action == Action::PageUp { -page } else { page });
+        }
+        Action::Top | Action::Bottom => {
+            let top = action == Action::Top;
+            if diff_focused {
+                app.view_mut(&root).diff_scroll = if top { 0 } else { usize::MAX / 2 };
+            } else if !rows.is_empty() {
+                select(app, if top { 0 } else { rows.len() - 1 });
+            }
+        }
+        Action::Open => match row.as_ref().map(|r| &r.node) {
+            Some(Node::File(_)) => app.view_mut(&root).focus_diff = true,
+            Some(_) => toggle_folder(app, &root, row.as_ref().map(|r| r.id.clone())),
+            None => {}
+        },
+        Action::Left => {
+            if diff_focused {
+                app.view_mut(&root).focus_diff = false;
+            } else if let Some(r) = &row {
+                if !matches!(r.node, Node::File(_)) && r.expanded {
+                    toggle_folder(app, &root, Some(r.id.clone()));
+                } else if r.depth == 0 {
+                    app.focus = Focus::Sidebar;
+                } else if let Some(i) = sel {
+                    let parent = rows[..i].iter().rposition(|p| p.depth < r.depth);
+                    if let Some(p) = parent {
+                        select(app, p);
+                    }
+                }
+            }
+        }
+        Action::Back => {
+            if diff_focused {
+                app.view_mut(&root).focus_diff = false;
+            } else {
+                app.focus = Focus::Sidebar;
+            }
+        }
+        Action::Stage => app.stage_selected(&root),
+        Action::ToggleAll => {
+            let v = app.view_mut(&root);
+            v.all = !v.all;
+            v.selected = None;
+            v.scroll = 0;
+        }
+        Action::PrevHunk | Action::NextHunk => {
+            let file = row.as_ref().and_then(|r| app.change_file(&root, r));
+            let Some(file) = file else { return true };
+            let Some(crate::changes::DiffState::Ready(d)) = app.diff_for(&root, &file) else { return true };
+            let starts = crate::view_changes::hunk_starts(d);
+            let v = app.view_mut(&root);
+            let cur = v.diff_scroll;
+            let next = if action == Action::NextHunk {
+                starts.iter().find(|&&s| s > cur).copied()
+            } else {
+                starts.iter().rev().find(|&&s| s < cur).copied()
+            };
+            match next {
+                Some(s) => v.diff_scroll = s,
+                None => app.toast(if action == Action::NextHunk {
+                    "Last change in this file"
+                } else {
+                    "First change in this file"
+                }),
+            }
+        }
+        Action::OpenEditor => {
+            let file = row.as_ref().and_then(|r| app.change_file(&root, r));
+            match file {
+                Some(file) => {
+                    let at = app.view_mut(&root).diff_scroll;
+                    let line = match app.diff_for(&root, &file) {
+                        Some(crate::changes::DiffState::Ready(d)) => crate::view_changes::line_at(d, at),
+                        _ => None,
+                    };
+                    open_file_in_editor(app, &root, &file.entry.path, line);
+                }
+                None => open_in_editor(app, &root),
+            }
+        }
+        Action::Copy => {
+            if let Some(file) = row.as_ref().and_then(|r| app.change_file(&root, r)) {
+                copy_to_clipboard(&file.entry.path);
+                app.toast(format!("Copied {}", file.entry.path));
+            }
+        }
+        _ => return false,
+    }
+    true
+}
+
+fn toggle_folder(app: &mut App, root: &str, id: Option<String>) {
+    let Some(id) = id else { return };
+    let v = app.view_mut(root);
+    if !v.collapsed.remove(&id) {
+        v.collapsed.insert(id);
+    }
+}
+
+fn click_change(app: &mut App, i: usize, double: bool) {
+    use crate::changes::Node;
+    let Some(root) = app.selected_root() else { return };
+    let rows = app.change_rows(&root);
+    let Some(r) = rows.get(i) else { return };
+    let v = app.view_mut(&root);
+    let was = v.selected.as_ref() == Some(&r.id);
+    if !was {
+        v.selected = Some(r.id.clone());
+        v.diff_scroll = 0;
+    }
+    v.focus_diff = false;
+    match r.node {
+        // A click opens or closes a folder (VS Code).
+        Node::Group(_) | Node::Dir(..) => toggle_folder(app, &root, Some(r.id.clone())),
+        Node::File(_) if double => app.view_mut(&root).focus_diff = true,
+        Node::File(_) => {}
+    }
+}
+
+/// Open a file at a line: `code -g file:line` for VS Code and its forks,
+/// `+line file` for terminal editors, just the file otherwise.
+fn open_file_in_editor(app: &mut App, root: &str, rel: &str, line: Option<u32>) {
+    let editor = app.editor.clone();
+    let path = format!("{root}/{rel}");
+    if app.conn == Conn::Demo {
+        app.toast(format!("Would open {rel}{} in {editor} (demo)", line.map(|l| format!(":{l}")).unwrap_or_default()));
+        return;
+    }
+    let exe = editor.rsplit('/').next().unwrap_or(&editor).to_string();
+    let mut cmd = std::process::Command::new(&editor);
+    match (exe.as_str(), line) {
+        ("code" | "code-insiders" | "cursor" | "windsurf" | "codium" | "zed", Some(l)) => {
+            if exe == "zed" {
+                cmd.arg(format!("{path}:{l}"));
+            } else {
+                cmd.args(["-g", &format!("{path}:{l}")]);
+            }
+        }
+        _ => {
+            cmd.arg(&path);
+        }
+    }
+    let spawned = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    match spawned {
+        Ok(_) => app.toast(format!("Opened {rel} in {editor}")),
+        Err(e) => app.error(format!("Couldn't run `{editor}`: {e}. Set AULORA_EDITOR.")),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Menu
 
 fn open_menu(app: &mut App, x: u16, y: u16, items: Vec<MenuItem>) {
@@ -802,6 +999,18 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                     }
                 }
                 Hit::Terminal(id) => wheel_pane(app, &id, lines, col - rect.x, row - rect.y, ctx),
+                Hit::ChangeTree | Hit::ChangeRow(_) => {
+                    if let Some(root) = app.selected_root() {
+                        let v = app.view_mut(&root);
+                        v.scroll = (v.scroll as isize + lines).max(0) as usize;
+                    }
+                }
+                Hit::Diff => {
+                    if let Some(root) = app.selected_root() {
+                        let v = app.view_mut(&root);
+                        v.diff_scroll = (v.diff_scroll as isize + lines).max(0) as usize;
+                    }
+                }
                 Hit::Row(_) | Hit::Sidebar | Hit::Close(_) | Hit::Add(_) => {
                     app.sidebar_scroll = (app.sidebar_scroll as isize + lines).max(0) as usize;
                 }
@@ -832,6 +1041,24 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                     open_menu(app, col.saturating_sub(16), row + 1, items);
                 }
                 Hit::Resume(id) => resume(app, opts, ctx, &id),
+                Hit::ChangeRow(i) => {
+                    app.focus = Focus::Main;
+                    app.typing = false;
+                    click_change(app, i, double);
+                }
+                Hit::ChangeTree => {
+                    app.focus = Focus::Main;
+                    if let Some(root) = app.selected_root() {
+                        app.view_mut(&root).focus_diff = false;
+                    }
+                }
+                Hit::Diff => {
+                    app.focus = Focus::Main;
+                    app.typing = false;
+                    if let Some(root) = app.selected_root() {
+                        app.view_mut(&root).focus_diff = true;
+                    }
+                }
                 Hit::MenuItem(_) | Hit::Dismiss => {}
                 Hit::NewClaude => new_pane(app, opts, ctx, PaneKind::Claude),
                 Hit::NewShell => new_pane(app, opts, ctx, PaneKind::Shell),

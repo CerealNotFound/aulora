@@ -1,0 +1,470 @@
+//! A repository's uncommitted changes: `git status` and `git diff`, parsed.
+//! Runs on the changes worker thread, never on the UI thread.
+
+use std::collections::HashMap;
+use std::process::Command;
+
+/// The groups of VS Code's Source Control view, in its order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Group {
+    Conflicts,
+    Staged,
+    Changes,
+}
+
+impl Group {
+    pub fn label(self) -> &'static str {
+        match self {
+            Group::Conflicts => "Merge conflicts",
+            Group::Staged => "Staged",
+            Group::Changes => "Changes",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Group::Conflicts => "conflicts",
+            Group::Staged => "staged",
+            Group::Changes => "changes",
+        }
+    }
+}
+
+/// Ordered by how much it matters, for rolling folders up (VS Code shows
+/// a folder in the color of its most important change).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Kind {
+    Conflict,
+    Modified,
+    Renamed,
+    TypeChange,
+    Added,
+    Untracked,
+    Deleted,
+}
+
+impl Kind {
+    /// VS Code's letters.
+    pub fn letter(self) -> char {
+        match self {
+            Kind::Conflict => '!',
+            Kind::Modified => 'M',
+            Kind::Renamed => 'R',
+            Kind::TypeChange => 'T',
+            Kind::Added => 'A',
+            Kind::Untracked => 'U',
+            Kind::Deleted => 'D',
+        }
+    }
+
+    pub fn word(self) -> &'static str {
+        match self {
+            Kind::Conflict => "conflict",
+            Kind::Modified => "modified",
+            Kind::Renamed => "renamed",
+            Kind::TypeChange => "type changed",
+            Kind::Added => "added",
+            Kind::Untracked => "untracked",
+            Kind::Deleted => "deleted",
+        }
+    }
+
+    fn from_code(c: char) -> Option<Kind> {
+        Some(match c {
+            'M' => Kind::Modified,
+            'T' => Kind::TypeChange,
+            'A' | 'C' => Kind::Added,
+            'D' => Kind::Deleted,
+            'R' => Kind::Renamed,
+            _ => return None,
+        })
+    }
+}
+
+/// One entry of `git status`. A file staged and then edited again is two.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub group: Group,
+    pub kind: Kind,
+    /// Relative to the repository root, `/`-separated.
+    pub path: String,
+    /// Where a rename came from.
+    pub orig: Option<String>,
+}
+
+/// Parse `git status --porcelain=v2 -z`.
+pub fn parse_status(out: &[u8]) -> Vec<Entry> {
+    let mut entries = Vec::new();
+    let mut fields = out.split(|b| *b == 0).map(|f| String::from_utf8_lossy(f).into_owned());
+    while let Some(rec) = fields.next() {
+        let mut push = |group, kind, path: &str, orig: Option<String>| {
+            entries.push(Entry { group, kind, path: path.to_string(), orig })
+        };
+        match rec.as_bytes().first() {
+            Some(b'1') | Some(b'2') => {
+                let renamed = rec.starts_with('2');
+                let parts: Vec<&str> = rec.splitn(if renamed { 10 } else { 9 }, ' ').collect();
+                let (Some(xy), Some(path)) = (parts.get(1), parts.last()) else { continue };
+                let orig = if renamed { fields.next() } else { None };
+                let mut xy = xy.chars();
+                let (x, y) = (xy.next().unwrap_or('.'), xy.next().unwrap_or('.'));
+                if let Some(k) = Kind::from_code(x) {
+                    push(Group::Staged, k, path, orig.clone());
+                }
+                if let Some(k) = Kind::from_code(y) {
+                    push(Group::Changes, k, path, if x == '.' { orig } else { None });
+                }
+            }
+            Some(b'u') => {
+                if let Some(path) = rec.splitn(11, ' ').nth(10) {
+                    push(Group::Conflicts, Kind::Conflict, path, None);
+                }
+            }
+            Some(b'?') => {
+                if let Some(path) = rec.get(2..) {
+                    push(Group::Changes, Kind::Untracked, path, None);
+                }
+            }
+            _ => {}
+        }
+    }
+    entries
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LineKind {
+    Context,
+    Added,
+    Removed,
+    /// A conflict marker line (`<<<<<<<`, `=======`, `>>>>>>>`).
+    Marker,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DiffLine {
+    pub kind: LineKind,
+    pub old: Option<u32>,
+    pub new: Option<u32>,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct Hunk {
+    pub old_start: u32,
+    pub new_start: u32,
+    /// The function or section git found above the hunk.
+    pub context: String,
+    pub lines: Vec<DiffLine>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FileDiff {
+    pub path: String,
+    pub hunks: Vec<Hunk>,
+    pub binary: bool,
+}
+
+impl FileDiff {
+    pub fn counts(&self) -> (u32, u32) {
+        let mut c = (0, 0);
+        for l in self.hunks.iter().flat_map(|h| &h.lines) {
+            match l.kind {
+                LineKind::Added => c.0 += 1,
+                LineKind::Removed => c.1 += 1,
+                _ => {}
+            }
+        }
+        c
+    }
+
+    pub fn added_lines(&self) -> impl Iterator<Item = &str> {
+        self.hunks.iter().flat_map(|h| &h.lines).filter(|l| l.kind == LineKind::Added).map(|l| l.text.as_str())
+    }
+}
+
+/// A path as git prints it in diff headers: maybe quoted, maybe with a
+/// trailing tab.
+fn header_path(s: &str) -> String {
+    let s = s.trim_end_matches('\t');
+    let unquoted = if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
+        s[1..s.len() - 1].replace("\\\"", "\"").replace("\\\\", "\\").replace("\\t", "\t")
+    } else {
+        s.to_string()
+    };
+    unquoted.strip_prefix("a/").or_else(|| unquoted.strip_prefix("b/")).unwrap_or(&unquoted).to_string()
+}
+
+fn range_start(s: &str) -> u32 {
+    s.split(',').next().and_then(|n| n.parse().ok()).unwrap_or(0)
+}
+
+/// Parse unified diff output covering any number of files. Combined diffs
+/// of conflicted files (`diff --cc`) are skipped; those are read whole.
+pub fn parse_diff(text: &str) -> Vec<FileDiff> {
+    let mut files: Vec<FileDiff> = Vec::new();
+    let mut skipping = false;
+    let (mut old_no, mut new_no) = (0u32, 0u32);
+    let mut in_header = false;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            skipping = false;
+            in_header = true;
+            // Best guess until the ---/+++ lines say exactly.
+            let guess = rest.rsplit_once(" b/").map(|(_, b)| b.to_string()).unwrap_or_default();
+            files.push(FileDiff { path: guess, ..Default::default() });
+            continue;
+        }
+        if line.starts_with("diff --cc ") || line.starts_with("diff --combined ") {
+            skipping = true;
+            continue;
+        }
+        if skipping {
+            continue;
+        }
+        let Some(file) = files.last_mut() else { continue };
+        if in_header {
+            if let Some(p) = line.strip_prefix("+++ ") {
+                if p != "/dev/null" {
+                    file.path = header_path(p);
+                }
+                continue;
+            }
+            if let Some(p) = line.strip_prefix("--- ") {
+                if p != "/dev/null" {
+                    file.path = header_path(p);
+                }
+                continue;
+            }
+            if let Some(p) = line.strip_prefix("rename to ") {
+                file.path = header_path(p);
+                continue;
+            }
+            if line.starts_with("Binary files ") || line.starts_with("GIT binary patch") {
+                file.binary = true;
+                continue;
+            }
+        }
+        if let Some(rest) = line.strip_prefix("@@ ") {
+            in_header = false;
+            let Some((ranges, context)) = rest.split_once(" @@") else { continue };
+            let mut it = ranges.split_whitespace();
+            let old = it.next().and_then(|s| s.strip_prefix('-')).map(range_start).unwrap_or(0);
+            let new = it.next().and_then(|s| s.strip_prefix('+')).map(range_start).unwrap_or(0);
+            old_no = old;
+            new_no = new;
+            file.hunks.push(Hunk {
+                old_start: old,
+                new_start: new,
+                context: context.trim().to_string(),
+                lines: Vec::new(),
+            });
+            continue;
+        }
+        let Some(hunk) = file.hunks.last_mut() else { continue };
+        let (kind, text) = match line.as_bytes().first() {
+            Some(b'+') => (LineKind::Added, &line[1..]),
+            Some(b'-') => (LineKind::Removed, &line[1..]),
+            Some(b' ') => (LineKind::Context, &line[1..]),
+            Some(b'\\') => continue, // "\ No newline at end of file"
+            None => (LineKind::Context, ""),
+            _ => continue,
+        };
+        let (old, new) = match kind {
+            LineKind::Added => (None, Some(new_no)),
+            LineKind::Removed => (Some(old_no), None),
+            _ => (Some(old_no), Some(new_no)),
+        };
+        if old.is_some() {
+            old_no += 1;
+        }
+        if new.is_some() {
+            new_no += 1;
+        }
+        hunk.lines.push(DiffLine { kind, old, new, text: text.to_string() });
+    }
+    files
+}
+
+/// A whole new file as a diff: every line added.
+pub fn added_file(path: &str, content: &str) -> FileDiff {
+    let lines: Vec<DiffLine> = content
+        .lines()
+        .enumerate()
+        .map(|(i, l)| DiffLine { kind: LineKind::Added, old: None, new: Some(i as u32 + 1), text: l.to_string() })
+        .collect();
+    let hunks = if lines.is_empty() {
+        vec![]
+    } else {
+        vec![Hunk { old_start: 0, new_start: 1, context: String::new(), lines }]
+    };
+    FileDiff { path: path.to_string(), hunks, binary: false }
+}
+
+/// A conflicted file, whole, with its two sides marked: ours as removed,
+/// theirs as added, the markers between (VS Code's merge decorations).
+pub fn conflict_file(path: &str, content: &str) -> FileDiff {
+    #[derive(PartialEq)]
+    enum Side {
+        Outside,
+        Ours,
+        Base,
+        Theirs,
+    }
+    let mut side = Side::Outside;
+    let mut lines = Vec::new();
+    for (i, l) in content.lines().enumerate() {
+        let n = Some(i as u32 + 1);
+        let marker = if l.starts_with("<<<<<<<") {
+            side = Side::Ours;
+            true
+        } else if l.starts_with("|||||||") && side == Side::Ours {
+            side = Side::Base;
+            true
+        } else if l.starts_with("=======") && side != Side::Outside {
+            side = Side::Theirs;
+            true
+        } else if l.starts_with(">>>>>>>") && side != Side::Outside {
+            side = Side::Outside;
+            true
+        } else {
+            false
+        };
+        let kind = match (marker, &side) {
+            (true, _) => LineKind::Marker,
+            (false, Side::Ours) => LineKind::Removed,
+            (false, Side::Theirs) => LineKind::Added,
+            _ => LineKind::Context,
+        };
+        lines.push(DiffLine { kind, old: n, new: n, text: l.to_string() });
+    }
+    FileDiff { path: path.to_string(), hunks: vec![Hunk { lines, ..Default::default() }], binary: false }
+}
+
+pub fn run(root: &str, args: &[&str]) -> Result<Vec<u8>, String> {
+    let out = Command::new("git")
+        .args(["--no-optional-locks", "-c", "core.quotepath=off", "-C", root])
+        .args(args)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("LC_ALL", "C")
+        .output()
+        .map_err(|e| format!("couldn't run git: {e}"))?;
+    if out.status.success() { Ok(out.stdout) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_string()) }
+}
+
+const DIFF: &[&str] = &["diff", "--no-color", "--no-ext-diff", "--find-renames"];
+
+/// Every unstaged (or staged) change, `-U0`, by path.
+pub fn diffs(root: &str, staged: bool) -> Result<HashMap<String, FileDiff>, String> {
+    let mut args = DIFF.to_vec();
+    args.push("-U0");
+    if staged {
+        args.push("--cached");
+    }
+    let out = run(root, &args)?;
+    Ok(parse_diff(&String::from_utf8_lossy(&out)).into_iter().map(|d| (d.path.clone(), d)).collect())
+}
+
+/// One file's diff with context, for showing.
+pub fn file_diff(root: &str, e: &Entry) -> Result<FileDiff, String> {
+    let full = std::path::Path::new(root).join(&e.path);
+    match e.kind {
+        Kind::Untracked => {
+            let content = read_text(&full)?;
+            Ok(match content {
+                Some(c) => added_file(&e.path, &c),
+                None => FileDiff { path: e.path.clone(), binary: true, ..Default::default() },
+            })
+        }
+        Kind::Conflict => Ok(match read_text(&full)? {
+            Some(c) => conflict_file(&e.path, &c),
+            None => FileDiff { path: e.path.clone(), binary: true, ..Default::default() },
+        }),
+        _ => {
+            let mut args = DIFF.to_vec();
+            args.push("-U3");
+            if e.group == Group::Staged {
+                args.push("--cached");
+            }
+            args.push("--");
+            if let Some(o) = &e.orig {
+                args.push(o);
+            }
+            args.push(&e.path);
+            let out = run(root, &args)?;
+            let mut files = parse_diff(&String::from_utf8_lossy(&out));
+            Ok(files
+                .iter()
+                .position(|f| f.path == e.path)
+                .map(|i| files.swap_remove(i))
+                .or_else(|| files.pop())
+                .unwrap_or_else(|| FileDiff { path: e.path.clone(), ..Default::default() }))
+        }
+    }
+}
+
+/// A text file's contents, or None for binary. Big files are cut short.
+pub fn read_text(path: &std::path::Path) -> Result<Option<String>, String> {
+    use std::io::Read;
+    const MAX: u64 = 2 * 1024 * 1024;
+    let f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut buf = Vec::new();
+    f.take(MAX).read_to_end(&mut buf).map_err(|e| e.to_string())?;
+    if buf.iter().take(8000).any(|b| *b == 0) {
+        return Ok(None);
+    }
+    Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
+}
+
+/// Stage or unstage paths (files or folders).
+pub fn stage(root: &str, paths: &[String], unstage: bool) -> Result<(), String> {
+    let mut args: Vec<&str> = if unstage { vec!["reset", "-q", "--"] } else { vec!["add", "-A", "--"] };
+    args.extend(paths.iter().map(String::as_str));
+    run(root, &args).map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_records() {
+        let out = b"1 .M N... 100644 100644 100644 abc abc src/a.rs\x001 MM N... 100644 100644 100644 abc def b c.txt\x002 R. N... 100644 100644 100644 abc abc R100 new.rs\x00old.rs\x00u UU N... 100644 100644 100644 100644 a b c conf.rs\x00? notes/todo.md\x00";
+        let e = parse_status(out);
+        assert_eq!(e[0], Entry { group: Group::Changes, kind: Kind::Modified, path: "src/a.rs".into(), orig: None });
+        assert_eq!((e[1].group, e[1].path.as_str()), (Group::Staged, "b c.txt"));
+        assert_eq!((e[2].group, e[2].path.as_str()), (Group::Changes, "b c.txt"));
+        assert_eq!(
+            e[3],
+            Entry { group: Group::Staged, kind: Kind::Renamed, path: "new.rs".into(), orig: Some("old.rs".into()) }
+        );
+        assert_eq!((e[4].group, e[4].kind, e[4].path.as_str()), (Group::Conflicts, Kind::Conflict, "conf.rs"));
+        assert_eq!((e[5].kind, e[5].path.as_str()), (Kind::Untracked, "notes/todo.md"));
+        assert_eq!(e.len(), 6);
+    }
+
+    #[test]
+    fn unified_diffs() {
+        let text = "diff --git a/src/a.rs b/src/a.rs\nindex 1..2 100644\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -10,3 +10,4 @@ fn main() {\n     let a = 1;\n-    let b = 2;\n+    let b = 3;\n+    let c = 4;\n }\n\\ No newline at end of file\ndiff --git a/gone.txt b/gone.txt\ndeleted file mode 100644\n--- a/gone.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-bye\ndiff --git a/img.png b/img.png\nBinary files a/img.png and b/img.png differ\n";
+        let files = parse_diff(text);
+        assert_eq!(files.len(), 3);
+        let a = &files[0];
+        assert_eq!(a.path, "src/a.rs");
+        assert_eq!(a.hunks[0].context, "fn main() {");
+        assert_eq!(a.counts(), (2, 1));
+        let l = &a.hunks[0].lines;
+        assert_eq!((l[1].kind, l[1].old, l[1].new), (LineKind::Removed, Some(11), None));
+        assert_eq!((l[3].kind, l[3].new, l[3].text.as_str()), (LineKind::Added, Some(12), "    let c = 4;"));
+        assert_eq!((l[4].old, l[4].new), (Some(12), Some(13)));
+        assert_eq!(files[1].path, "gone.txt");
+        assert_eq!(files[1].counts(), (0, 1));
+        assert!(files[2].binary);
+    }
+
+    #[test]
+    fn conflicts_mark_both_sides() {
+        let d = conflict_file("x", "a\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> b\nz\n");
+        let kinds: Vec<LineKind> = d.hunks[0].lines.iter().map(|l| l.kind).collect();
+        use LineKind::*;
+        assert_eq!(kinds, [Context, Marker, Removed, Marker, Added, Marker, Context]);
+    }
+}

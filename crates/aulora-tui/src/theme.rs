@@ -28,11 +28,9 @@ pub struct Theme {
     pub yellow: Color,
     pub red: Color,
     /// For links and syntax highlighting.
-    #[allow(dead_code)]
     pub blue: Color,
     pub cyan: Color,
     pub magenta: Color,
-    #[allow(dead_code)]
     pub orange: Color,
     /// Header and footer bar.
     pub bar_bg: Color,

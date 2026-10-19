@@ -47,12 +47,12 @@ pub fn fit(s: &str, max: usize) -> String {
     out
 }
 
-fn spans_width(spans: &[Span]) -> usize {
+pub(crate) fn spans_width(spans: &[Span]) -> usize {
     spans.iter().map(|s| w(&s.content)).sum()
 }
 
 /// Drop whole spans from the end before cutting text (Herdr).
-fn fit_spans(spans: Vec<Span<'static>>, max: usize) -> Vec<Span<'static>> {
+pub(crate) fn fit_spans(spans: Vec<Span<'static>>, max: usize) -> Vec<Span<'static>> {
     let mut out = Vec::new();
     let mut used = 0;
     for s in spans {
@@ -72,7 +72,7 @@ fn fit_spans(spans: Vec<Span<'static>>, max: usize) -> Vec<Span<'static>> {
 }
 
 /// Left and right content on one line, padded to `width`.
-fn lr(left: Vec<Span<'static>>, right: Vec<Span<'static>>, width: usize) -> Line<'static> {
+pub(crate) fn lr(left: Vec<Span<'static>>, right: Vec<Span<'static>>, width: usize) -> Line<'static> {
     let rw = spans_width(&right);
     let left = fit_spans(left, width.saturating_sub(rw + usize::from(rw > 0)));
     let lw = spans_width(&left);
@@ -82,7 +82,7 @@ fn lr(left: Vec<Span<'static>>, right: Vec<Span<'static>>, width: usize) -> Line
     Line::from(spans)
 }
 
-fn sp(s: impl Into<String>, style: Style) -> Span<'static> {
+pub(crate) fn sp(s: impl Into<String>, style: Style) -> Span<'static> {
     Span::styled(s.into(), style)
 }
 
@@ -92,18 +92,18 @@ fn clock(ms: Ms) -> String {
         .unwrap_or_default()
 }
 
-fn plural(n: usize, word: &str) -> String {
+pub(crate) fn plural(n: usize, word: &str) -> String {
     if n == 1 { format!("1 {word}") } else { format!("{n} {word}s") }
 }
 
-fn fill(f: &mut Frame, area: Rect, bg: Color) {
+pub(crate) fn fill(f: &mut Frame, area: Rect, bg: Color) {
     if bg != Color::Reset {
         f.render_widget(Block::new().style(Style::new().bg(bg)), area);
     }
 }
 
 /// Text on a pill filled with a color.
-fn on_fill() -> Color {
+pub(crate) fn on_fill() -> Color {
     let t = theme::get();
     match t.bg {
         Color::Reset if t.light => Color::White,
@@ -152,7 +152,7 @@ fn dim_behind(buf: &mut Buffer) {
     }
 }
 
-fn scrollbar(f: &mut Frame, area: Rect, top: usize, view: usize, total: usize, focused: bool) {
+pub(crate) fn scrollbar(f: &mut Frame, area: Rect, top: usize, view: usize, total: usize, focused: bool) {
     if total <= view || area.height == 0 {
         return;
     }
@@ -517,7 +517,14 @@ fn main(f: &mut Frame, area: Rect, app: &mut App) {
     let mut x = rows[0].x;
     let mut spans = Vec::new();
     for (i, tab) in app.tabs().iter().enumerate() {
-        let name = format!("  {} {}  ", i + 1, tab.label());
+        let count = match tab {
+            Tab::Changes => app.selected_root().and_then(|r| app.change_count(&r)).filter(|n| *n > 0),
+            _ => None,
+        };
+        let name = match count {
+            Some(n) => format!("  {} {} {n}  ", i + 1, tab.label()),
+            None => format!("  {} {}  ", i + 1, tab.label()),
+        };
         let style = if *tab == current {
             let bg = if focused { t.accent } else { t.select };
             let fg_ = if focused { on_fill() } else { t.text };
@@ -580,6 +587,16 @@ fn main(f: &mut Frame, area: Rect, app: &mut App) {
             }
         }
         (Tab::Overview, RowRef::Project(root)) => project_overview(f, content, app, &root.clone()),
+        (Tab::Changes, _) => {
+            if let Some(root) = app.selected_root() {
+                crate::view_changes::draw(
+                    f,
+                    Rect { y: content.y + 1, height: content.height.saturating_sub(1), ..content },
+                    app,
+                    &root,
+                );
+            }
+        }
         _ => {}
     }
 }
@@ -937,7 +954,7 @@ fn button(label: &str, primary: bool, danger: bool) -> Span<'static> {
 /// Help built from the keymap: filter by typing, ⏎ runs the binding (lazygit).
 pub fn help_rows(query: &str) -> Vec<(Scope, &'static str, &'static str, keymap::Action)> {
     let q = query.to_lowercase();
-    let order = [Scope::Sidebar, Scope::Conversation, Scope::Pane, Scope::Overview, Scope::Global];
+    let order = [Scope::Sidebar, Scope::Pane, Scope::Changes, Scope::Conversation, Scope::Overview, Scope::Global];
     order
         .iter()
         .flat_map(|s| BINDINGS.iter().filter(move |b| b.scope == *s))

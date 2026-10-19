@@ -32,6 +32,7 @@ pub enum Tab {
     Terminal,
     Conversation,
     Overview,
+    Changes,
 }
 
 impl Tab {
@@ -40,6 +41,7 @@ impl Tab {
             Tab::Terminal => "Terminal",
             Tab::Conversation => "Conversation",
             Tab::Overview => "Overview",
+            Tab::Changes => "Changes",
         }
     }
 }
@@ -87,6 +89,10 @@ pub enum Hit {
     /// The + on a project row.
     Add(String),
     MenuItem(usize),
+    /// A row of the Changes tree, by index.
+    ChangeRow(usize),
+    ChangeTree,
+    Diff,
     /// The resume button above a session.
     Resume(String),
     /// Behind an open menu.
@@ -192,8 +198,14 @@ pub struct App {
     pub view_size: Option<(String, u16, u16)>,
     /// Height of the conversation viewport in the last frame.
     pub conv_height: usize,
-    /// Last tab chosen for panes.
-    pub pane_tab: Tab,
+    /// The tab last chosen; it stays as you move between rows, when the
+    /// new row has it (VS Code keeps Source Control open as you switch files).
+    pub tab_pref: Tab,
+    pub worker: Option<crate::changes::Worker>,
+    pub changes: HashMap<String, crate::changes::Project>,
+    pub changes_view: HashMap<String, crate::changes::View>,
+    /// Styled diffs by root and file, with the change they were made from.
+    pub diffs: HashMap<String, (u64, crate::changes::DiffState)>,
     pub conversations: HashMap<String, (Conversation, Ms)>,
     pub theme_picker: Option<usize>,
     pub theme_before: usize,
@@ -247,7 +259,11 @@ impl App {
             pending_select: None,
             view_size: None,
             conv_height: 20,
-            pane_tab: Tab::Terminal,
+            tab_pref: Tab::Terminal,
+            worker: None,
+            changes: HashMap::new(),
+            changes_view: HashMap::new(),
+            diffs: HashMap::new(),
             conversations: HashMap::new(),
             theme_picker: None,
             theme_before: 0,
@@ -278,7 +294,7 @@ impl App {
             && self.pane(&id).is_some()
         {
             self.selected = Some(RowRef::Pane(id));
-            self.pane_tab = Tab::Terminal;
+            self.tab_pref = Tab::Terminal;
             if focus {
                 self.focus = Focus::Main;
                 self.typing = true;
@@ -606,27 +622,29 @@ impl App {
     // --- tabs and focus ---------------------------------------------------
 
     pub fn tabs(&self) -> Vec<Tab> {
-        match &self.selected {
-            Some(RowRef::Pane(_)) => vec![Tab::Terminal],
-            Some(RowRef::Session(_)) => vec![Tab::Conversation],
-            Some(RowRef::Project(_)) => vec![Tab::Overview],
-            None => vec![],
+        let Some(sel) = &self.selected else { return vec![] };
+        let mut tabs = match sel {
+            RowRef::Pane(_) => vec![Tab::Terminal],
+            RowRef::Session(_) => vec![Tab::Conversation],
+            RowRef::Project(_) => vec![Tab::Overview],
+        };
+        if self.root_of(sel).and_then(|r| self.project(&r)).is_some_and(|p| p.git.is_some()) {
+            tabs.push(Tab::Changes);
         }
+        tabs
     }
 
     pub fn current_tab(&self) -> Tab {
         let tabs = self.tabs();
-        if matches!(self.selected, Some(RowRef::Pane(_))) && tabs.contains(&self.pane_tab) {
-            return self.pane_tab;
+        if tabs.contains(&self.tab_pref) {
+            return self.tab_pref;
         }
         tabs.first().copied().unwrap_or(Tab::Overview)
     }
 
     pub fn set_tab(&mut self, tab: Tab) {
         if self.tabs().contains(&tab) {
-            if matches!(self.selected, Some(RowRef::Pane(_))) {
-                self.pane_tab = tab;
-            }
+            self.tab_pref = tab;
             if tab != Tab::Terminal {
                 self.typing = false;
             }
@@ -650,6 +668,7 @@ impl App {
                 Tab::Terminal => Scope::Pane,
                 Tab::Conversation => Scope::Conversation,
                 Tab::Overview => Scope::Overview,
+                Tab::Changes => Scope::Changes,
             },
         }
     }

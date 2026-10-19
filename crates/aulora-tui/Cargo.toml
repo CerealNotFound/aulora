@@ -16,3 +16,6 @@ chrono.workspace = true
 unicode-width.workspace = true
 vt100.workspace = true
 libc.workspace = true
+syntect.workspace = true
+two-face.workspace = true
+similar.workspace = true

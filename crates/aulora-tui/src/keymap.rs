@@ -15,6 +15,8 @@ pub enum Scope {
     Pane,
     /// The main area has focus, showing a project overview.
     Overview,
+    /// The main area has focus, showing changes.
+    Changes,
 }
 
 impl Scope {
@@ -25,6 +27,7 @@ impl Scope {
             Scope::Conversation => "conversation",
             Scope::Pane => "terminal pane",
             Scope::Overview => "project",
+            Scope::Changes => "changes",
         }
     }
 }
@@ -60,6 +63,11 @@ pub enum Action {
     ToggleEnded,
     Resume,
     Menu,
+    Stage,
+    ToggleAll,
+    PrevHunk,
+    NextHunk,
+    Left,
     PrevPrompt,
     NextPrompt,
     Copy,
@@ -172,6 +180,33 @@ pub static BINDINGS: &[Binding] = &[
     b!(Pane, "r", [k('r')], Restart, "restart an exited pane"),
     b!(Pane, "m", [k('m')], Menu, "actions for this pane (or right-click)"),
     b!(Pane, "esc", [code(KeyCode::Esc), code(KeyCode::Left), k('h')], Back, "back to the sidebar", "back"),
+    // Changes.
+    b!(
+        Changes,
+        "↑↓ j k",
+        [code(KeyCode::Up), code(KeyCode::Down), k('k'), k('j')],
+        Up,
+        "move through files, or scroll the diff",
+        "move"
+    ),
+    b!(
+        Changes,
+        "⏎ l",
+        [code(KeyCode::Enter), code(KeyCode::Right), k('l')],
+        Open,
+        "open a folder, or read the file's diff",
+        "diff"
+    ),
+    b!(Changes, "h", [code(KeyCode::Left), k('h')], Left, "back to the files, close a folder, or up a level"),
+    b!(Changes, "space", [k(' ')], Stage, "stage or unstage the file or folder", "stage"),
+    b!(Changes, "[ ]", [k('['), k(']')], PrevHunk, "previous / next change in the diff", "changes"),
+    b!(Changes, "a", [k('a')], ToggleAll, "this agent's changes, or every change in the project", "all"),
+    b!(Changes, "o", [k('o')], OpenEditor, "open the file in your editor at the change"),
+    b!(Changes, "y", [k('y')], Copy, "copy the file's path"),
+    b!(Changes, "PgUp PgDn", [code(KeyCode::PageUp), code(KeyCode::PageDown)], PageUp, "scroll the diff a page"),
+    b!(Changes, "g", [k('g'), code(KeyCode::Home)], Top, "first file"),
+    b!(Changes, "G", [k('G'), code(KeyCode::End)], Bottom, "last file"),
+    b!(Changes, "esc", [code(KeyCode::Esc)], Back, "back to the files, then the sidebar", "back"),
     // Project overview.
     b!(Overview, "esc", [code(KeyCode::Esc), code(KeyCode::Left), k('h')], Back, "back to the sidebar", "back"),
     // Everywhere.
@@ -206,6 +241,7 @@ fn resolve(b: &Binding, i: usize) -> Action {
         (Up, 1 | 3) => Down,
         (PageUp, 1) => PageDown,
         (PrevPrompt, 1) => NextPrompt,
+        (PrevHunk, 1) => NextHunk,
         (PrevTab, 1) => NextTab,
         (Tab(_), n) => Tab(n as u8),
         (a, _) => a,
@@ -242,7 +278,8 @@ mod tests {
 
     #[test]
     fn no_key_is_bound_twice_in_one_scope() {
-        for scope in [Scope::Global, Scope::Sidebar, Scope::Conversation, Scope::Pane, Scope::Overview] {
+        for scope in [Scope::Global, Scope::Sidebar, Scope::Conversation, Scope::Pane, Scope::Overview, Scope::Changes]
+        {
             let mut seen = HashSet::new();
             for b in BINDINGS.iter().filter(|b| b.scope == scope) {
                 for key in b.keys {
