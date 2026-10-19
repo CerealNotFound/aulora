@@ -99,9 +99,54 @@ pub fn basename(path: &str) -> String {
     std::path::Path::new(path).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string())
 }
 
+/// Parse an RFC 3339 UTC timestamp like "2026-10-19T11:01:39.619Z" into
+/// epoch milliseconds. Offsets other than Z are applied.
+pub fn parse_iso_ms(s: &str) -> Option<Ms> {
+    let b = s.as_bytes();
+    if b.len() < 19 || b[4] != b'-' || b[7] != b'-' || b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    let num = |a: usize, z: usize| s.get(a..z)?.parse::<i64>().ok();
+    let (y, mo, d) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
+    let (h, mi, sec) = (num(11, 13)?, num(14, 16)?, num(17, 19)?);
+    let mut rest = &s[19..];
+    let mut ms = 0i64;
+    if let Some(frac) = rest.strip_prefix('.') {
+        let digits: String = frac.chars().take_while(char::is_ascii_digit).collect();
+        rest = &frac[digits.len()..];
+        let padded = format!("{:0<3}", &digits[..digits.len().min(3)]);
+        ms = padded.parse().ok()?;
+    }
+    let offset_min = match rest {
+        "" | "Z" | "z" => 0,
+        o if o.len() == 6 && (o.starts_with('+') || o.starts_with('-')) => {
+            let sign = if o.starts_with('-') { -1 } else { 1 };
+            sign * (o[1..3].parse::<i64>().ok()? * 60 + o[4..6].parse::<i64>().ok()?)
+        }
+        _ => return None,
+    };
+    // Days from the civil date (Howard Hinnant's algorithm).
+    let y = if mo <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (mo + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(((days * 86_400 + h * 3_600 + mi * 60 + sec - offset_min * 60) * 1_000) + ms)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn iso_timestamps() {
+        assert_eq!(parse_iso_ms("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(parse_iso_ms("2026-10-19T11:01:39.619Z"), Some(1_792_407_699_619));
+        assert_eq!(parse_iso_ms("2026-10-19T16:31:39.6+05:30"), Some(1_792_407_699_600));
+        assert_eq!(parse_iso_ms("not a date"), None);
+    }
 
     #[test]
     fn models() {

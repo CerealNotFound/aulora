@@ -9,7 +9,8 @@ use std::io::{Read, Seek, SeekFrom};
 
 use serde_json::Value;
 
-use crate::model::Session;
+use crate::model::{FileTouch, Ms, Origin, PromptEntry, Session, SessionState};
+use crate::util::{parse_iso_ms, rel_path, truncate};
 
 #[derive(Debug, Clone, Default)]
 pub struct Cursor {
@@ -30,7 +31,47 @@ pub struct Summary {
     pub last_turn_ms: Option<u64>,
     /// Assistant text written since the latest human prompt.
     pub turn_text: Option<String>,
+    /// Working directory recorded on transcript lines.
+    pub cwd: Option<String>,
+    pub first_at: Option<Ms>,
+    pub last_at: Option<Ms>,
+    /// Human prompts, oldest first (last few only).
+    pub prompts: Vec<PromptEntry>,
+    pub prompt_count: u32,
+    pub tool_calls: u32,
+    /// Files edited, by absolute path.
+    pub files: Vec<FileTouch>,
     last_msg_id: Option<String>,
+}
+
+const MAX_PROMPTS: usize = 12;
+
+fn lines_of(v: Option<&Value>) -> u32 {
+    v.and_then(Value::as_str).map(|s| s.lines().count() as u32).unwrap_or(0)
+}
+
+fn record_edit(sum: &mut Summary, name: &str, input: &Value, at: Ms) {
+    let path = input.get("file_path").or_else(|| input.get("notebook_path")).and_then(Value::as_str);
+    let Some(path) = path else { return };
+    let (added, removed) = match name {
+        "Write" => (lines_of(input.get("content")), 0),
+        "MultiEdit" => input.get("edits").and_then(Value::as_array).map_or((0, 0), |edits| {
+            edits
+                .iter()
+                .fold((0, 0), |(a, r), e| (a + lines_of(e.get("new_string")), r + lines_of(e.get("old_string"))))
+        }),
+        "NotebookEdit" => (lines_of(input.get("new_source")), 0),
+        _ => (lines_of(input.get("new_string")), lines_of(input.get("old_string"))),
+    };
+    match sum.files.iter_mut().find(|f| f.path == path) {
+        Some(f) => {
+            f.edits += 1;
+            f.added += added;
+            f.removed += removed;
+            f.last_at = f.last_at.max(at);
+        }
+        None => sum.files.push(FileTouch { path: path.to_string(), edits: 1, added, removed, last_at: at }),
+    }
 }
 
 /// Read anything appended since the last call. Returns true if something changed.
@@ -82,6 +123,15 @@ fn process_line(line: &[u8], sum: &mut Summary) {
     if let Some(b) = v.get("gitBranch").and_then(Value::as_str).filter(|b| !b.is_empty()) {
         sum.git_branch = Some(b.to_string());
     }
+    if let Some(c) = v.get("cwd").and_then(Value::as_str).filter(|c| !c.is_empty()) {
+        sum.cwd = Some(c.to_string());
+    }
+    let at = v.get("timestamp").and_then(Value::as_str).and_then(parse_iso_ms);
+    if let Some(at) = at {
+        sum.first_at = Some(sum.first_at.map_or(at, |f| f.min(at)));
+        sum.last_at = Some(sum.last_at.map_or(at, |l| l.max(at)));
+    }
+    let at = at.or(sum.last_at).unwrap_or(0);
     match v.get("type").and_then(Value::as_str).unwrap_or("") {
         "ai-title" => {
             if let Some(t) = v.get("aiTitle").and_then(Value::as_str) {
@@ -104,6 +154,15 @@ fn process_line(line: &[u8], sum: &mut Summary) {
             let meta = v.get("isMeta").and_then(Value::as_bool).unwrap_or(false);
             if human && !meta {
                 sum.turn_text = None;
+                let text = v.get("message").and_then(|m| m.get("content")).and_then(Value::as_str).unwrap_or("");
+                // Slash commands and their output are recorded as tagged text.
+                if !text.trim().is_empty() && !text.starts_with("<command-") && !text.starts_with("<local-command") {
+                    sum.prompt_count += 1;
+                    sum.prompts.push(PromptEntry { at, text: truncate(text, 600) });
+                    if sum.prompts.len() > MAX_PROMPTS {
+                        sum.prompts.remove(0);
+                    }
+                }
             }
         }
         "system" => {
@@ -126,6 +185,17 @@ fn process_line(line: &[u8], sum: &mut Summary) {
                 }
                 if new_msg {
                     sum.output_tokens += g("output_tokens");
+                }
+            }
+            if let Some(blocks) = msg.get("content").and_then(Value::as_array) {
+                for b in blocks.iter().filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use")) {
+                    sum.tool_calls += 1;
+                    let name = b.get("name").and_then(Value::as_str).unwrap_or("");
+                    if matches!(name, "Edit" | "MultiEdit" | "Write" | "NotebookEdit")
+                        && let Some(input) = b.get("input")
+                    {
+                        record_edit(sum, name, input, at);
+                    }
                 }
             }
             let text: Vec<&str> = msg
@@ -161,6 +231,39 @@ fn process_line(line: &[u8], sum: &mut Summary) {
 }
 
 impl Summary {
+    /// Fill a session that no hook has described, from the transcript alone.
+    pub fn apply_history(&self, sess: &mut Session) {
+        self.apply_to(sess);
+        if let Some(at) = self.first_at {
+            sess.started_at = at;
+        }
+        if let Some(at) = self.last_at {
+            sess.last_event_at = sess.last_event_at.max(at);
+            if sess.origin == Origin::History {
+                sess.state_since = at;
+            }
+        }
+        sess.turns = self.prompt_count;
+        sess.tool_calls = self.tool_calls;
+        sess.prompts = self.prompts.clone();
+        if let Some(p) = self.prompts.last() {
+            sess.last_prompt = Some(p.text.clone());
+            sess.last_prompt_at = Some(p.at);
+        }
+        if let Some(t) = &self.last_assistant_text {
+            sess.last_reply = Some(t.clone());
+            sess.last_reply_at = self.last_at;
+        }
+        let root = sess.project_root.clone();
+        let mut files: Vec<FileTouch> =
+            self.files.iter().map(|f| FileTouch { path: rel_path(&f.path, &root), ..f.clone() }).collect();
+        files.sort_by_key(|f| -f.last_at);
+        sess.files_touched = files;
+        if sess.origin == Origin::History {
+            sess.state = SessionState::Ended { reason: "history".into() };
+        }
+    }
+
     /// Fill in what hooks don't tell us.
     pub fn apply_to(&self, sess: &mut Session) {
         if let Some(t) = &self.ai_title {
@@ -219,6 +322,22 @@ mod tests {
         assert!(read_new(path.to_str().unwrap(), &mut c, &mut s).unwrap());
         assert_eq!(s.last_prompt.as_deref(), Some("hello"));
         assert!(!read_new(path.to_str().unwrap(), &mut c, &mut s).unwrap());
+
+        writeln!(f, r#"{{"type":"user","timestamp":"2026-10-19T10:00:00.000Z","cwd":"/p","message":{{"role":"user","content":"fix calc"}}}}"#).unwrap();
+        writeln!(f, r#"{{"type":"user","timestamp":"2026-10-19T10:00:01.000Z","message":{{"role":"user","content":"<command-name>/clear</command-name>"}}}}"#).unwrap();
+        writeln!(f, r#"{{"type":"assistant","timestamp":"2026-10-19T10:00:05.000Z","message":{{"id":"m2","content":[{{"type":"tool_use","id":"t1","name":"Edit","input":{{"file_path":"/p/calc.py","old_string":"a","new_string":"b\nc"}}}}]}}}}"#).unwrap();
+        f.flush().unwrap();
+        read_new(path.to_str().unwrap(), &mut c, &mut s).unwrap();
+        assert_eq!(s.cwd.as_deref(), Some("/p"));
+        assert_eq!(s.prompt_count, 1, "slash commands are not prompts");
+        assert_eq!(s.tool_calls, 1);
+        assert_eq!((s.files[0].added, s.files[0].removed), (2, 1));
+        let mut sess = Session::new("x", "/p", "/p", 0);
+        sess.origin = Origin::History;
+        s.apply_history(&mut sess);
+        assert_eq!(sess.files_touched[0].path, "calc.py");
+        assert_eq!(sess.last_prompt.as_deref(), Some("fix calc"));
+        assert!(!sess.state.is_live());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -142,6 +142,7 @@ pub fn apply_hook(sess: &mut Session, env: &HookEnvelope) -> Vec<FeedEvent> {
     };
 
     sess.last_event_at = sess.last_event_at.max(at);
+    sess.origin = Origin::Hooks;
     bump_activity(sess, at);
     if let Some(v) = s(p, "cwd") {
         sess.cwd = v.to_string();

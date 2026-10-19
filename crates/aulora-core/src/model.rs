@@ -229,6 +229,22 @@ pub struct Session {
 
     /// (minute since epoch, events in that minute), oldest first, last hour.
     pub activity: Vec<(i64, u32)>,
+
+    #[serde(default)]
+    pub origin: Origin,
+}
+
+/// How aulora learned about a session.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Origin {
+    /// Claude Code hooks: the full picture.
+    #[default]
+    Hooks,
+    /// Claude Code's list of running sessions, before any hook arrived.
+    Running,
+    /// A transcript on disk from a session that isn't running.
+    History,
 }
 
 impl Session {
@@ -270,6 +286,7 @@ impl Session {
             turn_started_at: None,
             last_turn_ms: None,
             activity: Vec::new(),
+            origin: Origin::Hooks,
         }
     }
 
