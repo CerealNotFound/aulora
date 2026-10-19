@@ -14,7 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, Conn, Focus, Hit, RowRef, Sort, Status, Tab};
+use crate::app::{App, Conn, Focus, Hit, RowRef, Status, Tab};
 use crate::keymap::{self, BINDINGS, Scope};
 use crate::theme::{self, bold, dim, faint, fg, label, spinner, text};
 
@@ -202,6 +202,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         dim_behind(f.buffer_mut());
         confirm(f, area, app);
     }
+    menu(f, area, app);
     toast(f, rows[0], app);
 }
 
@@ -234,6 +235,8 @@ fn body(f: &mut Frame, area: Rect, app: &mut App) {
 struct Item {
     lines: Vec<Line<'static>>,
     row: Option<RowRef>,
+    /// A button at the right end of the first line (× or +).
+    button: Option<Hit>,
 }
 
 fn git_line(g: &GitInfo, selected: bool) -> Vec<Span<'static>> {
@@ -315,8 +318,9 @@ fn sidebar(f: &mut Frame, area: Rect, app: &mut App) {
     let header = |title: &str, right: Vec<Span<'static>>| Item {
         lines: vec![lr(vec![sp(format!(" {title}"), label())], right, width)],
         row: None,
+        button: None,
     };
-    let blank = || Item { lines: vec![Line::raw("")], row: None };
+    let blank = || Item { lines: vec![Line::raw("")], row: None, button: None };
 
     let mut brand = vec![sp(" aulora", bold(t.accent))];
     match &app.conn {
@@ -325,7 +329,11 @@ fn sidebar(f: &mut Frame, area: Rect, app: &mut App) {
         Conn::Demo => brand.push(sp("  demo", fg(t.magenta))),
         Conn::Live => {}
     }
-    items.push(Item { lines: vec![lr(brand, vec![sp(format!("{} ", clock(now)), faint())], width)], row: None });
+    items.push(Item {
+        lines: vec![lr(brand, vec![sp(format!("{} ", clock(now)), faint())], width)],
+        row: None,
+        button: None,
+    });
     items.push(blank());
 
     if app.filtering || !app.filter.is_empty() {
@@ -336,25 +344,40 @@ fn sidebar(f: &mut Frame, area: Rect, app: &mut App) {
                 sp(if app.filtering { "▏" } else { "" }, fg(t.accent)),
             ])],
             row: None,
+            button: None,
         });
         items.push(blank());
     }
 
+    // One tree: each project, then its agents (most urgent first).
+    let hover = app.hover.clone();
     let projects = app.projects();
     items.push(header("projects", vec![sp(format!("{} ", projects.len()), faint())]));
     items.push(blank());
-    for p in &projects {
+    for (pi, p) in projects.iter().enumerate() {
         let RowRef::Project(root) = p else { continue };
-        let selected = app.selected.as_ref() == Some(p);
-        let status = app.status(p);
         let Some(proj) = app.project(root) else { continue };
+        if pi > 0 {
+            items.push(blank());
+        }
+        let selected = app.selected.as_ref() == Some(p);
+        let hot = selected || hover.as_ref() == Some(p);
+        let status = app.status(p);
+        let agents = app.agents_sorted(root);
         let name_style = if selected { bold(t.text) } else { bold(t.dim) };
+        let right = if hot {
+            vec![sp(" + ", bold(t.accent))]
+        } else if agents.is_empty() {
+            vec![]
+        } else {
+            vec![sp(format!("{} ", agents.len()), faint())]
+        };
         let l1 = lr(
             vec![
                 sp(format!(" {} ", status_glyph(status)), fg(status_color(status))),
                 sp(proj.name.clone(), name_style),
             ],
-            vec![],
+            right,
             width,
         );
         let mut second = vec![sp("   ", text())];
@@ -365,56 +388,55 @@ fn sidebar(f: &mut Frame, area: Rect, app: &mut App) {
         }
         let l2 = lr(second, vec![], width);
         let bg = row_bg(selected);
-        items.push(Item { lines: vec![l1.style(bg), l2.style(bg)], row: Some(p.clone()) });
-    }
+        items.push(Item {
+            lines: vec![l1.style(bg), l2.style(bg)],
+            row: Some(p.clone()),
+            button: hot.then(|| Hit::Add(root.clone())),
+        });
 
-    items.push(blank());
-    items.push(Item { lines: vec![Line::from(sp("─".repeat(width), fg(t.rule)))], row: None });
-    let sort_label = match app.sort {
-        Sort::Priority => "priority",
-        Sort::Grouped => "grouped",
-    };
-    let agents = app.agents();
-    let mut agent_header = header("agents", vec![sp(format!("{sort_label} "), faint())]);
-    agent_header.row = None;
-    items.push(agent_header);
-    let sort_hit_index = items.len() - 1;
-    items.push(blank());
-    let mut last_root: Option<String> = None;
-    for a in &agents {
-        let root = app.root_of(a).unwrap_or_default();
-        if app.sort == Sort::Grouped && last_root.as_deref() != Some(root.as_str()) {
-            if last_root.is_some() {
-                items.push(blank());
-            }
-            items.push(Item { lines: vec![Line::from(sp(format!(" {}", basename(&root)), faint()))], row: None });
-            last_root = Some(root.clone());
+        let n = agents.len();
+        for (i, a) in agents.iter().enumerate() {
+            let last = i + 1 == n;
+            let (branch, stem) = if last { (" └ ", "   ") } else { (" ├ ", " │ ") };
+            let selected = app.selected.as_ref() == Some(a);
+            let hot = selected || hover.as_ref() == Some(a);
+            let status = app.status(a);
+            let title_style = match (selected, status) {
+                (_, Status::Ended) => faint(),
+                (true, _) => bold(t.text),
+                (false, _) => fg(t.dim),
+            };
+            let closable = app.closable(a);
+            let right = if hot && closable {
+                vec![sp(" × ", fg(t.red))]
+            } else {
+                match status {
+                    Status::Ended => vec![],
+                    _ => vec![sp(format!("{} ", short_duration(now - app.since(a))), faint())],
+                }
+            };
+            let l1 = lr(
+                vec![
+                    sp(branch, faint()),
+                    sp(format!("{} ", status_glyph(status)), fg(status_color(status))),
+                    sp(app.title(a), title_style),
+                ],
+                right,
+                width,
+            );
+            let mut l2_left = vec![sp(stem, faint()), sp("  ", text())];
+            l2_left.extend(agent_detail(app, a));
+            let l2 = lr(l2_left, vec![], width);
+            let bg = row_bg(selected);
+            items.push(Item {
+                lines: vec![l1.style(bg), l2.style(bg)],
+                row: Some(a.clone()),
+                button: (hot && closable).then(|| Hit::Close(a.clone())),
+            });
         }
-        let selected = app.selected.as_ref() == Some(a);
-        let status = app.status(a);
-        let title_style = match (selected, status) {
-            (_, Status::Ended) => faint(),
-            (true, _) => bold(t.text),
-            (false, _) => fg(t.dim),
-        };
-        let right = match status {
-            Status::Ended => String::new(),
-            _ => short_duration(now - app.since(a)),
-        };
-        let mut l1_left =
-            vec![sp(format!(" {} ", status_glyph(status)), fg(status_color(status))), sp(app.title(a), title_style)];
-        if app.sort == Sort::Priority {
-            l1_left.push(sp(format!(" · {}", basename(&root)), faint()));
-        }
-        let l1 = lr(l1_left, vec![sp(format!("{right} "), faint())], width);
-        let mut l2_left = vec![sp("   ", text())];
-        l2_left.extend(agent_detail(app, a));
-        let l2 = lr(l2_left, vec![], width);
-        let bg = row_bg(selected);
-        items.push(Item { lines: vec![l1.style(bg), l2.style(bg)], row: Some(a.clone()) });
     }
-    if agents.is_empty() {
-        items.push(Item { lines: vec![Line::from(sp("   nothing running", faint()))], row: None });
+    if projects.is_empty() {
+        items.push(Item { lines: vec![Line::from(sp("   nothing running", faint()))], row: None, button: None });
     }
 
     // Lay out, keeping the selection in view, with the buttons pinned below.
@@ -449,12 +471,10 @@ fn sidebar(f: &mut Frame, area: Rect, app: &mut App) {
             if let Some(r) = &it.row {
                 app.hits.push((Rect { x: area.x, y: screen_y, width: area.width, height: 1 }, Hit::Row(r.clone())));
             }
-            if i == sort_hit_index {
-                let w_ = (sort_label.len() + 1) as u16;
-                app.hits.push((
-                    Rect { x: area.x + area.width.saturating_sub(w_), y: screen_y, width: w_, height: 1 },
-                    Hit::SortToggle,
-                ));
+            if let (0, Some(b)) = (j, &it.button) {
+                // Leave the scrollbar column alone.
+                let x = area.x + area.width.saturating_sub(4);
+                app.hits.push((Rect { x, y: screen_y, width: 3, height: 1 }, b.clone()));
             }
             lines.push(l.clone());
         }
@@ -550,6 +570,11 @@ fn main(f: &mut Frame, area: Rect, app: &mut App) {
     match (current, &sel) {
         (Tab::Terminal, RowRef::Pane(id)) => pane_view(f, content, app, &id.clone()),
         (Tab::Conversation, _) => {
+            let mut content = content;
+            if let RowRef::Session(id) = &sel {
+                resume_bar(f, Rect { height: 1, ..content }, app, id);
+                content = Rect { y: content.y + 2, height: content.height.saturating_sub(2), ..content };
+            }
             if let Some(sid) = app.selected_session_id() {
                 conversation(f, content, app, &sid);
             }
@@ -557,6 +582,28 @@ fn main(f: &mut Frame, area: Rect, app: &mut App) {
         (Tab::Overview, RowRef::Project(root)) => project_overview(f, content, app, &root.clone()),
         _ => {}
     }
+}
+
+/// Above a session that isn't one of our panes: open it as a terminal.
+fn resume_bar(f: &mut Frame, area: Rect, app: &mut App, id: &str) {
+    let t = theme::get();
+    let Some(s) = app.session(id).cloned() else { return };
+    fill(f, area, t.panel);
+    let (label, note) = if s.state.is_live() {
+        let place = s.terminal.app_name().unwrap_or_else(|| "another terminal".into());
+        (" r  fork here ".to_string(), format!("  running in {place} · this is a read-only view"))
+    } else {
+        (" r  resume in a terminal ".to_string(), format!("  claude --resume, in {}", basename(&session_dir_name(&s))))
+    };
+    let style = Style::new().bg(t.accent).fg(on_fill()).add_modifier(Modifier::BOLD);
+    let bw = w(&label) as u16;
+    let line = Line::from(vec![sp(" ", Style::new().bg(t.panel)), sp(label, style), sp(note, faint().bg(t.panel))]);
+    f.render_widget(Paragraph::new(line), area);
+    app.hits.push((Rect { x: area.x + 1, width: bw, ..area }, Hit::Resume(id.to_string())));
+}
+
+fn session_dir_name(s: &Session) -> String {
+    if s.cwd.is_empty() { s.project_root.clone() } else { s.cwd.clone() }
 }
 
 fn session_meta(meta: &mut Vec<Span<'static>>, s: &Session) {
@@ -973,10 +1020,12 @@ fn theme_picker(f: &mut Frame, area: Rect, app: &App) {
 fn confirm(f: &mut Frame, area: Rect, app: &App) {
     let t = theme::get();
     let Some(c) = &app.confirm else { return };
-    let inner = modal(f, centered(area, 60, 7), &c.title, t.red);
-    let lines = vec![
-        Line::raw(""),
-        Line::from(sp(format!(" {}", c.body), text())),
+    let body = crate::conv::wrap(&c.body, 54);
+    let color = if matches!(c.action, crate::ConfirmAction::KillPane(_)) { t.red } else { t.accent };
+    let inner = modal(f, centered(area, 60, 6 + body.len() as u16), &c.title, color);
+    let mut lines = vec![Line::raw("")];
+    lines.extend(body.into_iter().map(|l| Line::from(sp(format!(" {l}"), text()))));
+    lines.extend([
         Line::raw(""),
         Line::from(vec![
             sp(" ", text()),
@@ -985,8 +1034,37 @@ fn confirm(f: &mut Frame, area: Rect, app: &App) {
             button(&format!("↵ {}", c.action.verb()), c.on_action, true),
             sp("    ←→ choose", faint()),
         ]),
-    ];
+    ]);
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The right-click menu, opened at the mouse (or under the row for `m`).
+fn menu(f: &mut Frame, area: Rect, app: &mut App) {
+    let t = theme::get();
+    let Some(m) = &app.menu else { return };
+    let inner_w = m.items.iter().map(|i| w(i.label())).max().unwrap_or(0) as u16 + 4;
+    let (width, height) = (inner_w + 2, m.items.len() as u16 + 2);
+    let x = m.x.min(area.right().saturating_sub(width));
+    let y = if m.y + height > area.bottom() { m.y.saturating_sub(height + 1) } else { m.y };
+    let r = Rect { x, y, width: width.min(area.width), height: height.min(area.height) };
+    f.render_widget(Clear, r);
+    let block = Block::bordered().border_style(fg(t.rule)).style(Style::new().bg(t.panel));
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+    let mut lines = Vec::new();
+    let mut hits = Vec::new();
+    for (i, item) in m.items.iter().enumerate() {
+        let selected = i == m.selected;
+        let color = if item.danger() { t.red } else { t.text };
+        let style = if selected { Style::new().bg(t.select).fg(color).add_modifier(Modifier::BOLD) } else { fg(color) };
+        let label = format!("  {:<w$}", item.label(), w = inner_w as usize - 2);
+        lines.push(Line::from(sp(label, style)));
+        hits.push((Rect { x: inner.x, y: inner.y + i as u16, width: inner.width, height: 1 }, Hit::MenuItem(i)));
+    }
+    f.render_widget(Paragraph::new(lines), inner);
+    // A click anywhere else closes the menu.
+    app.hits.push((area, Hit::Dismiss));
+    app.hits.extend(hits);
 }
 
 fn toast(f: &mut Frame, area: Rect, app: &App) {

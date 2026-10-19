@@ -44,13 +44,6 @@ impl Tab {
     }
 }
 
-/// How the agents list is ordered (Herdr's `priority` / `grouped`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Sort {
-    Priority,
-    Grouped,
-}
-
 /// The five states shown everywhere (Herdr).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Status {
@@ -89,7 +82,15 @@ pub enum Conn {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Hit {
     Row(RowRef),
-    SortToggle,
+    /// The × on a row.
+    Close(RowRef),
+    /// The + on a project row.
+    Add(String),
+    MenuItem(usize),
+    /// The resume button above a session.
+    Resume(String),
+    /// Behind an open menu.
+    Dismiss,
     Tab(Tab),
     Terminal(String),
     Conversation(String),
@@ -105,6 +106,44 @@ pub struct Toast {
     pub error: bool,
     /// How long it stays; errors stay until the next key.
     pub ttl: Ms,
+}
+
+/// What a menu entry does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MenuItem {
+    Type(String),
+    Resume(String),
+    Restart(String),
+    Close(RowRef),
+    OpenEditor(String),
+    NewClaude(String),
+    NewShell(String),
+}
+
+impl MenuItem {
+    pub fn label(&self) -> &'static str {
+        match self {
+            MenuItem::Type(_) => "Type here",
+            MenuItem::Resume(_) => "Resume in a terminal",
+            MenuItem::Restart(_) => "Restart",
+            MenuItem::Close(RowRef::Session(_)) => "Dismiss",
+            MenuItem::Close(_) => "Close",
+            MenuItem::OpenEditor(_) => "Open in VS Code",
+            MenuItem::NewClaude(_) => "New Claude here",
+            MenuItem::NewShell(_) => "New shell here",
+        }
+    }
+
+    pub fn danger(&self) -> bool {
+        matches!(self, MenuItem::Close(_))
+    }
+}
+
+pub struct Menu {
+    pub x: u16,
+    pub y: u16,
+    pub items: Vec<MenuItem>,
+    pub selected: usize,
 }
 
 pub struct HelpState {
@@ -128,7 +167,10 @@ pub struct App {
     pub focus: Focus,
     /// Keys go straight to the selected pane (Terminal tab, focused).
     pub typing: bool,
-    pub sort: Sort,
+    /// The row under the mouse.
+    pub hover: Option<RowRef>,
+    /// An open right-click menu.
+    pub menu: Option<Menu>,
     pub show_ended: bool,
     pub show_history: bool,
     pub filter: String,
@@ -187,7 +229,8 @@ impl App {
             selected: None,
             focus: Focus::Sidebar,
             typing: false,
-            sort: Sort::Priority,
+            hover: None,
+            menu: None,
             show_ended: true,
             show_history: false,
             filter: String::new(),
@@ -229,6 +272,7 @@ impl App {
     }
 
     pub fn set_snapshot(&mut self, snap: Snapshot) {
+        let prev_root = self.selected_root();
         self.snap = Some(snap);
         if let Some((id, focus)) = self.pending_select.clone()
             && self.pane(&id).is_some()
@@ -243,8 +287,10 @@ impl App {
         }
         let rows = self.rows();
         if !self.selected.as_ref().is_some_and(|s| rows.contains(s)) {
-            // Start on whatever needs attention most.
-            self.selected = self.agents().first().cloned().or(rows.first().cloned());
+            // When a row goes away (closed, dismissed), stay in its project;
+            // on start, begin on whatever needs attention most.
+            let project = prev_root.map(RowRef::Project).filter(|p| rows.contains(p));
+            self.selected = project.or_else(|| self.agents().first().cloned()).or(rows.first().cloned());
         }
         if self.typing && self.selected_pane().is_none_or(|p| !p.is_running()) {
             self.typing = false;
@@ -386,8 +432,19 @@ impl App {
         hay.contains(&self.filter.to_lowercase())
     }
 
+    /// Whether a session already shows as one of our panes: it runs in
+    /// one, or one was started to resume it.
     fn in_existing_pane(&self, s: &Session) -> bool {
-        s.terminal.pane_id.as_deref().is_some_and(|id| self.pane(id).is_some())
+        s.terminal.pane_id.as_deref().is_some_and(|id| self.pane(id).is_some()) || self.resumed_in(&s.id).is_some()
+    }
+
+    /// The pane started with `claude --resume <id>`, if any.
+    pub fn resumed_in(&self, session_id: &str) -> Option<&Pane> {
+        self.snap
+            .as_ref()?
+            .panes
+            .iter()
+            .find(|p| p.kind == PaneKind::Claude && p.args.windows(2).any(|w| w[0] == "--resume" && w[1] == session_id))
     }
 
     /// Everything running in one project.
@@ -424,42 +481,66 @@ impl App {
         v.into_iter().map(|(_, _, root)| RowRef::Project(root)).collect()
     }
 
-    fn by_priority(&self, rows: &mut [RowRef]) {
-        rows.sort_by(|x, y| self.status(x).cmp(&self.status(y)).then(self.since(y).cmp(&self.since(x))));
+    /// A project's agents, most urgent first.
+    pub fn agents_sorted(&self, root: &str) -> Vec<RowRef> {
+        let mut a = self.agents_in(root);
+        a.sort_by(|x, y| self.status(x).cmp(&self.status(y)).then(self.since(y).cmp(&self.since(x))));
+        a
     }
 
-    /// All agents, by priority or grouped by project.
+    /// Every agent, in sidebar order.
     pub fn agents(&self) -> Vec<RowRef> {
-        let roots: Vec<String> = self
-            .projects()
-            .into_iter()
-            .filter_map(|p| match p {
-                RowRef::Project(root) => Some(root),
-                _ => None,
-            })
-            .collect();
-        match self.sort {
-            Sort::Grouped => roots
-                .iter()
-                .flat_map(|root| {
-                    let mut a = self.agents_in(root);
-                    self.by_priority(&mut a);
-                    a
-                })
-                .collect(),
-            Sort::Priority => {
-                let mut all: Vec<RowRef> = roots.iter().flat_map(|root| self.agents_in(root)).collect();
-                self.by_priority(&mut all);
-                all
-            }
+        self.rows().into_iter().filter(|r| !r.is_project()).collect()
+    }
+
+    /// Every selectable row, in sidebar order: each project, then its agents.
+    pub fn rows(&self) -> Vec<RowRef> {
+        let mut rows = Vec::new();
+        for p in self.projects() {
+            let RowRef::Project(root) = &p else { continue };
+            let agents = self.agents_sorted(root);
+            rows.push(p);
+            rows.extend(agents);
+        }
+        rows
+    }
+
+    /// Whether a row has a × (panes, and sessions that have ended).
+    pub fn closable(&self, r: &RowRef) -> bool {
+        match r {
+            RowRef::Pane(id) => self.pane(id).is_some(),
+            RowRef::Session(id) => self.session(id).is_some_and(|s| !s.state.is_live()),
+            RowRef::Project(_) => false,
         }
     }
 
-    /// Every selectable row, in sidebar order: projects, then agents.
-    pub fn rows(&self) -> Vec<RowRef> {
-        let mut rows = self.projects();
-        rows.extend(self.agents());
-        rows
+    /// The menu for a row (right-click).
+    pub fn menu_for(&self, r: &RowRef) -> Vec<MenuItem> {
+        let mut items = Vec::new();
+        match r {
+            RowRef::Pane(id) => {
+                let running = self.pane(id).is_some_and(|p| p.is_running());
+                if running {
+                    items.push(MenuItem::Type(id.clone()));
+                } else {
+                    items.push(MenuItem::Restart(id.clone()));
+                }
+                items.push(MenuItem::Close(r.clone()));
+            }
+            RowRef::Session(id) => {
+                items.push(MenuItem::Resume(id.clone()));
+                if self.session(id).is_some_and(|s| !s.state.is_live()) {
+                    items.push(MenuItem::Close(r.clone()));
+                }
+            }
+            RowRef::Project(_) => {}
+        }
+        if let Some(root) = self.root_of(r) {
+            items.push(MenuItem::NewClaude(root.clone()));
+            items.push(MenuItem::NewShell(root.clone()));
+            items.push(MenuItem::OpenEditor(root));
+        }
+        items
     }
 
     pub fn move_selection(&mut self, delta: i32) {
@@ -526,7 +607,6 @@ impl App {
 
     pub fn tabs(&self) -> Vec<Tab> {
         match &self.selected {
-            Some(RowRef::Pane(id)) if self.pane_session(id).is_some() => vec![Tab::Terminal, Tab::Conversation],
             Some(RowRef::Pane(_)) => vec![Tab::Terminal],
             Some(RowRef::Session(_)) => vec![Tab::Conversation],
             Some(RowRef::Project(_)) => vec![Tab::Overview],

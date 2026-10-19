@@ -6,7 +6,7 @@ use aulora_core::model::PaneKind;
 use aulora_core::proto::{self, ClientMsg, NewPane, ServerMsg};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
-use crate::app::{App, Confirm, Conn, Focus, HelpState, Hit, RowRef, Sort, Status, Tab};
+use crate::app::{App, Confirm, Conn, Focus, HelpState, Hit, Menu, MenuItem, RowRef, Status, Tab};
 use crate::keymap::{self, Action};
 use crate::{Ctx, Options, client, keys, theme};
 
@@ -14,12 +14,15 @@ use crate::{Ctx, Options, client, keys, theme};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfirmAction {
     KillPane(String),
+    /// Resume a session that is still running somewhere else, as a fork.
+    Fork(String),
 }
 
 impl ConfirmAction {
     pub fn verb(&self) -> &'static str {
         match self {
             ConfirmAction::KillPane(_) => "kill",
+            ConfirmAction::Fork(_) => "fork",
         }
     }
 }
@@ -71,11 +74,15 @@ pub fn on_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx, input: &m
         app.toast = None;
     }
     if app.confirm.is_some() {
-        confirm_key(app, key, opts);
+        confirm_key(app, key, opts, ctx);
         return false;
     }
     if app.theme_picker.is_some() {
         picker_key(app, key);
+        return false;
+    }
+    if app.menu.is_some() {
+        menu_key(app, key, opts, ctx);
         return false;
     }
     if app.help.is_some() {
@@ -170,7 +177,7 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
         }
         Action::NextTab => app.cycle_tab(1),
         Action::PrevTab => app.cycle_tab(-1),
-        Action::Open => open(app, opts),
+        Action::Open => open(app, opts, ctx),
         Action::Back => {
             app.focus = Focus::Sidebar;
             app.typing = false;
@@ -184,8 +191,16 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
         }
         Action::Filter => app.filtering = true,
         Action::Zoom => app.zoom = !app.zoom,
-        Action::OpenEditor => open_in_editor(app),
-        Action::Close => close(app, opts),
+        Action::OpenEditor => {
+            if let Some(root) = app.selected_root() {
+                open_in_editor(app, &root);
+            }
+        }
+        Action::Close => {
+            if let Some(r) = app.selected.clone() {
+                close(app, opts, r);
+            }
+        }
         Action::DismissEnded => {
             if app.conn == Conn::Demo {
                 app.toast("Cleared ended sessions (demo)");
@@ -194,7 +209,12 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
                 app.toast("Cleared ended sessions");
             }
         }
-        Action::Restart => restart(app, opts),
+        Action::Restart | Action::Resume => match app.selected.clone() {
+            Some(RowRef::Pane(id)) if action == Action::Restart => restart(app, opts, &id),
+            Some(RowRef::Session(id)) => resume(app, opts, ctx, &id),
+            _ => {}
+        },
+        Action::Menu => menu_at_selection(app),
         Action::Themes => {
             app.theme_before = theme::current_index();
             app.theme_picker = Some(theme::current_index());
@@ -215,12 +235,6 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
             app.show_ended = !app.show_ended;
             app.move_selection(0);
             app.toast(if app.show_ended { "Showing ended sessions" } else { "Hiding ended sessions" });
-        }
-        Action::ToggleSort => {
-            app.sort = match app.sort {
-                Sort::Priority => Sort::Grouped,
-                Sort::Grouped => Sort::Priority,
-            };
         }
         Action::PrevPrompt | Action::NextPrompt => {
             let fwd = action == Action::NextPrompt;
@@ -290,9 +304,15 @@ fn scroll_pane(app: &mut App, delta: isize) {
     }
 }
 
-fn open(app: &mut App, opts: &Options) {
+fn open(app: &mut App, opts: &Options, ctx: &Ctx) {
     let Some(sel) = app.selected.clone() else { return };
     match app.focus {
+        // An ended session opens as a terminal running `claude --resume`.
+        Focus::Sidebar if matches!(&sel, RowRef::Session(id) if !app.session(id).is_some_and(|s| s.state.is_live())) => {
+            if let RowRef::Session(id) = &sel {
+                resume(app, opts, ctx, id);
+            }
+        }
         Focus::Sidebar => {
             app.focus = Focus::Main;
             if let RowRef::Pane(id) = &sel
@@ -310,7 +330,11 @@ fn open(app: &mut App, opts: &Options) {
             Tab::Conversation => with_conv(app, |c, _| {
                 c.toggle_at_cursor();
             }),
-            Tab::Overview => open_in_editor(app),
+            Tab::Overview => {
+                if let Some(root) = app.selected_root() {
+                    open_in_editor(app, &root);
+                }
+            }
         },
     }
 }
@@ -456,29 +480,34 @@ fn picker_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-fn confirm_key(app: &mut App, key: KeyEvent, opts: &Options) {
+fn confirm_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx) {
     let Some(c) = app.confirm.as_mut() else { return };
     match key.code {
         KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Char('l') => {
             c.on_action = !c.on_action;
         }
-        KeyCode::Char('y') => run_confirmed(app, opts),
-        KeyCode::Enter if c.on_action => run_confirmed(app, opts),
+        KeyCode::Char('y') => run_confirmed(app, opts, ctx),
+        KeyCode::Enter if c.on_action => run_confirmed(app, opts, ctx),
         KeyCode::Enter | KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => app.confirm = None,
         _ => {}
     }
 }
 
-fn run_confirmed(app: &mut App, opts: &Options) {
+fn run_confirmed(app: &mut App, opts: &Options, ctx: &Ctx) {
     let Some(c) = app.confirm.take() else { return };
     match c.action {
         ConfirmAction::KillPane(id) => pane_action(app, opts, ClientMsg::KillPane { pane_id: id }, "Stopped"),
+        ConfirmAction::Fork(id) => {
+            let Some(cwd) = app.session(&id).map(session_dir) else { return };
+            let args = vec!["--resume".into(), id, "--fork-session".into()];
+            spawn(app, opts, ctx, PaneKind::Claude, cwd, args, "a fork of the session");
+        }
     }
 }
 
-fn close(app: &mut App, opts: &Options) {
+fn close(app: &mut App, opts: &Options, row: RowRef) {
     let demo = app.conn == Conn::Demo;
-    match app.selected.clone() {
+    match Some(row) {
         Some(RowRef::Pane(id)) => {
             let Some(p) = app.pane(&id).cloned() else { return };
             if demo {
@@ -502,7 +531,7 @@ fn close(app: &mut App, opts: &Options) {
         Some(RowRef::Session(id)) => {
             let ended = app.session(&id).is_some_and(|s| !s.state.is_live());
             if !ended {
-                app.toast("This session runs outside aulora; end it where it runs");
+                app.toast("This session runs outside aulora; end it where it runs, or r to fork it here");
             } else if demo {
                 app.toast("Dismissed (demo)");
             } else {
@@ -514,8 +543,8 @@ fn close(app: &mut App, opts: &Options) {
     }
 }
 
-fn restart(app: &mut App, opts: &Options) {
-    let Some(p) = app.selected_pane().cloned() else { return };
+fn restart(app: &mut App, opts: &Options, id: &str) {
+    let Some(p) = app.pane(id).cloned() else { return };
     if app.conn == Conn::Demo {
         return;
     }
@@ -534,41 +563,77 @@ fn pane_action(app: &mut App, opts: &Options, msg: ClientMsg, done: &str) {
     }
 }
 
+/// A new pane in the selected project's folder (or ours, with nothing selected).
 pub fn new_pane(app: &mut App, opts: &Options, ctx: &Ctx, kind: PaneKind) {
-    let label = if kind == PaneKind::Claude { "Claude Code" } else { "a shell" };
-    if app.conn == Conn::Demo {
-        app.toast(format!("Would start {label} (demo)"));
-        return;
-    }
     let cwd = app.selected_root().or_else(|| std::env::current_dir().ok().map(|d| d.to_string_lossy().to_string()));
     let Some(cwd) = cwd else { return };
+    let label = if kind == PaneKind::Claude { "Claude Code" } else { "a shell" };
+    spawn(app, opts, ctx, kind, cwd, vec![], label);
+}
+
+/// Where to resume a session: the folder it ran in, which is where Claude
+/// Code looks for its transcript.
+fn session_dir(s: &aulora_core::model::Session) -> String {
+    if std::path::Path::new(&s.cwd).is_dir() { s.cwd.clone() } else { s.project_root.clone() }
+}
+
+/// Open a session as a terminal: `claude --resume <id>` in a new pane.
+pub fn resume(app: &mut App, opts: &Options, ctx: &Ctx, id: &str) {
+    if let Some(p) = app.resumed_in(id).map(|p| p.id.clone()) {
+        app.select(RowRef::Pane(p.clone()));
+        start_typing(app, opts, &p);
+        return;
+    }
+    let Some(s) = app.session(id).cloned() else { return };
+    if s.state.is_live() {
+        // Two processes writing one transcript would interleave it, so a
+        // session that's still running elsewhere resumes as a fork.
+        let place = s.terminal.app_name().unwrap_or_else(|| "another terminal".into());
+        app.confirm = Some(Confirm {
+            title: "fork this session?".into(),
+            body: format!(
+                "It's still running in {place}. Forking starts a new session here with the same history; the original keeps running."
+            ),
+            action: ConfirmAction::Fork(id.to_string()),
+            on_action: false,
+        });
+        return;
+    }
+    let args = vec!["--resume".into(), id.to_string()];
+    spawn(app, opts, ctx, PaneKind::Claude, session_dir(&s), args, "the session");
+}
+
+fn spawn(app: &mut App, opts: &Options, ctx: &Ctx, kind: PaneKind, cwd: String, args: Vec<String>, label: &str) {
+    if app.conn == Conn::Demo {
+        app.toast(format!("Would start {label} in {} (demo)", aulora_core::util::basename(&cwd)));
+        return;
+    }
     let (cols, rows) = match &ctx.sent_size {
         Some((_, c, r)) => (*c, *r),
         None => crate::terminal_size()
             .map(|(w, h)| (w.saturating_sub(if w >= 90 { 40 } else { 2 }), h.saturating_sub(4)))
             .unwrap_or((100, 30)),
     };
-    let req = NewPane { cwd, kind, args: vec![], name: None, cols: cols.max(20), rows: rows.max(5) };
+    let req = NewPane { cwd, kind, args, name: None, cols: cols.max(20), rows: rows.max(5) };
     match client::command(&opts.socket, &ClientMsg::NewPane(req)) {
         Some(ServerMsg::PaneCreated { pane_id }) => {
             app.pending_select = Some((pane_id, true));
-            app.toast(format!("Started {label}"));
+            app.toast(if label == "the session" { "Resumed".to_string() } else { format!("Started {label}") });
         }
         Some(ServerMsg::Error { message }) => app.error(format!("Couldn't start {label}: {message}")),
         _ => app.error("The daemon didn't answer"),
     }
 }
 
-pub fn open_in_editor(app: &mut App) {
-    let Some(root) = app.selected_root() else { return };
+pub fn open_in_editor(app: &mut App, root: &str) {
     let editor = app.editor.clone();
-    let name = aulora_core::util::basename(&root);
+    let name = aulora_core::util::basename(root);
     if app.conn == Conn::Demo {
         app.toast(format!("Would open {name} in {editor} (demo)"));
         return;
     }
     match std::process::Command::new(&editor)
-        .arg(&root)
+        .arg(root)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -576,6 +641,62 @@ pub fn open_in_editor(app: &mut App) {
     {
         Ok(_) => app.toast(format!("Opened {name} in {editor}")),
         Err(e) => app.error(format!("Couldn't run `{editor}`: {e}. Set AULORA_EDITOR.")),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Menu
+
+fn open_menu(app: &mut App, x: u16, y: u16, items: Vec<MenuItem>) {
+    if !items.is_empty() {
+        app.menu = Some(Menu { x, y, items, selected: 0 });
+    }
+}
+
+/// `m`: the menu for the selection, under its row.
+fn menu_at_selection(app: &mut App) {
+    let Some(sel) = app.selected.clone() else { return };
+    let at = app
+        .hits
+        .iter()
+        .find(|(_, h)| *h == Hit::Row(sel.clone()))
+        .or_else(|| app.hits.iter().find(|(_, h)| *h == Hit::Main))
+        .map(|(r, _)| (r.x + 3, r.y + 1));
+    let (x, y) = at.unwrap_or((2, 2));
+    let items = app.menu_for(&sel);
+    open_menu(app, x, y, items);
+}
+
+fn menu_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx) {
+    let Some(m) = app.menu.as_mut() else { return };
+    let n = m.items.len();
+    match key.code {
+        KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => m.selected = (m.selected + 1) % n,
+        KeyCode::Up | KeyCode::Char('k') | KeyCode::BackTab => m.selected = (m.selected + n - 1) % n,
+        KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Right | KeyCode::Char('l') => {
+            let item = m.items[m.selected].clone();
+            app.menu = None;
+            run_menu_item(app, opts, ctx, item);
+        }
+        _ => app.menu = None,
+    }
+}
+
+fn run_menu_item(app: &mut App, opts: &Options, ctx: &Ctx, item: MenuItem) {
+    match item {
+        MenuItem::Type(id) => {
+            app.select(RowRef::Pane(id.clone()));
+            start_typing(app, opts, &id);
+        }
+        MenuItem::Resume(id) => resume(app, opts, ctx, &id),
+        MenuItem::Restart(id) => restart(app, opts, &id),
+        MenuItem::Close(r) => {
+            app.select(r.clone());
+            close(app, opts, r);
+        }
+        MenuItem::OpenEditor(root) => open_in_editor(app, &root),
+        MenuItem::NewClaude(root) => spawn(app, opts, ctx, PaneKind::Claude, root, vec![], "Claude Code"),
+        MenuItem::NewShell(root) => spawn(app, opts, ctx, PaneKind::Shell, root, vec![], "a shell"),
     }
 }
 
@@ -604,9 +725,68 @@ fn mouse_bytes(screen: &vt100::Screen, button: u8, col: u16, row: u16, release: 
     }
 }
 
+/// Track the row under the mouse. Returns true when it changed.
+pub fn on_hover(app: &mut App, ev: MouseEvent) -> bool {
+    let hit = app.hit(ev.column, ev.row).map(|(_, h)| h);
+    if let Some(m) = app.menu.as_mut() {
+        if let Some(Hit::MenuItem(i)) = hit
+            && m.selected != i
+        {
+            m.selected = i;
+            return true;
+        }
+        return false;
+    }
+    let hover = match hit {
+        Some(Hit::Row(r) | Hit::Close(r)) => Some(r),
+        Some(Hit::Add(root)) => Some(RowRef::Project(root)),
+        _ => None,
+    };
+    let changed = hover != app.hover;
+    app.hover = hover;
+    changed
+}
+
 pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input: &mut Input) {
     let Some((rect, hit)) = app.hit(ev.column, ev.row) else { return };
     let (col, row) = (ev.column, ev.row);
+    // An open menu takes the next click: on an item runs it, anywhere else closes it.
+    if app.menu.is_some() && !matches!(ev.kind, MouseEventKind::Up(_) | MouseEventKind::Moved) {
+        let item = match (&hit, ev.kind) {
+            (Hit::MenuItem(i), MouseEventKind::Down(MouseButton::Left)) => {
+                app.menu.as_ref().and_then(|m| m.items.get(*i).cloned())
+            }
+            _ => None,
+        };
+        app.menu = None;
+        if let Some(item) = item {
+            run_menu_item(app, opts, ctx, item);
+        }
+        if !matches!(ev.kind, MouseEventKind::Down(MouseButton::Right)) {
+            return;
+        }
+    }
+    if ev.kind == MouseEventKind::Down(MouseButton::Right) {
+        // A program you're typing into that reads the mouse gets the click.
+        if let Hit::Terminal(id) = &hit
+            && app.typing
+        {
+            forward_mouse(app, id, 2, col - rect.x, row - rect.y, false, ctx);
+            return;
+        }
+        let target = match &hit {
+            Hit::Row(r) | Hit::Close(r) => Some(r.clone()),
+            Hit::Add(root) => Some(RowRef::Project(root.clone())),
+            Hit::Terminal(_) | Hit::Conversation(_) | Hit::Main | Hit::Tab(_) => app.selected.clone(),
+            _ => None,
+        };
+        if let Some(r) = target {
+            app.select(r.clone());
+            let items = app.menu_for(&r);
+            open_menu(app, col, row.saturating_add(1), items);
+        }
+        return;
+    }
     match ev.kind {
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
             let dir: i8 = if ev.kind == MouseEventKind::ScrollUp { -1 } else { 1 };
@@ -622,7 +802,7 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                     }
                 }
                 Hit::Terminal(id) => wheel_pane(app, &id, lines, col - rect.x, row - rect.y, ctx),
-                Hit::Row(_) | Hit::Sidebar | Hit::SortToggle => {
+                Hit::Row(_) | Hit::Sidebar | Hit::Close(_) | Hit::Add(_) => {
                     app.sidebar_scroll = (app.sidebar_scroll as isize + lines).max(0) as usize;
                 }
                 _ => {}
@@ -639,12 +819,20 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                     app.select(r);
                     app.focus = Focus::Sidebar;
                     if double || was {
-                        open(app, opts);
+                        open(app, opts, ctx);
                     }
                 }
-                Hit::SortToggle => {
-                    perform(app, Action::ToggleSort, opts, ctx);
+                Hit::Close(r) => {
+                    app.select(r.clone());
+                    close(app, opts, r);
                 }
+                Hit::Add(root) => {
+                    app.select(RowRef::Project(root.clone()));
+                    let items = vec![MenuItem::NewClaude(root.clone()), MenuItem::NewShell(root)];
+                    open_menu(app, col.saturating_sub(16), row + 1, items);
+                }
+                Hit::Resume(id) => resume(app, opts, ctx, &id),
+                Hit::MenuItem(_) | Hit::Dismiss => {}
                 Hit::NewClaude => new_pane(app, opts, ctx, PaneKind::Claude),
                 Hit::NewShell => new_pane(app, opts, ctx, PaneKind::Shell),
                 Hit::Tab(t) => {

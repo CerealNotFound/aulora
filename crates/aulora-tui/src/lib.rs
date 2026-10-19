@@ -239,7 +239,11 @@ pub fn run(mut opts: Options) -> Result<()> {
                         }
                         dirty = true;
                     }
-                    Event::Mouse(m) if m.kind != MouseEventKind::Moved => {
+                    Event::Mouse(m) if m.kind == MouseEventKind::Moved => {
+                        // Only redraw when the hovered row changes.
+                        dirty |= input::on_hover(&mut app, m);
+                    }
+                    Event::Mouse(m) => {
                         input::on_mouse(&mut app, m, &opts, &ctx, &mut input);
                         dirty = true;
                     }
@@ -376,7 +380,7 @@ pub fn render_text(
     width: u16,
     height: u16,
 ) -> String {
-    render(opts, live, screens, width, height, false)
+    render(opts, live, screens, width, height, false, &|_| {})
 }
 
 /// Like `render_text`, but every cell with its colors as JSON lines, for
@@ -388,7 +392,7 @@ pub fn render_json(
     width: u16,
     height: u16,
 ) -> String {
-    render(opts, live, screens, width, height, true)
+    render(opts, live, screens, width, height, true, &|_| {})
 }
 
 fn color_json(c: ratatui::style::Color) -> serde_json::Value {
@@ -428,6 +432,7 @@ fn render(
     width: u16,
     height: u16,
     json: bool,
+    prep: &dyn Fn(&mut App),
 ) -> String {
     choose_theme(opts.theme.as_deref(), false);
     let mut app = App::new(if opts.demo { Conn::Demo } else { Conn::Live }, opts.hooks_installed, opts.editor.clone());
@@ -445,6 +450,7 @@ fn render(
         app.terms.insert(id, t);
     }
     preselect(&mut app, opts.select.as_deref(), opts.tab.as_deref());
+    prep(&mut app);
     let mut terminal = ratatui::Terminal::new(TestBackend::new(width, height)).expect("test backend");
     // Twice: the first frame measures views (conversation height) the second uses.
     terminal.draw(|f| ui::draw(f, &mut app)).expect("draw");
@@ -476,4 +482,58 @@ fn render(
         out.push('\n');
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{Menu, RowRef};
+
+    fn demo_opts(select: Option<&str>) -> Options {
+        Options {
+            demo: true,
+            socket: PathBuf::from("/nonexistent"),
+            hooks_installed: true,
+            editor: "code".into(),
+            spawn_daemon: None,
+            select: select.map(String::from),
+            theme: Some("catppuccin".into()),
+            tab: None,
+        }
+    }
+
+    fn frame(select: Option<&str>, prep: &dyn Fn(&mut App)) -> String {
+        render(&demo_opts(select), None, vec![], 150, 44, false, prep)
+    }
+
+    #[test]
+    fn agents_sit_under_their_project() {
+        let out = frame(None, &|_| {});
+        let lines: Vec<&str> = out.lines().collect();
+        let project = lines.iter().position(|l| l.contains("● multibrain")).expect("project row");
+        assert!(lines[project + 2].contains("├ ● Fix streaming"), "{}", lines[project + 2]);
+        assert!(lines.iter().any(|l| l.contains("└ ● dev server")), "the last agent closes the branch");
+    }
+
+    #[test]
+    fn the_menu_lists_actions_for_the_row() {
+        let out = frame(Some("a41c07"), &|app| {
+            let items = app.menu_for(&RowRef::Pane("a41c07".into()));
+            app.menu = Some(Menu { x: 10, y: 10, items, selected: 0 });
+        });
+        for label in ["Type here", "Close", "New Claude here", "New shell here", "Open in VS Code"] {
+            assert!(out.contains(label), "missing {label}:\n{out}");
+        }
+    }
+
+    #[test]
+    fn ended_sessions_offer_resume() {
+        let out = frame(None, &|app| {
+            let id =
+                app.snap.as_ref().and_then(|s| s.sessions.iter().find(|s| !s.state.is_live())).map(|s| s.id.clone());
+            app.selected = id.map(RowRef::Session);
+            app.show_ended = true;
+        });
+        assert!(out.contains("resume in a terminal"), "{out}");
+    }
 }
