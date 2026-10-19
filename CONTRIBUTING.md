@@ -1,11 +1,12 @@
 # Contributing to aulora
 
-Thanks for helping. This page covers setup, testing and how commits are written. Commits follow [Zulip's commit discipline](https://zulip.readthedocs.io/en/latest/contributing/commit-discipline.html).
+Thanks for helping. This page covers setup, testing and how commits are written. Commits follow [Zulip's commit discipline](https://zulip.readthedocs.io/en/latest/contributing/commit-discipline.html), and CI checks every commit message.
 
 ## Setup
 
 ```sh
 git clone https://github.com/CerealNotFound/aulora && cd aulora
+git config core.hooksPath .githooks     # check commit messages locally
 git config commit.template .gitmessage  # start each message from the template
 cargo test
 ```
@@ -26,6 +27,7 @@ Before pushing, run what CI runs:
 cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all
+tools/lint-commits origin/main..HEAD
 ```
 
 ## Commits
@@ -84,6 +86,8 @@ fix: Handle PID reuse.                   generic area
 - Wrap at about 68 characters, and never past 70. Long links are fine.
 - End with `Fixes #123.` when it closes an issue, or `Fixes part of #123.` when it doesn't fully close one.
 - Credit co-authors with a `Co-authored-by:` trailer after a blank line. Don't @-mention people in commit messages.
+
+`tools/lint-commits` checks the mechanical rules. The `.githooks/commit-msg` hook runs it locally, and CI runs it on every push and pull request.
 
 ## Pull requests
 

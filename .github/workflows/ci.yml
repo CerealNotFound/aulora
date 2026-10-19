@@ -27,3 +27,27 @@ jobs:
       - run: cargo test --all
       - name: Render demo frame
         run: cargo run -q -- tui --demo --snapshot 160x48
+
+  commits:
+    name: commit messages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check commit messages against CONTRIBUTING.md
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            range="$BASE..$HEAD"
+          elif [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            range="$SHA"
+          else
+            range="$BEFORE..$SHA"
+          fi
+          python3 tools/lint-commits "$range"

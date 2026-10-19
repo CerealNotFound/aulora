@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""Check commit messages against the rules in CONTRIBUTING.md.
+
+aulora follows Zulip's commit discipline:
+https://zulip.readthedocs.io/en/latest/contributing/commit-discipline.html
+
+Usage:
+    tools/lint-commits RANGE        check every non-merge commit in RANGE
+                                    (e.g. origin/main..HEAD, or a single
+                                    commit to check it and its ancestors)
+    tools/lint-commits --file PATH  check one message file (commit-msg hook)
+"""
+
+import re
+import subprocess
+import sys
+
+MAX_SUMMARY = 72
+MAX_BODY = 70
+
+GENERIC_AREAS = {
+    "bug", "bugs", "fix", "fixes", "refactor", "misc", "update", "updates",
+    "wip", "change", "changes", "chore", "feat", "feature", "stuff",
+}
+
+NON_IMPERATIVE = re.compile(
+    r"^(?:Add|Fix|Updat|Remov|Chang|Mak|Mov|Renam|Improv|Refactor|Implement"
+    r"|Creat|Delet|Us|Bump|Clean|Replac|Introduc|Tweak|Ensur)"
+    r"(?:ed|es|s|ing)\b"
+)
+
+SUMMARY = re.compile(r"^(?P<area>[a-z0-9][a-z0-9_./-]*(?: [a-z0-9_./-]+)?): (?P<text>\S.*)$")
+TRAILER = re.compile(r"^[A-Za-z][A-Za-z-]*: \S")
+SKIP = ("Merge ", 'Revert "')
+
+
+def problems(message: str, allow_fixup: bool) -> list[str]:
+    lines = [line for line in message.split("\n") if not line.startswith("#")]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if not lines or not lines[0].strip():
+        return ["the commit message is empty"]
+
+    summary = lines[0]
+    if summary.startswith(SKIP):
+        return []
+    if summary.startswith(("fixup! ", "squash! ", "amend! ")):
+        return [] if allow_fixup else ["squash fixup commits before pushing"]
+
+    errs = []
+    m = SUMMARY.match(summary)
+    if not m:
+        errs.append('the summary must look like "area: Do something."')
+    else:
+        area, text = m["area"], m["text"]
+        if area.split()[0] in GENERIC_AREAS:
+            errs.append(f'"{area}" is too generic for an area; name the part of the code')
+        if not text[0].isupper():
+            errs.append("start the sentence after the area with a capital letter")
+        if NON_IMPERATIVE.match(text):
+            errs.append('use the imperative mood ("Add", not "Added" or "Adds")')
+    if not summary.endswith("."):
+        errs.append("end the summary with a period")
+    if len(summary) > MAX_SUMMARY:
+        errs.append(f"the summary is {len(summary)} characters; the limit is {MAX_SUMMARY}")
+    if len(lines) > 1 and lines[1].strip():
+        errs.append("leave a blank line after the summary")
+    for number, line in enumerate(lines[2:], start=3):
+        if len(line) > MAX_BODY and "://" not in line and not TRAILER.match(line):
+            errs.append(f"line {number} is {len(line)} characters; wrap the body at {MAX_BODY}")
+    return errs
+
+
+def git(*args: str) -> str:
+    return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) == 3 and argv[1] == "--file":
+        with open(argv[2], encoding="utf-8") as f:
+            errs = problems(f.read(), allow_fixup=True)
+        for e in errs:
+            print(f"commit message: {e}", file=sys.stderr)
+        if errs:
+            print("See CONTRIBUTING.md. Your message was kept in .git/COMMIT_EDITMSG.", file=sys.stderr)
+        return 1 if errs else 0
+
+    if len(argv) != 2 or argv[1].startswith("-"):
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+
+    failed = 0
+    commits = git("rev-list", "--no-merges", "--reverse", argv[1]).split()
+    for sha in commits:
+        message = git("log", "-1", "--format=%B", sha)
+        errs = problems(message, allow_fixup=False)
+        if errs:
+            failed += 1
+            print(f"{sha[:10]} {message.splitlines()[0]}")
+            for e in errs:
+                print(f"    {e}")
+    print(f"checked {len(commits)} commit(s), {failed} with problems", file=sys.stderr)
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

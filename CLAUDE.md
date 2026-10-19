@@ -23,3 +23,5 @@ Follow `CONTRIBUTING.md` exactly. It's Zulip's commit discipline:
 - one coherent idea per commit, and every commit passes the checks above
 - summary `area: Imperative sentence.`, at most 72 characters, area from the list in CONTRIBUTING.md
 - body explains why, wrapped at 70 characters
+
+Check with `tools/lint-commits origin/main..HEAD` before pushing.

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Checks the commit message against CONTRIBUTING.md.
+# Enable with: git config core.hooksPath .githooks
+exec python3 "$(git rev-parse --show-toplevel)/tools/lint-commits" --file "$1"
