@@ -54,6 +54,9 @@ enum Cmd {
     Status {
         #[arg(long)]
         json: bool,
+        /// Include past sessions found in transcripts.
+        #[arg(long)]
+        all: bool,
     },
     /// Check that hooks, daemon and editor are set up.
     Doctor,
@@ -166,7 +169,7 @@ fn dispatch(cli: Cli) -> Result<()> {
         }
         Some(Cmd::Hooks { action }) => hooks(action),
         Some(Cmd::Daemon { action }) => daemon(action.unwrap_or(DaemonCmd::Run)),
-        Some(Cmd::Status { json }) => status(json),
+        Some(Cmd::Status { json, all }) => status(json, all),
         Some(Cmd::Doctor) => doctor(),
         Some(Cmd::New { claude, name, cwd, attach, command }) => new_pane(claude, name, cwd, attach, command),
         Some(Cmd::Panes { json }) => list_panes(json),
@@ -404,7 +407,7 @@ fn hooks(action: HooksCmd) -> Result<()> {
 
 // --- status / doctor -------------------------------------------------------
 
-fn status(json: bool) -> Result<()> {
+fn status(json: bool, all: bool) -> Result<()> {
     let snap = request_snapshot()?;
     if json {
         println!("{}", serde_json::to_string_pretty(&snap)?);
@@ -413,7 +416,8 @@ fn status(json: bool) -> Result<()> {
     let color = std::io::stdout().is_terminal();
     let paint = |code: &str, s: &str| if color { format!("\x1b[{code}m{s}\x1b[0m") } else { s.to_string() };
     let now = now_ms();
-    let mut sessions: Vec<_> = snap.sessions.iter().collect();
+    let mut sessions: Vec<_> =
+        snap.sessions.iter().filter(|s| all || s.origin != aulora_core::model::Origin::History).collect();
     sessions.sort_by_key(|s| (s.state.rank(), -s.last_event_at));
     if sessions.is_empty() {
         println!("No sessions yet. Start `claude` in a project (hooks: `aulora hooks status`).");
