@@ -7,9 +7,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use aulora_core::model::{SessionState, Snapshot, now_ms};
+use aulora_core::model::{Pane, PaneKind, SessionState, Snapshot, now_ms};
 use aulora_core::paths;
-use aulora_core::proto::{ClientMsg, ServerMsg};
+use aulora_core::proto::{ClientMsg, NewPane, ServerMsg};
 use aulora_core::util::{short_duration, truncate};
 use clap::{Parser, Subcommand};
 
@@ -54,6 +54,41 @@ enum Cmd {
     },
     /// Check that hooks, daemon and editor are set up.
     Doctor,
+    /// Start a new terminal pane in the daemon.
+    New {
+        /// Run Claude Code (falls back to a shell when it exits).
+        #[arg(long)]
+        claude: bool,
+        /// Pane name (default: "shell", "claude" or the command name).
+        #[arg(long, short)]
+        name: Option<String>,
+        /// Working directory (default: the current directory).
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        /// Attach to the pane right away.
+        #[arg(long, short)]
+        attach: bool,
+        /// Command to run instead of a shell. Extra arguments for Claude with --claude.
+        #[arg(last = true, value_name = "COMMAND")]
+        command: Vec<String>,
+    },
+    /// List the daemon's panes.
+    #[command(visible_alias = "ls")]
+    Panes {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Put a pane in this terminal. Ctrl-Q detaches.
+    Attach {
+        /// Pane id, id prefix, name, or project/name.
+        pane: String,
+    },
+    /// Stop a pane's process, keeping its last screen.
+    Kill { pane: String },
+    /// Remove a pane, stopping it first if needed.
+    Close { pane: String },
+    /// Start an exited pane's program again.
+    Restart { pane: String },
     /// Entry point for Claude Code hooks (reads the event on stdin).
     #[command(hide = true)]
     Hook,
@@ -130,6 +165,16 @@ fn dispatch(cli: Cli) -> Result<()> {
         Some(Cmd::Daemon { action }) => daemon(action.unwrap_or(DaemonCmd::Run)),
         Some(Cmd::Status { json }) => status(json),
         Some(Cmd::Doctor) => doctor(),
+        Some(Cmd::New { claude, name, cwd, attach, command }) => new_pane(claude, name, cwd, attach, command),
+        Some(Cmd::Panes { json }) => list_panes(json),
+        Some(Cmd::Attach { pane }) => {
+            ensure_daemon()?;
+            let p = find_pane(&pane)?;
+            aulora_tui::attach(&paths::socket(), &p.id, &pane_label(&p))
+        }
+        Some(Cmd::Kill { pane }) => pane_command(&pane, "stopped", |id| ClientMsg::KillPane { pane_id: id }),
+        Some(Cmd::Close { pane }) => pane_command(&pane, "closed", |id| ClientMsg::ClosePane { pane_id: id }),
+        Some(Cmd::Restart { pane }) => pane_command(&pane, "restarted", |id| ClientMsg::RestartPane { pane_id: id }),
     }
 }
 
@@ -210,6 +255,21 @@ fn daemon_running() -> Option<String> {
     }
 }
 
+/// Start the daemon if needed. Returns its version.
+fn ensure_daemon() -> Result<String> {
+    if let Some(v) = daemon_running() {
+        return Ok(v);
+    }
+    aulora_daemon::spawn_detached(&exe()?)?;
+    for _ in 0..60 {
+        std::thread::sleep(Duration::from_millis(50));
+        if let Some(v) = daemon_running() {
+            return Ok(v);
+        }
+    }
+    bail!("daemon did not start; see {}", paths::log().display())
+}
+
 fn daemon(action: DaemonCmd) -> Result<()> {
     match action {
         DaemonCmd::Run => {
@@ -226,15 +286,9 @@ fn daemon(action: DaemonCmd) -> Result<()> {
                 println!("daemon already running (v{v})");
                 return Ok(());
             }
-            aulora_daemon::spawn_detached(&exe()?)?;
-            for _ in 0..40 {
-                std::thread::sleep(Duration::from_millis(50));
-                if let Some(v) = daemon_running() {
-                    println!("daemon started (v{v})");
-                    return Ok(());
-                }
-            }
-            bail!("daemon did not start; see {}", paths::log().display())
+            let v = ensure_daemon()?;
+            println!("daemon started (v{v})");
+            Ok(())
         }
         DaemonCmd::Stop => match request(&ClientMsg::Shutdown) {
             Ok(_) => {
@@ -416,5 +470,120 @@ fn doctor() -> Result<()> {
     let claude = which("claude");
     println!("{} claude    {}", ok(claude.is_some()), claude.unwrap_or_else(|| "not found on PATH".into()));
     let _ = now_ms();
+    Ok(())
+}
+
+// --- panes ------------------------------------------------------------------
+
+fn pane_label(p: &Pane) -> String {
+    format!("{}/{}", aulora_core::util::basename(&p.project_root), p.name)
+}
+
+/// Find a pane by id, unique id prefix, name, or project/name.
+fn find_pane(query: &str) -> Result<Pane> {
+    let panes = request_snapshot()?.panes;
+    let exact = |p: &&Pane| p.id == query || pane_label(p) == query;
+    if let Some(p) = panes.iter().find(exact) {
+        return Ok(p.clone());
+    }
+    let matches: Vec<&Pane> = panes.iter().filter(|p| p.id.starts_with(query) || p.name == query).collect();
+    match matches.as_slice() {
+        [p] => Ok((*p).clone()),
+        [] => bail!("no pane matches \"{query}\" (see `aulora ls`)"),
+        many => bail!(
+            "\"{query}\" matches {} panes: {}",
+            many.len(),
+            many.iter().map(|p| format!("{} ({})", p.id, pane_label(p))).collect::<Vec<_>>().join(", ")
+        ),
+    }
+}
+
+fn pane_command(query: &str, done: &str, msg: impl Fn(String) -> ClientMsg) -> Result<()> {
+    let p = find_pane(query)?;
+    match request(&msg(p.id.clone()))? {
+        ServerMsg::Error { message } => bail!(message),
+        _ => {
+            println!("{done} {} ({})", pane_label(&p), p.id);
+            Ok(())
+        }
+    }
+}
+
+fn new_pane(
+    claude: bool,
+    name: Option<String>,
+    cwd: Option<PathBuf>,
+    attach: bool,
+    command: Vec<String>,
+) -> Result<()> {
+    ensure_daemon()?;
+    let cwd = match cwd {
+        Some(c) => c,
+        None => std::env::current_dir()?,
+    };
+    let cwd = cwd.canonicalize().with_context(|| format!("{} does not exist", cwd.display()))?;
+    let kind = if claude {
+        PaneKind::Claude
+    } else if command.is_empty() {
+        PaneKind::Shell
+    } else {
+        PaneKind::Command
+    };
+    let (cols, rows) = ratatui_size();
+    let req = NewPane { cwd: cwd.to_string_lossy().to_string(), kind, args: command, name, cols, rows };
+    let id = match request(&ClientMsg::NewPane(req))? {
+        ServerMsg::PaneCreated { pane_id } => pane_id,
+        ServerMsg::Error { message } => bail!(message),
+        other => bail!("unexpected reply: {other:?}"),
+    };
+    let p = find_pane(&id)?;
+    if attach {
+        return aulora_tui::attach(&paths::socket(), &id, &pane_label(&p));
+    }
+    println!("{id}  {}", pane_label(&p));
+    Ok(())
+}
+
+fn ratatui_size() -> (u16, u16) {
+    if std::io::stdout().is_terminal()
+        && let Some((c, r)) = aulora_tui::terminal_size()
+    {
+        return (c, r);
+    }
+    (120, 36)
+}
+
+fn list_panes(json: bool) -> Result<()> {
+    let snap = request_snapshot()?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&snap.panes)?);
+        return Ok(());
+    }
+    if snap.panes.is_empty() {
+        println!("No panes. Start one with `aulora new` or `aulora new --claude`, or press c in the dashboard.");
+        return Ok(());
+    }
+    let now = now_ms();
+    for p in &snap.panes {
+        let session = snap
+            .sessions
+            .iter()
+            .filter(|s| s.terminal.pane_id.as_deref() == Some(p.id.as_str()))
+            .max_by_key(|s| (s.state.is_live(), s.last_event_at));
+        let state = match (&p.exit, session) {
+            (Some(e), _) => format!("exited ({})", e.code),
+            (None, Some(s)) if s.state.is_live() => format!("claude: {}", s.state.label().to_lowercase()),
+            (None, _) => format!("running · output {} ago", short_duration(now - p.last_output_at)),
+        };
+        println!(
+            "{}  {:<28} {:>7}  {:>3}×{:<3} {}",
+            p.id,
+            truncate(&pane_label(p), 28),
+            format!("{:?}", p.kind).to_lowercase(),
+            p.cols,
+            p.rows,
+            state
+        );
+    }
     Ok(())
 }

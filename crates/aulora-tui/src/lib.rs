@@ -1,6 +1,7 @@
 //! The aulora dashboard.
 
 mod app;
+mod attach;
 mod client;
 mod demo;
 mod theme;
@@ -19,7 +20,13 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, Ke
 use crate::app::{App, Conn, RowRef};
 use crate::client::Incoming;
 
+pub use attach::attach;
 pub use client::SpawnFn;
+
+/// Current terminal size in columns and rows.
+pub fn terminal_size() -> Option<(u16, u16)> {
+    ratatui::crossterm::terminal::size().ok()
+}
 
 pub struct Options {
     pub demo: bool,
