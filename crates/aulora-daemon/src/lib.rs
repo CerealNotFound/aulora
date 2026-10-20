@@ -114,6 +114,31 @@ fn expand_home(dir: &str) -> String {
     }
 }
 
+/// The setting `claude_skip_permissions` in ~/.aulora/config.json.
+fn skip_permissions() -> bool {
+    std::fs::read_to_string(paths::home().join("config.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| v.get("claude_skip_permissions")?.as_bool())
+        .unwrap_or(false)
+}
+
+/// A new Claude pane's arguments: with --dangerously-skip-permissions
+/// when that's the setting, unless it resumes a session (which comes back
+/// with its own permissions) or already says how to ask.
+fn claude_args(args: &[String], skip: bool) -> Vec<String> {
+    let decided = args.iter().any(|a| {
+        matches!(a.as_str(), "--resume" | "-r" | "--continue" | "-c" | "--permission-mode")
+            || a.starts_with("--dangerously-skip-permissions")
+            || a.starts_with("--permission-mode=")
+    });
+    if skip && !decided {
+        [vec!["--dangerously-skip-permissions".to_string()], args.to_vec()].concat()
+    } else {
+        args.to_vec()
+    }
+}
+
 fn new_pane_id(taken: &HashMap<String, Arc<Proc>>) -> String {
     let mut seed = now_ms() as u64 ^ ((std::process::id() as u64) << 32);
     loop {
@@ -399,6 +424,10 @@ impl Shared {
             bail!("a command pane needs a command to run");
         }
         let root = self.root_for(&cwd).await;
+        let mut req = req;
+        if req.kind == PaneKind::Claude {
+            req.args = claude_args(&req.args, skip_permissions());
+        }
         let id = new_pane_id(&self.procs.lock().unwrap());
         let base = match (&req.name, req.kind) {
             (Some(n), _) if !n.trim().is_empty() => n.trim().to_string(),
@@ -1095,6 +1124,20 @@ async fn transcript_loop(shared: Arc<Shared>) {
 #[cfg(test)]
 mod restore_tests {
     use super::*;
+
+    #[test]
+    fn new_claude_panes_follow_the_permissions_setting() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(claude_args(&a(&[]), true), a(&["--dangerously-skip-permissions"]));
+        assert_eq!(
+            claude_args(&a(&["--model", "opus"]), true),
+            a(&["--dangerously-skip-permissions", "--model", "opus"])
+        );
+        assert!(claude_args(&a(&[]), false).is_empty());
+        // A resumed session keeps its own permissions.
+        assert_eq!(claude_args(&a(&["--resume", "x"]), true), a(&["--resume", "x"]));
+        assert_eq!(claude_args(&a(&["--permission-mode", "plan"]), true), a(&["--permission-mode", "plan"]));
+    }
 
     #[test]
     fn claude_panes_resume_their_last_session() {
