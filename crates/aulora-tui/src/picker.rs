@@ -174,9 +174,13 @@ impl Picker {
         self.cursor = i;
         match row {
             Row::Choice(k) => {
-                let label = ask.questions[self.tab].options[k].label.clone();
+                let options = &ask.questions[self.tab].options;
+                let label = options[k].label.clone();
+                // A permission prompt's "No" may have another number in
+                // Claude; Esc says no there whatever it is.
+                let no = !own && k + 1 == options.len() && label == aulora_core::reduce::PERMISSION_NO;
                 self.answered(ask, label);
-                Outcome::press(digit)
+                Outcome::press(if no { "\x1b".to_string() } else { digit })
             }
             Row::Other => {
                 self.typing = Some(String::new());
@@ -568,5 +572,8 @@ mod tests {
     fn permission_prompts_have_no_extra_rows() {
         let ask = Ask { questions: vec![q("Do you want to proceed?", "Bash", &["Yes", "No"])] };
         assert_eq!(Picker::new("s", &ask).rows(&ask, false), [Row::Choice(0), Row::Choice(1)]);
+        assert_eq!(Picker::new("s", &ask).key(&ask, false, &key(KeyCode::Char('1'))).keys, "1");
+        // Claude may number "No" 3 or 4; Esc is no either way.
+        assert_eq!(Picker::new("s", &ask).key(&ask, false, &key(KeyCode::Char('2'))).keys, "\x1b");
     }
 }
