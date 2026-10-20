@@ -410,6 +410,11 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
             app.sidebar_compact = Some(!now);
         }
         Action::Welcome => app.open_welcome(),
+        Action::MoveProjectUp | Action::MoveProjectDown => {
+            if let Some(root) = app.selected_root() {
+                app.move_project(&root, if action == Action::MoveProjectUp { -1 } else { 1 });
+            }
+        }
         Action::Finder => app.open_finder(),
         Action::OpenProject => app.open_project_picker(),
         Action::Reveal => {

@@ -46,6 +46,8 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 | ✅ | The line under an agent must be true | Its last reply, your last prompt since, or what it's doing; "waiting for a first prompt" only with no history. |
 | ✅ | No truncation that hides what you came to read | Agent rows wrap to 2+2 lines; notes wrap to 6 lines. |
 | ✅ | Notes such as "agent done" readable in full | Whole summary kept (1,200 chars), wrapped. |
+| ✅ | The project list mustn't shuffle | Projects keep the order they first appeared in, saved across restarts; agents keep the order they started. `J` / `K` move a project. Dots and `n` show what needs you. |
+| ⬜ | A better name than "projects" | Asked. |
 | ✅ | Compact sidebar on narrow terminals | Below 100 columns, or `\` any time: a strip of status dots and project initials; click to select. |
 | ✅ | First-run onboarding | A welcome checklist on first launch: connect Claude Code (`H`), the VS Code extension (`V`), open a project (Ctrl-O), the keys that matter, the Terminal.app Option tip. "Getting started" in the menu brings it back. |
 

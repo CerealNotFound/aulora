@@ -198,6 +198,7 @@ pub fn run(mut opts: Options) -> Result<()> {
         demo = Some(d);
     } else {
         app.layouts = tiles::load();
+        app.project_order = app::load_order();
         if !welcome::seen() {
             app.open_welcome();
         }
@@ -584,8 +585,10 @@ mod tests {
         let out = frame(None, &|_| {});
         let lines: Vec<&str> = out.lines().collect();
         let project = lines.iter().position(|l| l.contains("● multibrain")).expect("project row");
-        assert!(lines[project + 2].contains("├ ● Fix streaming"), "{}", lines[project + 2]);
-        assert!(lines.iter().any(|l| l.contains("└ ● dev server")), "the last agent closes the branch");
+        // In the order they started: the dev server first, the newest last.
+        assert!(lines[project + 2].contains("├ ● dev server"), "{}", lines[project + 2]);
+        let last = lines[project..].iter().position(|l| l.contains(" └ ")).map(|i| lines[project + i]).unwrap_or("");
+        assert!(last.contains("Fix streaming"), "the last agent closes the branch: {last}");
     }
 
     #[test]

@@ -267,6 +267,8 @@ pub struct App {
     /// When each project was last looked at, and the card for coming back.
     pub visits: HashMap<String, Ms>,
     pub away: Option<crate::away::Card>,
+    /// The sidebar's project order, kept across restarts.
+    pub project_order: Vec<String>,
     /// The first-run checklist.
     pub welcome: Option<crate::welcome::Welcome>,
     /// Ctrl-P.
@@ -285,6 +287,14 @@ pub struct App {
     pub hits: Vec<(Rect, Hit)>,
     /// A destructive action waiting for confirmation.
     pub confirm: Option<Confirm>,
+}
+
+fn order_path() -> std::path::PathBuf {
+    aulora_core::paths::home().join("order.json")
+}
+
+pub fn load_order() -> Vec<String> {
+    std::fs::read(order_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
 fn seen_path() -> std::path::PathBuf {
@@ -352,6 +362,7 @@ impl App {
             files_view: HashMap::new(),
             finder: None,
             welcome: None,
+            project_order: Vec::new(),
             visits: crate::away::load(),
             away: None,
             folders: None,
@@ -386,6 +397,7 @@ impl App {
         let prev_root = self.selected_root();
         self.snap = Some(snap);
         self.reconcile_layouts();
+        self.remember_order();
         if let Some((id, focus)) = self.pending_select.clone()
             && self.pane(&id).is_some()
         {
@@ -401,7 +413,8 @@ impl App {
             // When a row goes away (closed, dismissed), stay in its project;
             // on start, begin on whatever needs attention most.
             let project = prev_root.map(RowRef::Project).filter(|p| rows.contains(p));
-            self.selected = project.or_else(|| self.agents().first().cloned()).or(rows.first().cloned());
+            let urgent = self.agents().into_iter().min_by_key(|a| self.status(a));
+            self.selected = project.or(urgent).or(rows.first().cloned());
         }
         if self.typing && self.focused_pane().and_then(|id| self.pane(&id).cloned()).is_none_or(|p| !p.is_running()) {
             self.typing = false;
@@ -575,9 +588,13 @@ impl App {
     }
 
     /// Projects with something to show, most urgent first.
+    /// Projects with something to show, in a steady order: the order they
+    /// first appeared in (or were moved to with J and K). States change all
+    /// the time; the list doesn't move with them; the dots and `n` say what
+    /// needs you.
     pub fn projects(&self) -> Vec<RowRef> {
         let Some(snap) = &self.snap else { return vec![] };
-        let mut v: Vec<(Status, Ms, String)> = snap
+        let mut visible: Vec<(usize, Ms, String)> = snap
             .projects
             .iter()
             .filter_map(|p| {
@@ -585,20 +602,87 @@ impl App {
                 if agents.is_empty() {
                     return None;
                 }
-                let status = agents.iter().map(|a| self.status(a)).min().unwrap_or(Status::Ended);
-                let last = agents.iter().map(|a| self.since(a)).max().unwrap_or(0);
-                Some((status, last, p.root.clone()))
+                let rank = self.project_order.iter().position(|r| *r == p.root).unwrap_or(usize::MAX);
+                let first = agents.iter().map(|a| self.started(a)).min().unwrap_or(0);
+                Some((rank, first, p.root.clone()))
             })
             .collect();
-        v.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
-        v.into_iter().map(|(_, _, root)| RowRef::Project(root)).collect()
+        visible.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+        visible.into_iter().map(|(_, _, root)| RowRef::Project(root)).collect()
     }
 
-    /// A project's agents, most urgent first.
+    /// When an agent started, for keeping them in a steady order.
+    pub fn started(&self, r: &RowRef) -> Ms {
+        match r {
+            RowRef::Pane(id) => self.pane(id).map(|p| p.created_at).unwrap_or(0),
+            RowRef::Session(id) => self.session(id).map(|s| s.started_at).unwrap_or(0),
+            RowRef::Project(_) => 0,
+        }
+    }
+
+    /// A project's agents, in the order they started.
     pub fn agents_sorted(&self, root: &str) -> Vec<RowRef> {
         let mut a = self.agents_in(root);
-        a.sort_by(|x, y| self.status(x).cmp(&self.status(y)).then(self.since(y).cmp(&self.since(x))));
+        a.sort_by_key(|x| (self.started(x), self.title(x)));
         a
+    }
+
+    /// Remember the order of projects as they appear, so it holds across
+    /// restarts. Returns true when a new one was added.
+    pub fn remember_order(&mut self) -> bool {
+        let shown: Vec<String> = self
+            .projects()
+            .into_iter()
+            .filter_map(|r| match r {
+                RowRef::Project(root) => Some(root),
+                _ => None,
+            })
+            .collect();
+        let mut added = false;
+        for root in shown {
+            if !self.project_order.contains(&root) {
+                self.project_order.push(root);
+                added = true;
+            }
+        }
+        if added {
+            self.save_order();
+        }
+        added
+    }
+
+    /// Move a project up or down the list (J and K).
+    pub fn move_project(&mut self, root: &str, delta: isize) {
+        self.remember_order();
+        let shown: Vec<String> = self
+            .projects()
+            .into_iter()
+            .filter_map(|r| match r {
+                RowRef::Project(r) => Some(r),
+                _ => None,
+            })
+            .collect();
+        let Some(i) = shown.iter().position(|r| r == root) else { return };
+        let j = (i as isize + delta).clamp(0, shown.len() as isize - 1) as usize;
+        if i == j {
+            return;
+        }
+        // Reorder the visible ones, keeping hidden ones where they were.
+        let mut order = shown.clone();
+        let item = order.remove(i);
+        order.insert(j, item);
+        let mut rest: Vec<String> = self.project_order.iter().filter(|r| !order.contains(r)).cloned().collect();
+        order.append(&mut rest);
+        self.project_order = order;
+        self.save_order();
+    }
+
+    fn save_order(&self) {
+        if self.conn == Conn::Demo {
+            return;
+        }
+        let _ = aulora_core::paths::ensure_home();
+        let _ = std::fs::write(order_path(), serde_json::to_vec(&self.project_order).unwrap_or_default());
     }
 
     /// Every agent, in sidebar order.
