@@ -58,6 +58,8 @@ pub enum Job {
         root: String,
         op: git::Op,
     },
+    /// Git repositories on disk, for opening projects.
+    Folders,
     /// List a folder for the Files tab.
     Dir {
         root: String,
@@ -80,6 +82,7 @@ pub enum Job {
 }
 
 pub enum Done {
+    Folders(Vec<String>),
     Dir {
         root: String,
         rel: String,
@@ -173,6 +176,7 @@ fn work(jobs: Receiver<Job>, done: Sender<Done>) {
                 Job::Search { .. } => keep[i] = seen_once.insert("search".to_string()),
                 Job::Dir { root, rel } => keep[i] = seen_once.insert(format!("dir\n{root}\n{rel}")),
                 Job::Index { root } => keep[i] = seen_once.insert(format!("index\n{root}")),
+                Job::Folders => keep[i] = seen_once.insert("folders".to_string()),
                 Job::Status { root, .. } => keep[i] = seen_status.insert(root.clone()),
                 Job::Diff { .. } => {
                     keep[i] = !seen_diff;
@@ -186,6 +190,7 @@ fn work(jobs: Receiver<Job>, done: Sender<Done>) {
                 Done::Skipped
             } else {
                 match job {
+                    Job::Folders => Done::Folders(crate::files::find_repos()),
                     Job::Dir { root, rel } => {
                         let result = crate::files::list_dir(&root, &rel);
                         Done::Dir { root, rel, result }
@@ -612,6 +617,12 @@ impl App {
                             let p = self.changes.entry(root).or_default();
                             p.op_error = Some((format!("{} failed", op.doing()), out));
                         }
+                    }
+                }
+                Done::Folders(list) => {
+                    self.folders = Some(list);
+                    if let Some(f) = self.finder.as_mut() {
+                        f.dirty = true;
                     }
                 }
                 Done::Dir { root, rel, result } => self.on_dir(root, rel, result),

@@ -364,7 +364,7 @@ fn file(f: &mut Frame, area: Rect, app: &mut App, root: &str, rel: &str) {
             if used >= code_w {
                 break;
             }
-            let piece = seg.text.replace('\t', "    ");
+            let piece = crate::ui::clean(&seg.text.replace('\t', "    "));
             let room = code_w - used;
             let piece = if w(&piece) > room { fit(&piece, room) } else { piece };
             used += w(&piece);
@@ -381,76 +381,100 @@ fn file(f: &mut Frame, area: Rect, app: &mut App, root: &str, rel: &str) {
 
 /// The Ctrl-P overlay, near the top as in VS Code.
 pub fn finder(f: &mut Frame, area: Rect, app: &mut App) {
+    use crate::finder::{Mode, Pick};
     let t = theme::get();
     app.refresh_finder();
-    let indexing = app.finder.as_ref().is_some_and(|fi| app.files.get(&fi.root).is_none_or(|tr| tr.index.is_none()));
+    let mode = app.finder_mode().unwrap_or(Mode::Files);
+    let waiting = app.finder.as_ref().is_some_and(|fi| match mode {
+        Mode::Files => fi.root.as_ref().is_none_or(|r| app.files.get(r).is_none_or(|tr| tr.index.is_none())),
+        Mode::Projects => app.folders.is_none(),
+        _ => false,
+    });
     let now = app.now;
     let Some(fi) = &app.finder else { return };
-    let width = area.width.saturating_sub(4).min(96);
+    let width = area.width.saturating_sub(4).min(100);
     let shown = fi.results.len().min(14) as u16;
-    let height = (shown + 4).min(area.height.saturating_sub(2));
+    let height = (shown + 5).min(area.height.saturating_sub(2));
     let r = Rect { x: area.x + (area.width - width) / 2, y: area.y + 2, width, height };
     f.render_widget(Clear, r);
-    let project = aulora_core::util::basename(&fi.root);
+    let place = match (mode, &fi.root) {
+        (Mode::Files, Some(root)) => format!(" in {}", aulora_core::util::basename(root)),
+        _ => String::new(),
+    };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(fg(t.accent))
         .style(Style::new().bg(t.panel))
-        .title(sp(format!(" find a file in {project} "), faint()));
+        .title(sp(format!(" {}{place} ", mode.title()), faint()));
     let inner = block.inner(r);
     f.render_widget(block, r);
     let iw = inner.width as usize;
-    let count = if indexing {
-        format!("{} reading the project…", spinner(now))
+    let count = if waiting && fi.results.is_empty() {
+        format!("{} looking…", spinner(now))
+    } else if waiting {
+        format!("{} {} so far ", spinner(now), fi.total)
     } else {
-        format!("{} ", crate::ui::plural(fi.total, "file"))
+        format!("{} ", fi.total)
     };
     let mut lines = vec![lr(
         vec![sp(" > ", bold(t.accent)), sp(fi.query.clone(), text()), sp("▏", fg(t.accent))],
         vec![sp(count, faint())],
         iw,
     )];
+    let hint = match mode {
+        Mode::Projects => " ⏎ open with a shell · ⇥ open with Claude · type a path to open any folder",
+        _ if fi.query.is_empty() => " files · # projects · @ agents · > actions",
+        _ => "",
+    };
+    lines.push(Line::from(sp(fit(hint, iw), faint())));
     lines.push(Line::from(sp("─".repeat(iw), fg(t.rule))));
     let mut hits = Vec::new();
     let start = fi.selected.saturating_sub(shown.saturating_sub(1) as usize);
-    for (i, (path, idx)) in fi.results.iter().enumerate().skip(start).take(shown as usize) {
+    for (i, item) in fi.results.iter().enumerate().skip(start).take(shown as usize) {
         let selected = i == fi.selected;
-        let name_at = path.rfind('/').map_or(0, |p| p + 1);
         let mut spans = vec![sp(if selected { " › " } else { "   " }, fg(t.accent))];
-        // The file name first, then the folder dimmed (VS Code).
-        let mut name = Vec::new();
-        let mut dir = Vec::new();
-        for (ci, ch) in path.chars().enumerate() {
-            let hit = idx.contains(&(ci as u32));
-            let byte = path.char_indices().nth(ci).map_or(0, |(b, _)| b);
-            let style = match (hit, byte >= name_at) {
+        // Files lead with their name, then the folder (VS Code).
+        let (lead_at, glyph) = match &item.pick {
+            Pick::File(p) => (p.rfind('/').map_or(0, |x| x + 1), ""),
+            Pick::Project(_) => (0, "● "),
+            Pick::Folder(_) => (0, "○ "),
+            Pick::Agent(_) => (0, "◆ "),
+            Pick::Action(_) => (0, "› "),
+        };
+        if !glyph.is_empty() {
+            spans.push(sp(glyph, faint()));
+        }
+        let mut lead = Vec::new();
+        let mut rest = Vec::new();
+        for (ci, (byte, ch)) in item.text.char_indices().enumerate() {
+            let hit = item.idx.contains(&(ci as u32));
+            let style = match (hit, byte >= lead_at) {
                 (true, _) => bold(t.accent),
-                (false, true) => {
-                    if selected {
-                        bold(t.text)
-                    } else {
-                        fg(t.text)
-                    }
-                }
+                (false, true) if selected => bold(t.text),
+                (false, true) => fg(t.text),
                 (false, false) => faint(),
             };
-            let target = if byte >= name_at { &mut name } else { &mut dir };
+            let target = if byte >= lead_at { &mut lead } else { &mut rest };
             target.push(Span::styled(ch.to_string(), style));
         }
-        spans.extend(name);
-        if !dir.is_empty() {
+        spans.extend(lead);
+        if !rest.is_empty() {
             spans.push(sp("  ", text()));
-            spans.extend(dir);
+            spans.extend(rest);
         }
-        let line = Line::from(crate::ui::fit_spans(spans, iw));
+        let mut right = Vec::new();
+        if !item.note.is_empty() {
+            right.push(sp(format!("{} ", item.note), faint()));
+        }
+        let line = lr(crate::ui::fit_spans(spans, iw.saturating_sub(crate::ui::spans_width(&right) + 1)), right, iw);
         lines.push(if selected { line.style(Style::new().bg(t.select)) } else { line });
         hits.push((
             Rect { x: inner.x, y: inner.y + lines.len() as u16 - 1, width: inner.width, height: 1 },
             Hit::FinderItem(i),
         ));
     }
-    if fi.results.is_empty() && !indexing {
-        lines.push(Line::from(sp("   no file matches", faint())));
+    if fi.results.is_empty() && !waiting {
+        lines.push(Line::from(sp("   nothing matches", faint())));
     }
     f.render_widget(Paragraph::new(lines), inner);
     app.hits.push((area, Hit::Dismiss));

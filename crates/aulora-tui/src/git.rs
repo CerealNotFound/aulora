@@ -206,6 +206,8 @@ pub fn parse_diff(text: &str) -> Vec<FileDiff> {
     let (mut old_no, mut new_no) = (0u32, 0u32);
     let mut in_header = false;
     for line in text.lines() {
+        // Files with Windows line endings keep a \r on every line.
+        let line = line.strip_suffix('\r').unwrap_or(line);
         if let Some(rest) = line.strip_prefix("diff --git ") {
             skipping = false;
             in_header = true;

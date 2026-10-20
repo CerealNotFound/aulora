@@ -110,6 +110,9 @@ pub struct Conversation {
     pub search: String,
     /// Claude is mid-turn, so the last entry doesn't end a turn yet.
     pub working: bool,
+    /// Prompts you sent that Claude hasn't taken in yet (Claude Code's
+    /// queued messages), oldest first.
+    pub queued: Vec<String>,
 }
 
 fn text_of(content: &Value) -> String {
@@ -242,6 +245,9 @@ impl Conversation {
             matches!(&e.body, Body::You(t) if t == text)
                 && matches!((e.at, at), (Some(a), Some(b)) if (a - b).abs() < 15 * 60_000)
         });
+        if let Some(i) = self.queued.iter().position(|q| q == text) {
+            self.queued.remove(i);
+        }
         if dup {
             return false;
         }
@@ -305,6 +311,23 @@ impl Conversation {
         }
         let at = v.get("timestamp").and_then(Value::as_str).and_then(parse_iso_ms);
         let Some(msg) = v.get("message") else {
+            // Messages waiting for Claude: added when sent mid-turn, removed
+            // when Claude takes them in.
+            if v.get("type").and_then(Value::as_str) == Some("queue-operation") {
+                let text = v.get("content").and_then(Value::as_str).unwrap_or("").trim().to_string();
+                match v.get("operation").and_then(Value::as_str) {
+                    Some("enqueue") if !text.is_empty() => self.queued.push(text),
+                    Some(_) => {
+                        if let Some(i) = self.queued.iter().position(|q| *q == text) {
+                            self.queued.remove(i);
+                        } else if text.is_empty() {
+                            self.queued.clear();
+                        }
+                    }
+                    None => {}
+                }
+                return false;
+            }
             // A prompt sent while Claude was working: Claude Code records it
             // as a queued command, not as a user message.
             if v.get("type").and_then(Value::as_str) == Some("attachment")

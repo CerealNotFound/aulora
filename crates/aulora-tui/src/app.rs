@@ -240,6 +240,8 @@ pub struct App {
     /// A commit message being written, for the project in `session`.
     pub commit_edit: Option<crate::compose::Compose>,
     pub commit_drafts: HashMap<String, String>,
+    /// Slash commands by project, read when first needed.
+    pub slash: HashMap<String, Vec<(String, String)>>,
     /// Unsent prompts, by session.
     pub drafts: HashMap<String, String>,
     pub sent_tx: std::sync::mpsc::Sender<crate::compose::Sent>,
@@ -250,6 +252,12 @@ pub struct App {
     pub files_view: HashMap<String, crate::files::View>,
     /// `--select` and `--tab`, applied when the first snapshot arrives.
     pub preselect: Option<(Option<String>, Option<String>)>,
+    /// Git repositories found on disk, for opening projects.
+    pub folders: Option<Vec<String>>,
+    pub folders_requested: bool,
+    /// The project the next new pane belongs to, when it isn't the
+    /// selected one (opening a project).
+    pub place_root: Option<String>,
     /// Ctrl-P.
     pub finder: Option<crate::finder::Finder>,
     /// Styled diffs by root and file, with the change they were made from.
@@ -320,6 +328,7 @@ impl App {
             hover_url: None,
             compose: None,
             drafts: HashMap::new(),
+            slash: HashMap::new(),
             commit_edit: None,
             commit_drafts: HashMap::new(),
             sent_tx,
@@ -330,6 +339,9 @@ impl App {
             files: HashMap::new(),
             files_view: HashMap::new(),
             finder: None,
+            folders: None,
+            folders_requested: false,
+            place_root: None,
             preselect: None,
             diffs: HashMap::new(),
             conversations: HashMap::new(),
@@ -611,6 +623,10 @@ impl App {
                 } else {
                     items.push(MenuItem::Restart(id.clone()));
                 }
+                items.push(MenuItem::Run(crate::keymap::Action::SplitRight, "Split right  |"));
+                items.push(MenuItem::Run(crate::keymap::Action::SplitDown, "Split down  -"));
+                items.push(MenuItem::Run(crate::keymap::Action::NewClaude, "Claude beside it  C"));
+                items.push(MenuItem::Run(crate::keymap::Action::Zoom, "Zoom  z"));
                 items.push(MenuItem::Close(r.clone()));
             }
             RowRef::Session(id) => {

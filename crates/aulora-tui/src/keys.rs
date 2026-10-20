@@ -98,6 +98,76 @@ pub fn paste(text: &str, bracketed: bool) -> Vec<u8> {
     if bracketed { format!("\x1b[200~{body}\x1b[201~").into_bytes() } else { body.into_bytes() }
 }
 
+/// What some byte sequences mean, for `aulora keys`.
+pub fn describe(bytes: &[u8]) -> &'static str {
+    match bytes {
+        b"\x1b\x7f" | b"\x1b\x08" => "Option-Delete as Meta-Backspace: deletes a word in shells and Claude Code",
+        b"\x17" => "Ctrl-W: deletes a word",
+        b"\x7f" => {
+            "Delete (backspace). If you pressed Option-Delete, your terminal isn't sending Option: turn on \"Use Option as Meta key\" (Terminal.app: Settings → Profiles → Keyboard)"
+        }
+        b"\x08" => "Ctrl-H / Ctrl-Delete",
+        b"\x1bb" | b"\x1b[1;3D" => "Option-Left: back a word",
+        b"\x1bf" | b"\x1b[1;3C" => "Option-Right: forward a word",
+        b"\x1b\r" => "Option-Enter or Shift-Enter as Claude Code sets it up: a new line",
+        b"\r" => "Enter",
+        b"\x1b" => "Escape",
+        b"\x16" => "Ctrl-V: Claude Code pastes the clipboard's image",
+        b"\x11" => "Ctrl-Q: leaves a pane in aulora",
+        _ if bytes.starts_with(b"\x1b[200~") => "a paste (bracketed)",
+        _ if bytes.len() == 1 && bytes[0] >= 0x20 && bytes[0] < 0x7f => "",
+        _ => "",
+    }
+}
+
+/// `aulora keys`: print the bytes each key press sends, and what they mean,
+/// to find out what a terminal does with Option, Shift-Enter and friends.
+pub fn probe() -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    use std::time::{Duration, Instant};
+    let mut out = std::io::stdout();
+    ratatui::crossterm::terminal::enable_raw_mode()?;
+    write!(out, "Press keys to see what your terminal sends. Ctrl-C twice to quit.\r\n")?;
+    let _ = ratatui::crossterm::execute!(out, ratatui::crossterm::event::EnableBracketedPaste);
+    let result = (|| -> std::io::Result<()> {
+        let mut stdin = std::io::stdin();
+        let mut buf = [0u8; 256];
+        let mut last_ctrl_c: Option<Instant> = None;
+        loop {
+            let n = stdin.read(&mut buf)?;
+            if n == 0 {
+                return Ok(());
+            }
+            let bytes = &buf[..n];
+            if bytes == b"\x03" {
+                if last_ctrl_c.is_some_and(|t| t.elapsed() < Duration::from_secs(2)) {
+                    return Ok(());
+                }
+                last_ctrl_c = Some(Instant::now());
+            }
+            let escaped: String = bytes
+                .iter()
+                .map(|b| match *b {
+                    0x1b => "\\e".to_string(),
+                    b'\r' => "\\r".to_string(),
+                    b'\n' => "\\n".to_string(),
+                    0x7f => "\\x7f".to_string(),
+                    b if b < 0x20 => format!("^{}", (b + 0x40) as char),
+                    b if b < 0x7f => (b as char).to_string(),
+                    b => format!("\\x{b:02x}"),
+                })
+                .collect();
+            let shown: String = escaped.chars().take(60).collect();
+            let meaning = describe(bytes);
+            write!(out, "{shown:<24} {meaning}\r\n")?;
+            out.flush()?;
+        }
+    })();
+    let _ = ratatui::crossterm::execute!(out, ratatui::crossterm::event::DisableBracketedPaste);
+    ratatui::crossterm::terminal::disable_raw_mode()?;
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

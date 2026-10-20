@@ -412,7 +412,7 @@ fn code_line(l: &crate::highlight::Line, nw: usize, two: bool, width: usize, tn:
         if used >= width {
             break;
         }
-        let text = seg.text.replace('\t', "    ");
+        let text = crate::ui::clean(&seg.text.replace('\t', "    "));
         let mut style = fg(role_color(seg.role)).patch(base);
         if seg.emph {
             style = match em {

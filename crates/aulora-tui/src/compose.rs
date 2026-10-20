@@ -10,6 +10,8 @@ use crate::client;
 pub struct Compose {
     pub session: String,
     pub text: String,
+    /// The highlighted entry of the slash-command menu.
+    pub menu: usize,
     /// Byte offset into `text`, always on a char boundary.
     pub cursor: usize,
 }
@@ -23,7 +25,7 @@ pub enum Sent {
 impl Compose {
     pub fn new(session: String, draft: String) -> Compose {
         let cursor = draft.len();
-        Compose { session, text: draft, cursor }
+        Compose { session, text: draft, cursor, menu: 0 }
     }
 
     pub fn insert(&mut self, s: &str) {
@@ -198,6 +200,46 @@ impl App {
             }
         }
         any
+    }
+
+    /// The slash commands matching what's being typed, when the prompt is a
+    /// command being typed.
+    pub fn slash_menu(&mut self) -> Vec<(String, String)> {
+        let Some(c) = &self.compose else { return vec![] };
+        let Some(typed) = crate::slash::typing(&c.text).map(str::to_string) else { return vec![] };
+        let Some(root) = self.session(&c.session).map(|s| s.cwd.clone()) else { return vec![] };
+        let all = self.slash.entry(root.clone()).or_insert_with(|| crate::slash::commands(&root));
+        crate::slash::matching(all, &typed).into_iter().cloned().collect()
+    }
+
+    /// A key while the slash menu is open: ↑↓ choose, Tab completes, Enter
+    /// completes and sends. Returns true if the menu took the key.
+    pub fn slash_key(&mut self, key: &KeyEvent, socket: &std::path::Path) -> bool {
+        let menu = self.slash_menu();
+        if menu.is_empty() {
+            return false;
+        }
+        let Some(c) = self.compose.as_mut() else { return false };
+        match key.code {
+            KeyCode::Up => c.menu = c.menu.saturating_sub(1),
+            KeyCode::Down => c.menu = (c.menu + 1).min(menu.len() - 1),
+            KeyCode::Tab | KeyCode::Enter => {
+                let name = &menu[c.menu.min(menu.len() - 1)].0;
+                c.text = format!("/{name}");
+                c.cursor = c.text.len();
+                c.menu = 0;
+                if key.code == KeyCode::Enter {
+                    self.send_compose(socket);
+                } else if let Some(c) = self.compose.as_mut() {
+                    c.insert(" ");
+                }
+            }
+            _ => {
+                c.menu = 0;
+                return false;
+            }
+        }
+        true
     }
 
     /// Whether a session can take a prompt from here.

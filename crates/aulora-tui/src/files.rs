@@ -310,6 +310,14 @@ fn join(dir: &str, name: &str) -> String {
 }
 
 impl App {
+    pub fn send_folders_job(&mut self) {
+        if self.conn == Conn::Demo {
+            self.folders = Some(vec![]);
+            return;
+        }
+        self.send_job(Job::Folders);
+    }
+
     fn send_job(&mut self, job: Job) {
         if self.worker.is_none() {
             self.worker = crate::changes::Worker::spawn();
@@ -513,4 +521,47 @@ impl App {
         self.open_view(root, crate::layout::View::Files, true);
         self.focus = crate::app::Focus::Main;
     }
+}
+
+/// `~/x` → `/Users/you/x`.
+pub fn expand_home(p: &str) -> String {
+    match (p.strip_prefix('~'), std::env::var("HOME")) {
+        (Some(rest), Ok(home)) if rest.is_empty() || rest.starts_with('/') => format!("{home}{rest}"),
+        _ => p.to_string(),
+    }
+}
+
+/// Git repositories in the usual places under the home folder, for opening
+/// as projects: up to three levels deep, not inside other repositories,
+/// skipping hidden folders and the ones that hold media or apps.
+pub fn find_repos() -> Vec<String> {
+    let Ok(home) = std::env::var("HOME") else { return vec![] };
+    const SKIP: &[&str] =
+        &["node_modules", "Library", "Applications", "Pictures", "Music", "Movies", "target", "vendor"];
+    let mut out = Vec::new();
+    let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(std::path::PathBuf::from(&home), 0)];
+    while let Some((dir, depth)) = stack.pop() {
+        if out.len() >= 2000 {
+            break;
+        }
+        if depth > 0 && dir.join(".git").exists() {
+            out.push(dir.to_string_lossy().into_owned());
+            continue;
+        }
+        if depth >= 3 {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') || SKIP.contains(&name.as_str()) {
+                continue;
+            }
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
+                stack.push((e.path(), depth + 1));
+            }
+        }
+    }
+    out.sort();
+    out
 }

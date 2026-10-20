@@ -89,7 +89,9 @@ pub fn on_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx, input: &m
         return false;
     }
     if app.finder.is_some() {
-        app.finder_key(key);
+        if let Some(out) = app.finder_key(key) {
+            return finder_outcome(app, out, opts, ctx);
+        }
         return false;
     }
     if let Some(root) = app.selected_root()
@@ -110,6 +112,9 @@ pub fn on_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx, input: &m
     }
     if app.compose.is_some() && key.code == KeyCode::Char('v') && key.modifiers.contains(KeyModifiers::CONTROL) {
         paste_image_into_prompt(app);
+        return false;
+    }
+    if app.compose.is_some() && app.slash_key(&key, &opts.socket) {
         return false;
     }
     if let Some(c) = app.compose.as_mut() {
@@ -175,10 +180,30 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
     match action {
         Action::Up | Action::Down => {
             let d = if action == Action::Up { -1 } else { 1 };
-            match app.focus {
-                Focus::Sidebar => app.move_selection(d),
-                Focus::Main => with_conv(app, |c, h| c.move_cursor(d as isize, h)),
+            match scope {
+                // The view itself scrolls, a line a press (less, Claude Code).
+                keymap::Scope::Conversation => with_conv(app, |c, h| c.scroll_by(d as isize, h)),
+                keymap::Scope::Pane => scroll_pane(app, d as isize),
+                _ => app.move_selection(d),
             }
+        }
+        Action::HalfUp | Action::HalfDown => {
+            let d: isize = if action == Action::HalfUp { -1 } else { 1 };
+            match scope {
+                keymap::Scope::Conversation => with_conv(app, |c, h| c.scroll_by(d * (h as isize / 2).max(1), h)),
+                keymap::Scope::Pane => {
+                    let h = app
+                        .focused_pane()
+                        .and_then(|id| app.terms.get(&id))
+                        .map_or(20, |t| t.parser.screen().size().0.get()) as isize;
+                    scroll_pane(app, d * (h / 2).max(1));
+                }
+                _ => app.move_selection(d as i32 * 5),
+            }
+        }
+        Action::CursorUp | Action::CursorDown => {
+            let d: isize = if action == Action::CursorUp { -1 } else { 1 };
+            with_conv(app, |c, h| c.move_cursor(d, h));
         }
         Action::PageUp | Action::PageDown => {
             let d: isize = if action == Action::PageUp { -1 } else { 1 };
@@ -359,6 +384,7 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
             _ => {}
         },
         Action::Finder => app.open_finder(),
+        Action::OpenProject => app.open_project_picker(),
         Action::Reveal => {
             let path = match (app.current_tab(), app.selected_root()) {
                 (Tab::Files, Some(root)) if app.focus == Focus::Main => {
@@ -775,7 +801,7 @@ fn spawn_named(
     let (cols, rows) = app.new_pane_size(dir).unwrap_or_else(|| {
         crate::terminal_size().map(|(w, h)| (w.saturating_sub(40), h.saturating_sub(4))).unwrap_or((100, 30))
     });
-    let root = app.space_root().unwrap_or_else(|| cwd.clone());
+    let root = app.place_root.take().or_else(|| app.space_root()).unwrap_or_else(|| cwd.clone());
     let req = NewPane { cwd, kind, args, name, cols: cols.max(20), rows: rows.max(5) };
     match client::command(&opts.socket, &ClientMsg::NewPane(req)) {
         Some(ServerMsg::PaneCreated { pane_id }) => {
@@ -1009,6 +1035,37 @@ fn open_file_in_editor(app: &mut App, root: &str, rel: &str, line: Option<u32>) 
         Ok(_) => app.toast(format!("Opened {rel} in {editor}")),
         Err(e) => app.error(format!("Couldn't run `{editor}`: {e}. Set AULORA_EDITOR.")),
     }
+}
+
+/// Do what a Ctrl-P choice asks. Returns true to quit.
+fn finder_outcome(app: &mut App, out: crate::finder::Outcome, opts: &Options, ctx: &Ctx) -> bool {
+    match out {
+        crate::finder::Outcome::Run(a) => perform(app, a, opts, ctx),
+        crate::finder::Outcome::Open(path, claude) => {
+            open_project(app, opts, ctx, &path, claude);
+            false
+        }
+    }
+}
+
+/// Open a folder as a project: select it if aulora shows it already,
+/// otherwise start a shell (or Claude) there in a new tab, which makes it
+/// a project in the sidebar (VS Code's Open Folder).
+pub fn open_project(app: &mut App, opts: &Options, ctx: &Ctx, path: &str, claude: bool) {
+    let root = crate::git::run(path, &["rev-parse", "--show-toplevel"])
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o).trim().to_string())
+        .filter(|r| !r.is_empty())
+        .unwrap_or_else(|| path.trim_end_matches('/').to_string());
+    let shown = app.rows().contains(&RowRef::Project(root.clone()));
+    if shown && !claude {
+        app.select(RowRef::Project(root));
+        return;
+    }
+    app.place_root = Some(root.clone());
+    app.place_next = Some(None);
+    let (kind, label) = if claude { (PaneKind::Claude, "Claude Code") } else { (PaneKind::Shell, "a shell") };
+    spawn(app, opts, ctx, kind, path.to_string(), vec![], label);
 }
 
 /// Show a file or folder in Finder (`open -R`), or the system's file
@@ -1587,7 +1644,9 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                     if let Some(f) = app.finder.as_mut() {
                         f.selected = i;
                     }
-                    app.finder_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                    if let Some(out) = app.finder_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)) {
+                        finder_outcome(app, out, opts, ctx);
+                    }
                 }
                 Hit::FileRow(i) => {
                     app.focus = Focus::Main;
@@ -1653,8 +1712,9 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                             MenuItem::NewClaude(root.clone()),
                             MenuItem::NewShell(root.clone()),
                             MenuItem::NewTab(root),
+                            MenuItem::Run(Action::OpenProject, "Open a project…  ctrl-o"),
                         ];
-                        open_menu(app, col, row.saturating_sub(4), items);
+                        open_menu(app, col, row.saturating_sub(5), items);
                     }
                 }
                 Hit::AppMenu => {

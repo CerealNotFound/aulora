@@ -67,6 +67,11 @@ pub enum Action {
     Resume,
     Menu,
     Stage,
+    HalfUp,
+    HalfDown,
+    CursorUp,
+    CursorDown,
+    OpenProject,
     Reveal,
     FocusLeft,
     FocusRight,
@@ -174,6 +179,8 @@ pub static BINDINGS: &[Binding] = &[
     b!(Sidebar, "G", [k('G'), code(KeyCode::End)], Bottom, "last item"),
     // Conversation.
     b!(Conversation, "↑↓ j k", [code(KeyCode::Up), code(KeyCode::Down), k('k'), k('j')], Up, "scroll a line", "scroll"),
+    b!(Conversation, "ctrl-u ctrl-d", [ctrl('u'), ctrl('d')], HalfUp, "scroll half a page"),
+    b!(Conversation, "K J", [k('K'), k('J')], CursorUp, "move the cursor (⏎ expands what it's on)"),
     b!(
         Conversation,
         "⏎",
@@ -203,6 +210,14 @@ pub static BINDINGS: &[Binding] = &[
         "scroll back through output",
         "scroll"
     ),
+    b!(
+        Pane,
+        "↑↓ j k",
+        [code(KeyCode::Up), code(KeyCode::Down), k('k'), k('j')],
+        Up,
+        "scroll back through output a line"
+    ),
+    b!(Pane, "ctrl-u ctrl-d", [ctrl('u'), ctrl('d')], HalfUp, "scroll half a page"),
     b!(Pane, "G", [k('G'), code(KeyCode::End)], Bottom, "back to the live bottom"),
     b!(Pane, "x", [k('x')], Close, "kill or close the pane"),
     b!(Pane, "r", [k('r')], Restart, "restart an exited pane"),
@@ -297,7 +312,8 @@ pub static BINDINGS: &[Binding] = &[
         "tabs"
     ),
     b!(Global, "{ }", [k('{'), k('}')], PrevTab, "previous / next tab"),
-    b!(Global, "ctrl-p", [ctrl('p')], Finder, "find a file in this project by name (path:line works)", "find file"),
+    b!(Global, "ctrl-p", [ctrl('p')], Finder, "find anything: files, # projects, @ agents, > actions", "find"),
+    b!(Global, "ctrl-o", [ctrl('o')], OpenProject, "open a project (a folder) in a new tab", "open"),
     b!(Global, "n", [k('n')], NextAlert, "jump to the next agent that needs you", "next alert"),
     b!(Global, "z", [k('z')], Zoom, "zoom this pane (again to unzoom)"),
     b!(Global, "o", [k('o')], OpenEditor, "open the project in your editor"),
@@ -331,6 +347,8 @@ fn resolve(b: &Binding, i: usize) -> Action {
         (FocusLeft, 2) => FocusUp,
         (FocusLeft, 3) => FocusDown,
         (Shrink, 1) => Grow,
+        (HalfUp, 1) => HalfDown,
+        (CursorUp, 1) => CursorDown,
         (PrevTab, 1) => NextTab,
         (Tab(_), n) => Tab(n as u8),
         (a, _) => a,

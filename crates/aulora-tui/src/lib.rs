@@ -18,6 +18,7 @@ mod keymap;
 mod keys;
 mod layout;
 mod links;
+mod slash;
 mod term;
 mod theme;
 mod tiles;
@@ -106,6 +107,11 @@ fn preselect(app: &mut App, select: Option<&str>, tab: Option<&str>) {
         app.set_tab(tab);
         app.focus = Focus::Main;
     }
+}
+
+/// `aulora keys`: show what each key press sends.
+pub fn keys_probe() -> std::io::Result<()> {
+    keys::probe()
 }
 
 /// Whether a program is on PATH.

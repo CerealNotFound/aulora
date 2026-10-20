@@ -143,8 +143,25 @@ pub(crate) fn lr(left: Vec<Span<'static>>, right: Vec<Span<'static>>, width: usi
     Line::from(spans)
 }
 
+/// Text made safe to draw on one line: control characters become spaces.
+pub(crate) fn clean(s: &str) -> String {
+    if s.chars().any(|c| c.is_control()) {
+        s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
+    } else {
+        s.to_string()
+    }
+}
+
+/// A span of one line of text. Line breaks and tabs in text from
+/// prompts, titles or commands would move the terminal's cursor mid-frame
+/// and break the layout, so they become spaces.
 pub(crate) fn sp(s: impl Into<String>, style: Style) -> Span<'static> {
-    Span::styled(s.into(), style)
+    let s: String = s.into();
+    if s.chars().any(|c| c.is_control()) {
+        let clean: String = s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+        return Span::styled(clean, style);
+    }
+    Span::styled(s, style)
 }
 
 fn clock(ms: Ms) -> String {
@@ -699,6 +716,16 @@ fn tab_strip(f: &mut Frame, area: Rect, app: &mut App, root: &str) {
     }
     spans.push(sp(" + ", bold(t.accent).bg(t.panel)));
     app.hits.push((Rect { x, y: area.y, width: 3, height: 1 }, Hit::NewTab));
+    // Changes and Files, one click away (VS Code's activity bar).
+    let mut buttons: Vec<(String, crate::keymap::Action, bool)> = Vec::new();
+    let shown = |pred: &dyn Fn(&crate::layout::View) -> bool| space.tab().is_some_and(|tab| tab.find(pred).is_some());
+    if app.project(root).is_some_and(|p| p.git.is_some()) {
+        let n = app.change_count(root).filter(|n| *n > 0).map(|n| format!(" {n}")).unwrap_or_default();
+        let on = shown(&|v| matches!(v, crate::layout::View::Changes { .. }));
+        buttons.push((format!(" d changes{n} "), crate::keymap::Action::OpenChanges, on));
+    }
+    let on = shown(&|v| matches!(v, crate::layout::View::Files));
+    buttons.push((" f files ".to_string(), crate::keymap::Action::OpenFiles, on));
     let mut right = Vec::new();
     if let Some(sel) = app.selected.clone().filter(|s| !s.is_project()) {
         let status = app.status(&sel);
@@ -707,10 +734,23 @@ fn tab_strip(f: &mut Frame, area: Rect, app: &mut App, root: &str) {
         if status != Status::Ended {
             right.push(sp(format!("{} ", short_duration(now - app.since(&sel))), faint()));
         }
-    } else {
-        right.push(sp(format!("{} ", tildify(root)), faint()));
     }
-    f.render_widget(Paragraph::new(lr(spans, right, area.width as usize)).style(Style::new().bg(t.panel)), area);
+    // Buttons first, then the status; hits from the right edge.
+    let mut all: Vec<Span<'static>> = Vec::new();
+    for (label, _, on) in &buttons {
+        let style = if *on { Style::new().bg(t.select).fg(t.text) } else { Style::new().bg(t.panel).fg(t.dim) };
+        all.push(sp(label.clone(), style));
+        all.push(sp(" ", Style::new().bg(t.panel)));
+    }
+    all.extend(right);
+    let total = spans_width(&all) as u16;
+    let mut bx = area.right().saturating_sub(total);
+    for (label, action, _) in &buttons {
+        let wd = w(label) as u16;
+        app.hits.push((Rect { x: bx, y: area.y, width: wd, height: 1 }, Hit::Action(*action)));
+        bx += wd + 1;
+    }
+    f.render_widget(Paragraph::new(lr(spans, all, area.width as usize)).style(Style::new().bg(t.panel)), area);
 }
 
 /// What a leaf's frame says: what it shows and how it's doing.
@@ -776,7 +816,10 @@ fn draw_leaf(
         .border_type(ratatui::widgets::BorderType::Rounded)
         .border_style(fg(border))
         .title(Line::from(crate::ui::fit_spans(leaf_title(app, view, focused), r.width.saturating_sub(4) as usize)));
-    if zoomed {
+    if focused && app.typing && view.is_terminal() {
+        // Typing here: how to get the keys back, and split it.
+        block = block.title_top(Line::from(sp(" ctrl-q, then | - C to split ", faint())).right_aligned());
+    } else if zoomed {
         block = block.title_top(Line::from(sp(" zoomed · z ", faint())).right_aligned());
     } else if focused
         && !app.typing
@@ -1003,6 +1046,7 @@ fn prompt_box(f: &mut Frame, area: Rect, app: &mut App, s: &Session) -> u16 {
     f.render_widget(Paragraph::new(body), inner);
     if composing.is_some() {
         f.set_cursor_position((inner.x + 3 + cursor.1 as u16, inner.y + (cursor.0 - top_line) as u16));
+        slash_menu(f, boxed, app);
     }
     height
 }
@@ -1081,6 +1125,39 @@ fn working_line(app: &App, s: &Session, width: usize) -> Vec<Line<'static>> {
     ]
 }
 
+/// Claude Code's `/` menu, above the prompt box while a command is typed.
+fn slash_menu(f: &mut Frame, boxed: Rect, app: &mut App) {
+    let t = theme::get();
+    let menu = app.slash_menu();
+    if menu.is_empty() {
+        return;
+    }
+    let sel = app.compose.as_ref().map_or(0, |c| c.menu.min(menu.len() - 1));
+    let rows = menu.len().min(8);
+    let start = sel.saturating_sub(rows - 1);
+    let h = rows as u16;
+    let r = Rect { y: boxed.y.saturating_sub(h), height: h, ..boxed };
+    f.render_widget(Clear, r);
+    let width = r.width as usize;
+    let name_w = menu.iter().map(|(n, _)| w(n) + 1).max().unwrap_or(8).min(width / 2);
+    let lines: Vec<Line> = menu
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(rows)
+        .map(|(i, (name, desc))| {
+            let style = if i == sel { Style::new().bg(t.select) } else { Style::new().bg(t.panel) };
+            let left = format!("  /{name:<name_w$}");
+            Line::from(vec![
+                sp(fit(&left, width / 2 + 3), if i == sel { bold(t.accent) } else { fg(t.text) }),
+                sp(format!("  {}", fit(desc, width.saturating_sub(name_w + 7))), faint()),
+            ])
+            .style(style)
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines).style(Style::new().bg(t.panel)), r);
+}
+
 fn conversation(f: &mut Frame, area: Rect, app: &mut App, session_id: &str) {
     let t = theme::get();
     let Some(s) = app.session(session_id).cloned() else { return };
@@ -1089,11 +1166,16 @@ fn conversation(f: &mut Frame, area: Rect, app: &mut App, session_id: &str) {
         let h = prompt_box(f, area, app, &s);
         area.height = area.height.saturating_sub(h);
     }
-    // Room for the working line, drawn right under the last message.
+    // Room for the working line, drawn right under the last message, and
+    // the messages queued behind it (Claude Code shows them the same way).
     let working = matches!(s.state, SessionState::Working | SessionState::Compacting) && area.height > 8;
+    let queued: Vec<String> = app.conversations.get(session_id).map(|(c, _)| c.queued.clone()).unwrap_or_default();
+    let queued_rows = queued.len().min(4) as u16;
     let full = area;
     if working {
-        area.height -= 3;
+        area.height -= 3 + queued_rows;
+    } else if queued_rows > 0 {
+        area.height = area.height.saturating_sub(queued_rows + 1);
     }
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)]).split(area);
     f.render_widget(Paragraph::new(status_strip(app, &s, area.width as usize)), rows[0]);
@@ -1125,11 +1207,32 @@ fn conversation(f: &mut Frame, area: Rect, app: &mut App, session_id: &str) {
         buf.set_line(text_area.x, y, line, text_area.width);
     }
     scrollbar(f, Rect { x: view.x + view.width - 1, width: 1, ..view }, top, height, total, focused);
+    let shown = total.saturating_sub(top).min(height) as u16;
+    let mut y = (text_area.y + shown + 1).min(full.bottom().saturating_sub(2 + queued_rows));
     if working {
-        let shown = total.saturating_sub(top).min(height) as u16;
-        let y = (text_area.y + shown + 1).min(full.bottom().saturating_sub(2));
         let lines = working_line(app, &s, text_area.width as usize);
         f.render_widget(Paragraph::new(lines), Rect { y, height: 2, ..text_area });
+        y += 2;
+    }
+    if queued_rows > 0 {
+        let w = text_area.width as usize;
+        let mut lines: Vec<Line> = queued
+            .iter()
+            .take(queued_rows as usize)
+            .map(|q| {
+                Line::from(vec![
+                    sp(" › ", faint()),
+                    sp(fit(&clean(q), w.saturating_sub(12)), dim()),
+                    sp("  queued", faint()),
+                ])
+            })
+            .collect();
+        if queued.len() > queued_rows as usize
+            && let Some(last) = lines.last_mut()
+        {
+            *last = Line::from(sp(format!(" … {} more queued", queued.len() - queued_rows as usize + 1), faint()));
+        }
+        f.render_widget(Paragraph::new(lines), Rect { y, height: queued_rows, ..text_area });
     }
     if unseen > 0 && !follow {
         let msg = format!(" ↓ {} · G latest ", plural(unseen, "new message"));
@@ -1247,7 +1350,16 @@ fn mode_bar(f: &mut Frame, area: Rect, app: &App) {
     let mut left: Vec<Span<'static>> = Vec::new();
     if app.typing {
         let name = app.selected_pane().map(|p| p.name.clone()).unwrap_or_default();
-        left.extend([pill("TERMINAL", t.accent), lbl(&format!("keys go to {name}")), key("ctrl-q"), lbl("navigate")]);
+        left.extend([
+            pill("TERMINAL", t.accent),
+            lbl(&format!("keys go to {name}")),
+            key("ctrl-q"),
+            lbl("back to aulora, then"),
+            key("| -"),
+            lbl("split"),
+            key("C"),
+            lbl("Claude beside it"),
+        ]);
     } else if app.commit_edit.is_some() {
         left.extend([
             pill("COMMIT", t.accent),
