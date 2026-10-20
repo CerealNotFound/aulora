@@ -252,7 +252,7 @@ pub struct App {
     pub main_width: u16,
     /// Where the mouse is, and the link under it in the last frame.
     pub mouse_pos: Option<(u16, u16)>,
-    pub hover_url: Option<(u16, u16, u16, String)>,
+    pub hover_url: Option<crate::links::Link>,
     /// While drawing: whether the leaf being drawn has focus.
     pub leaf_focused: bool,
     pub worker: Option<crate::changes::Worker>,

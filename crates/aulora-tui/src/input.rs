@@ -1889,7 +1889,7 @@ pub fn on_hover(app: &mut App, ev: MouseEvent) -> bool {
     app.mouse_pos = Some((ev.column, ev.row));
     // Redraw when entering or leaving a link, or moving along text where
     // one might be.
-    let over_link = before.as_ref().is_some_and(|(r, x0, x1, _)| ev.row == *r && ev.column >= *x0 && ev.column < *x1);
+    let over_link = before.as_ref().is_some_and(|l| l.covers(ev.column, ev.row));
     let link_changed = before.is_some() != over_link || before.is_none();
     let hit = app.hit(ev.column, ev.row).map(|(_, h)| h);
     if let Some(m) = app.menu.as_mut() {
@@ -2064,10 +2064,7 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
             // the pane asked for the mouse and you're typing into it.
             let program_wants_mouse = matches!(&hit, Hit::Terminal(id) if app.typing
                 && app.terms.get(id).is_some_and(|t| t.parser.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None));
-            if let Some((r, x0, x1, url)) = app.hover_url.clone()
-                && row == r
-                && col >= x0
-                && col < x1
+            if let Some(crate::links::Link { url, .. }) = app.hover_url.clone().filter(|l| l.covers(col, row))
                 && !program_wants_mouse
             {
                 if app.conn == Conn::Demo {

@@ -295,13 +295,39 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     menu(f, area, app);
     toast(f, rows[0], app);
     app.hover_url = if app.menu.is_none() && app.finder.is_none() {
-        crate::links::hover(f.buffer_mut(), app.mouse_pos)
+        crate::links::hover(f.buffer_mut(), app.mouse_pos, wrapped_line(app))
     } else {
         None
     };
     if let Some(s) = &app.selection {
         s.paint(f.buffer_mut());
     }
+}
+
+/// The rows a terminal's line under the pointer runs over, when it
+/// wrapped, so a long URL in a narrow pane is one link.
+fn wrapped_line(app: &App) -> Option<(std::ops::Range<u16>, std::ops::RangeInclusive<u16>)> {
+    let (col, row) = app.mouse_pos?;
+    let (area, id) = app.hits.iter().find_map(|(r, h)| match h {
+        Hit::Terminal(id) if col >= r.x && col < r.right() && row >= r.y && row < r.bottom() => Some((*r, id)),
+        _ => None,
+    })?;
+    let screen = app.terms.get(id)?.parser.screen();
+    let (rows, cols) = screen.size();
+    // Drawn cut short (not yet resized to fit): its wrapping isn't what shows.
+    if cols.get() != area.width {
+        return None;
+    }
+    let last = rows.get().min(area.height).saturating_sub(1);
+    let at = row - area.y;
+    let (mut first, mut end) = (at, at);
+    while first > 0 && screen.row_wrapped(first - 1) {
+        first -= 1;
+    }
+    while end < last && screen.row_wrapped(end) {
+        end += 1;
+    }
+    Some((area.x..area.right(), area.y + first..=area.y + end))
 }
 
 fn body(f: &mut Frame, area: Rect, app: &mut App) {
