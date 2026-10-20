@@ -341,7 +341,9 @@ fn sidebar_compact(f: &mut Frame, area: Rect, app: &mut App) {
     let t = theme::get();
     let rows = app.rows();
     let mut lines = Vec::new();
-    lines.push(Line::from(sp(" au", bold(t.accent))));
+    lines.push(Line::from(
+        std::iter::once(sp(" ", text())).chain(crate::brand::mark(t).into_iter().take(2)).collect::<Vec<_>>(),
+    ));
     lines.push(Line::raw(""));
     app.hits.push((area, Hit::Sidebar));
     for r in rows.iter() {
@@ -513,7 +515,8 @@ fn sidebar(f: &mut Frame, area: Rect, app: &mut App) {
     };
     let blank = || Item { lines: vec![Line::raw("")], row: None, button: None };
 
-    let mut brand = vec![sp(" aulora", bold(t.accent))];
+    let mut brand = vec![sp(" ", text())];
+    brand.extend(crate::brand::mark(t));
     match &app.conn {
         Conn::Offline(_) => brand.push(sp("  daemon offline", fg(t.red))),
         Conn::Connecting => brand.push(sp(format!("  {}", spinner(now)), faint())),
@@ -1789,15 +1792,13 @@ fn toast(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-const LOGO: [&str; 3] = ["┌─┐┬ ┬┬  ┌─┐┬─┐┌─┐", "├─┤│ ││  │ │├┬┘├─┤", "┴ ┴└─┘┴─┘└─┘┴└─┴ ┴"];
-
 fn empty_state(f: &mut Frame, area: Rect, app: &mut App) {
     let t = theme::get();
     app.hits.push((area, Hit::Main));
-    let r = centered(area, 72, 14);
-    let mut lines: Vec<Line> = LOGO.iter().map(|l| Line::from(sp(*l, bold(t.accent))).centered()).collect();
+    let r = centered(area, 72, 16);
+    let mut lines: Vec<Line> = crate::brand::banner(t, r.width, t.bg).into_iter().map(Line::centered).collect();
     lines.push(Line::raw(""));
-    lines.push(Line::from(sp("every Claude Code session across your workspaces", dim())).centered());
+    lines.push(Line::from(sp(crate::brand::TAGLINE, dim())).centered());
     lines.push(Line::raw(""));
     let msg = match &app.conn {
         Conn::Offline(why) => vec![sp(format!("can't reach the daemon: {why} · retrying"), fg(t.red))],

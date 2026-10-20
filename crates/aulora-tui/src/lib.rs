@@ -4,6 +4,7 @@ mod app;
 mod attach;
 mod attrib;
 mod away;
+mod brand;
 mod changes;
 mod client;
 mod clipboard;

@@ -147,7 +147,9 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
     let ext = *w.extension.lock().unwrap();
     let meta = *w.meta.lock().unwrap();
     let width = area.width.saturating_sub(4).min(76);
-    let height = 25.min(area.height.saturating_sub(2));
+    // The wordmark when there's room for it and the checklist.
+    let art = area.height >= 36;
+    let height = (if art { 32 } else { 25 }).min(area.height.saturating_sub(2));
     let r = Rect {
         x: area.x + (area.width - width) / 2,
         y: area.y + (area.height.saturating_sub(height)) / 2,
@@ -168,8 +170,16 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
         None => sp(" … ", faint()),
     };
     let key = |k: &str| sp(format!(" {k} "), bold(t.accent));
-    let mut lines = vec![
-        Line::raw(""),
+    let mut lines = vec![Line::raw("")];
+    if art {
+        lines.extend(crate::brand::banner(t, inner.width.saturating_sub(4), t.panel).into_iter().map(|l| {
+            let mut spans = vec![sp("  ", text())];
+            spans.extend(l.spans);
+            Line::from(spans)
+        }));
+        lines.push(Line::raw(""));
+    }
+    lines.extend([
         Line::from(sp(" Every Claude session and terminal, for every workspace, in one place.", dim())),
         Line::raw(""),
         Line::from(vec![
@@ -177,7 +187,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
             sp("Connect Claude Code", text()),
             sp("  so sessions show up live", faint()),
         ]),
-    ];
+    ]);
     if !app.hooks_installed {
         lines.push(Line::from(vec![
             sp("     ", text()),

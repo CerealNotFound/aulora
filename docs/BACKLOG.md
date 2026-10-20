@@ -55,7 +55,7 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 | ✅ | A better name than "projects" | "workspaces", as VS Code calls the folder you open: the sidebar, palette (`#`), Ctrl-O, menus, help, welcome and docs. |
 | ✅ | Compact sidebar on narrow terminals | Below 100 columns, or `\` any time: a strip of status dots and workspace initials; click to select. |
 | ✅ | First-run onboarding | A welcome checklist on first launch: connect Claude Code (`H`), the VS Code extension (`V`), open a workspace (Ctrl-O), the keys that matter, the Terminal.app Option tip. "Getting started" in the menu brings it back. |
-| ⬜ | A good ASCII design for aulora's branding | Asked 2026-10-20: study how other products built theirs (Claude Code, Gemini CLI, Crush, opencode, lazygit…), then design aulora's. Research under way. |
+| 🟡 | A good ASCII design for aulora's branding | Studied Claude Code, Gemini CLI, Crush, opencode, lazygit, Herdr, Codex and others (most keep the working UI plain and put the big art on a welcome screen; several ship sizes by width; colour comes from the theme). Built: a lowercase half-block wordmark in a green→cyan→blue→magenta gradient from the theme on the welcome and empty screens, drawn so Terminal.app's row gaps don't show; a line-drawn version for narrow screens; the `▛▜` mark (an arch) with a gradient `aulora` in the sidebar header. Runners-up and research notes are in the scratchpad branding folder. A README image is still to do. |
 
 ## Conversations
 
