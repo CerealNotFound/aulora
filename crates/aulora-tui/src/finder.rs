@@ -55,7 +55,7 @@ impl Mode {
     pub fn title(self) -> &'static str {
         match self {
             Mode::Files => "find a file",
-            Mode::Projects => "open a project",
+            Mode::Projects => "open a workspace",
             Mode::Agents => "go to an agent",
             Mode::Actions => "run an action",
         }
@@ -127,7 +127,7 @@ pub fn rank(cands: Vec<(Pick, String, String)>, query: &str) -> (Vec<Item>, usiz
 
 /// Actions worth offering by name, with what they're called.
 const ACTIONS: &[(Action, &str)] = &[
-    (Action::OpenProject, "Open a project…"),
+    (Action::OpenProject, "Open a workspace…"),
     (Action::NewClaude, "New Claude pane beside this one"),
     (Action::SplitRight, "Split right with a shell"),
     (Action::SplitDown, "Split down with a shell"),

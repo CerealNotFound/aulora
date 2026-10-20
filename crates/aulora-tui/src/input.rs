@@ -1823,7 +1823,7 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                             MenuItem::NewClaude(root.clone()),
                             MenuItem::NewShell(root.clone()),
                             MenuItem::NewTab(root),
-                            MenuItem::Run(Action::OpenProject, "Open a project…  ctrl-o"),
+                            MenuItem::Run(Action::OpenProject, "Open a workspace…  ctrl-o"),
                         ];
                         open_menu(app, col, row.saturating_sub(5), items);
                     }

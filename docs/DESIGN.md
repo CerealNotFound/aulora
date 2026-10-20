@@ -14,7 +14,7 @@ aulora should feel like **home**: familiar from the first minute because it beha
 
 ```
  aulora                 23:41 │  1 claude · billing   2 server   +        ● working 4m
- projects                   3 │ ╭ ● claude · Credit billing · opus 5.5 ──╮╭ changes 7 ─────────╮
+ workspaces                   3 │ ╭ ● claude · Credit billing · opus 5.5 ──╮╭ changes 7 ─────────╮
                               │ │ ● Update(web/app/billing/page.tsx)      ││ ⎇ feat/credit-…    │
  ● multibrain               + │ │   ⎿  Updated with +5 −4                 ││ ▾ Changes        5 │
    feat/credit-billing ↑3 ●7  │ │ ✻ Wiring the wallet page… (1m 12s)     ││   page.tsx  ● +5 M │
@@ -25,11 +25,11 @@ aulora should feel like **home**: familiar from the first minute because it beha
  new                     menu │
 ```
 
-- **Sidebar, one tree** (VS Code's explorer, Herdr's spaces). Each project shows its rolled-up state and a second line for branch, ahead/behind and changes. Under it, `├`/`└` branches list everything that runs there, most urgent first: Claude panes, shells, commands, and Claude sessions running elsewhere. Projects sort the same way, so whatever needs you is near the top. A flat priority list was tried and dropped: it hid which project an agent belongs to, and that's the first thing you need when switching.
-- **The project is where new things start.** With a project or any of its agents selected, `C`, `c`, the `+` on the project row and the menu's *New Claude here* / *New shell here* start in that project's folder.
+- **Sidebar, one tree** (VS Code's explorer, Herdr's spaces). Each workspace shows its rolled-up state and a second line for branch, ahead/behind and changes. Under it, `├`/`└` branches list everything that runs there, most urgent first: Claude panes, shells, commands, and Claude sessions running elsewhere. Workspaces sort the same way, so whatever needs you is near the top. A flat priority list was tried and dropped: it hid which workspace an agent belongs to, and that's the first thing you need when switching.
+- **The workspace is where new things start.** With a workspace or any of its agents selected, `C`, `c`, the `+` on the workspace row and the menu's *New Claude here* / *New shell here* start in that workspace's folder.
 - **Every agent is a terminal.** An agent aulora runs shows its live terminal. A session that has ended (or a past one, `h`) opens as a terminal running `claude --resume <id>` in the folder it ran in, so you continue it rather than read it. A session still running somewhere else (VS Code, Ghostty) shows its conversation read-only, with `r` to fork it here (`claude --resume <id> --fork-session`): resuming it outright would put two processes on one transcript.
 - **Closing** is a `×` on the hovered or selected row (VS Code's editor tabs), `x`, or the menu. Killing a running pane asks first; closing an exited pane or dismissing an ended session doesn't.
-- **Main area: tiled panes** (Herdr, zellij, tmux). Each project has tabs, shown as pills across the top with `+` for a new one; each tab is a layout of panes split side by side or one above the other. A pane is a terminal (Claude, a shell, a dev server, your editor) or one of aulora's views: Changes, Files, a session's conversation, the project overview. Everything stays on screen together, so nothing hides behind a tab.
+- **Main area: tiled panes** (Herdr, zellij, tmux). Each workspace has tabs, shown as pills across the top with `+` for a new one; each tab is a layout of panes split side by side or one above the other. A pane is a terminal (Claude, a shell, a dev server, your editor) or one of aulora's views: Changes, Files, a session's conversation, the workspace overview. Everything stays on screen together, so nothing hides behind a tab.
 - **Focus is a frame.** Every pane has a thin rounded frame with its name and state in it; only the focused one is in the accent color (zellij's frames, Herdr's focus color). Tab and Shift-Tab go sidebar → each pane → sidebar, Option-arrows move to the pane in that direction, and a click focuses what it lands on.
 - **The sidebar and the panes follow each other.** Selecting an agent focuses its pane (in whatever tab it's in); focusing a pane selects its row. Selecting a session that runs elsewhere opens its conversation as a pane.
 - **Where new things go.** `|` and `-` split the focused pane with a new shell to the right or below, `C` puts Claude beside it, `T` (or `+`) opens a new tab. `d` and `f` show Changes and Files: they take the focused pane's place if it's a view, or open beside it if it's a terminal, since views never cover terminals. Panes started elsewhere (the command line, before a layout existed) get a tab of their own.
@@ -50,7 +50,7 @@ Five states, as in Herdr. Color and glyph both carry the meaning, so it reads un
 | idle | finished and seen, or waiting for a first prompt | `○` | green |
 | ended / unknown | not running, or no information | `·` | overlay |
 
-"done" clears to "idle" once you view the session (Herdr; cones' unread marker). Projects show the most urgent state of their agents.
+"done" clears to "idle" once you view the session (Herdr; cones' unread marker). Workspaces show the most urgent state of their agents.
 
 ## Focus and modes
 
@@ -69,18 +69,18 @@ One keymap table drives key handling, the footer hints and the `?` help, so they
 | `↑` `↓` / `j` `k` | move in the focused list, or scroll by line | everywhere |
 | `⇥` / `⇧⇥` | next / previous pane, the sidebar included | lazygit panels |
 | `⌥←↑↓→` | the pane in that direction | zellij `Alt+arrows` |
-| `1`–`9`, `{` `}` | go to a project tab; previous / next tab | Herdr `prefix+1..9` |
+| `1`–`9`, `{` `}` | go to a workspace tab; previous / next tab | Herdr `prefix+1..9` |
 | `\|` `-` | split: a new shell to the right, below | tmux `%` `"`, zellij |
 | `T` | a new tab | Herdr `prefix+c` |
 | `d` `f` | show Changes, Files beside this pane | VS Code's sidebar views |
 | `<` `>` `=` | shrink, grow, even out panes | tmux `resize-pane` |
 | `⏎` | open: type into a pane, focus a view, expand an item | |
 | `Ctrl-Q` | leave a terminal | claude-squad |
-| `Ctrl-P` | find anything: files; `#` projects and folders, `@` agents, `>` actions | VS Code's quick open and command palette |
-| `Ctrl-O` | open a project: a folder found on disk, a recent one, or a typed path | VS Code's Open Folder |
+| `Ctrl-P` | find anything: files; `#` workspaces and folders, `@` agents, `>` actions | VS Code's quick open and command palette |
+| `Ctrl-O` | open a workspace: a folder found on disk, a recent one, or a typed path | VS Code's Open Folder |
 | `/` | search the focused view | less, vim, lazygit |
 | `n` | next thing that needs you (outside search) | Herdr `prefix+o` |
-| `c` / `C` | new shell / new Claude pane in this project | tmux `c` |
+| `c` / `C` | new shell / new Claude pane in this workspace | tmux `c` |
 | `z` | zoom the focused pane, and back | tmux, Herdr `prefix+z` |
 | `e` | edit the selected file in a terminal editor pane | lazygit `e` |
 | `o` | open in VS Code at the line | lazygit `o` |
@@ -99,7 +99,7 @@ The footer shows 5–7 hints for the focused region and `? more`, shortening lab
 - Mouse capture is on (Herdr, zellij). Click focuses and selects; clicking a selected row (or double-clicking) opens it; clicking a tab switches to it.
 - Links (`http://`, `https://`) anywhere on screen underline when the pointer is over them, and a click opens them in the browser. Cmd-click works the same way: terminals don't pass Cmd to programs, so it arrives as a click (iTerm2, VS Code and Terminal.app all do this). A program in a pane that reads the mouse still gets the click while you're typing into it.
 - Drag the border between two panes to resize them.
-- Hovering a row shows its button: `×` on agents, `+` on projects (VS Code's tabs and explorer). Only the hovered or selected row shows one, so the list stays calm.
+- Hovering a row shows its button: `×` on agents, `+` on workspaces (VS Code's tabs and explorer). Only the hovered or selected row shows one, so the list stays calm.
 - Right-click opens a menu for what's under the pointer: Type here, Resume in a terminal, Restart, Close, New Claude here, New shell here, Open in VS Code (VS Code's context menu). In a program that reads the mouse, right-click goes to the program instead.
 - **The wheel scrolls whatever is under the pointer**, not whatever has focus (VS Code, Herdr).
 - In a terminal pane the wheel goes to the program if it asked for mouse events, becomes arrow keys if it runs full-screen, and otherwise scrolls aulora's copy of the scrollback (xterm.js, zellij, Herdr).
@@ -133,7 +133,7 @@ VS Code's Source Control panel, plus who did it.
 - A tree of changed files built from `git status`, in VS Code's groups: Merge conflicts, Staged, Changes. Folders with a single folder inside are compressed (`app/billing`), sorted folders first, and colored by the most important change inside (VS Code, lazygit). File names take their status color, with VS Code's letters (M, A, D, R, U, !).
 - Each file shows a dot per Claude session that wrote it (a steady color per session), then `+n −m`.
 - Selecting a file shows its diff beside the tree: old and new line numbers (GitHub), syntax highlighting, changed words marked within lines (delta). Colors come from aulora's theme, not a separate syntax theme, so every theme gets a matching diff. When more than one session wrote a file, each hunk is labeled with the one that wrote it. `[` `]` jump between hunks, `o` opens the editor at the change, `space` stages or unstages a file or folder (VS Code's + and −).
-- With an agent selected, the tab shows that agent's changes; `a` switches to every change in the project. The tab you chose stays as you move between agents, so you can walk the sidebar reviewing each one.
+- With an agent selected, the tab shows that agent's changes; `a` switches to every change in the workspace. The tab you chose stays as you move between agents, so you can walk the sidebar reviewing each one.
 - Attribution reads the session transcripts Claude Code already keeps: every Edit and Write records its exact patch (`structuredPatch`) or the new file's content. A change belongs to the session whose recorded lines it contains. Transcripts are read incrementally, so this costs nothing after the first look, and it covers sessions from before aulora was installed.
 - git runs on a background thread: one `git status` and two `git diff -U0` calls give the whole tree, counts and attribution; the selected file's diff is read with context when you select it. The tab refreshes when the daemon's git poll sees something new, and every few seconds while it's shown.
 - Above the tree: the branch with what's waiting to push or pull, and `c commit`, `P push`, `p pull` (lazygit's keys, also clickable). `c` opens a message box, as in VS Code's Source Control: Enter commits what's staged, Shift-Enter adds a line, Esc keeps the message as a draft. With nothing staged it offers to commit everything (VS Code's smart commit). Push publishes a branch that has no upstream yet. Pull only fast-forwards, so it never makes a merge you didn't ask for.

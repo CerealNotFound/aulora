@@ -423,7 +423,7 @@ pub fn finder(f: &mut Frame, area: Rect, app: &mut App) {
     )];
     let hint = match mode {
         Mode::Projects => " ⏎ open with a shell · ⇥ open with Claude · type a path to open any folder",
-        _ if fi.query.is_empty() => " files · # projects · @ agents · > actions",
+        _ if fi.query.is_empty() => " files · # workspaces · @ agents · > actions",
         _ => "",
     };
     lines.push(Line::from(sp(fit(hint, iw), faint())));

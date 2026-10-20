@@ -123,7 +123,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App, root: &str, filter: Option
     let rows = app.change_rows_for(root, filter.as_deref());
     if rows.is_empty() {
         let (head, sub) = match &filter {
-            Some(_) => ("Nothing this agent wrote is uncommitted.", "a shows every change in the project"),
+            Some(_) => ("Nothing this agent wrote is uncommitted.", "a shows every change in the workspace"),
             None => ("No changes.", "The working tree matches the last commit."),
         };
         let msg = vec![

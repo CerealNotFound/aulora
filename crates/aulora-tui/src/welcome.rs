@@ -131,7 +131,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
     let key = |k: &str| sp(format!(" {k} "), bold(t.accent));
     let mut lines = vec![
         Line::raw(""),
-        Line::from(sp(" Every Claude session and terminal, for every project, in one place.", dim())),
+        Line::from(sp(" Every Claude session and terminal, for every workspace, in one place.", dim())),
         Line::raw(""),
         Line::from(vec![
             check(Some(app.hooks_installed)),
@@ -160,7 +160,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
     }
     lines.push(Line::from(vec![
         check(Some(!app.rows().is_empty())),
-        sp("Open a project", text()),
+        sp("Open a workspace", text()),
         sp("  any folder becomes one", faint()),
     ]));
     lines.push(Line::from(vec![
@@ -175,7 +175,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
         ("⏎", "type into a pane; ctrl-q gives the keys back to aulora"),
         ("| -  C", "split with a shell, or put Claude beside this pane"),
         ("d f", "show Changes or Files beside it"),
-        ("ctrl-p", "find anything: files, # projects, @ agents, > actions"),
+        ("ctrl-p", "find anything: files, # workspaces, @ agents, > actions"),
         ("?", "every key, searchable"),
     ] {
         lines.push(Line::from(vec![sp(format!("   {k:<8}"), bold(t.accent)), sp(what, dim())]));

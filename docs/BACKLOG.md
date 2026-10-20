@@ -18,7 +18,7 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 | ✅ | Scroll a pane's history with the keyboard | Ctrl-Q, then ↑↓ / j k, Ctrl-U / Ctrl-D, G back to live; Shift-PgUp / PgDn while typing. |
 | ✅ | Split a specific Claude terminal with a key | Ctrl-Q, then `\|` right, `-` down, `C` Claude beside it; the frame says so while typing; the pane's menu has it too. |
 | 🟡 | Voice mode: hold Space for Claude | Repeated spaces reach Claude in a pane as in Terminal.app. Microphone permission for a pane under the daemon is untested. |
-| ✅ | Claude's / commands in aulora | Native in panes. In the prompt box for VS Code sessions: a `/` menu with built-in, your, the project's commands and skills; Tab completes. |
+| ✅ | Claude's / commands in aulora | Native in panes. In the prompt box for VS Code sessions: a `/` menu with built-in, your, the workspace's commands and skills; Tab completes. |
 | ✅ | Paste images | Ctrl-V in a Claude pane (Claude reads the clipboard); an image-only Cmd-V is passed on as Ctrl-V; Ctrl-V in the prompt box attaches the image by path. |
 | 🟡 | Cmd-V pastes text and images | Text: works, and a paste onto a focused pane or conversation now goes straight into it. Images: if the terminal sends an empty paste, aulora passes it to Claude as Ctrl-V; if Terminal.app sends nothing at all (Cmd never reaches programs), Ctrl-V is the image paste, as in Claude Code. You want Cmd-V only (no Ctrl-V on Mac). Waiting on `aulora keys` with a screenshot copied: if nothing arrives, find another way (a terminal that passes it, or a clipboard watcher). |
 | ✅ | Multi-line prompts must not break the screen | Line breaks and tabs are drawn as spaces everywhere; CRLF files too. |
@@ -37,19 +37,19 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 
 | | Request | Where it stands |
 |---|---|---|
-| ✅ | Look like Herdr (the screenshot) | Tiled panes in tabs per project, accent frame on the focused pane, `new` / `menu` at the bottom of the sidebar. |
-| ✅ | Projects and agents in one tree, not two sections | One tree; kept when the Herdr screenshot showed two sections. |
+| ✅ | Look like Herdr (the screenshot) | Tiled panes in tabs per workspace, accent frame on the focused pane, `new` / `menu` at the bottom of the sidebar. |
+| ✅ | Workspaces and agents in one tree, not two sections | One tree; kept when the Herdr screenshot showed two sections. |
 | ✅ | Every agent is a terminal | Ended sessions open as `claude --resume`; sessions in VS Code show their conversation read-only. |
 | ✅ | A way to close terminals and agents | `×` on hover, `x`, the row menu; a running pane asks first. |
-| ✅ | New terminals start in the selected project | `c`, `C`, `\|`, `-`, the menus. |
+| ✅ | New terminals start in the selected workspace | `c`, `C`, `\|`, `-`, the menus. |
 | ✅ | Changes and Files visible on screen | Buttons in the tab strip (`d changes N`, `f files`). |
 | ✅ | The line under an agent must be true | Its last reply, your last prompt since, or what it's doing; "waiting for a first prompt" only with no history. |
 | ✅ | No truncation that hides what you came to read | Agent rows wrap to 2+2 lines; notes wrap to 6 lines. |
 | ✅ | Notes such as "agent done" readable in full | Whole summary kept (1,200 chars), wrapped. |
-| ✅ | The project list mustn't shuffle | Projects keep the order they first appeared in, saved across restarts; agents keep the order they started. `J` / `K` move a project. Dots and `n` show what needs you. |
-| ⬜ | A better name than "projects" | Asked. |
-| ✅ | Compact sidebar on narrow terminals | Below 100 columns, or `\` any time: a strip of status dots and project initials; click to select. |
-| ✅ | First-run onboarding | A welcome checklist on first launch: connect Claude Code (`H`), the VS Code extension (`V`), open a project (Ctrl-O), the keys that matter, the Terminal.app Option tip. "Getting started" in the menu brings it back. |
+| ✅ | The workspace list mustn't shuffle | Workspaces keep the order they first appeared in, saved across restarts; agents keep the order they started. `J` / `K` move a workspace. Dots and `n` show what needs you. |
+| ✅ | A better name than "projects" | "workspaces", as VS Code calls the folder you open: the sidebar, palette (`#`), Ctrl-O, menus, help, welcome and docs. |
+| ✅ | Compact sidebar on narrow terminals | Below 100 columns, or `\` any time: a strip of status dots and workspace initials; click to select. |
+| ✅ | First-run onboarding | A welcome checklist on first launch: connect Claude Code (`H`), the VS Code extension (`V`), open a workspace (Ctrl-O), the keys that matter, the Terminal.app Option tip. "Getting started" in the menu brings it back. |
 
 ## Conversations
 
@@ -67,15 +67,16 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 
 | | Request | Where it stands |
 |---|---|---|
+| ⬜ | Answer Claude's questions and permission prompts from aulora, for VS Code sessions too | Next: show the question and its numbered options; a number key answers (through the extension for VS Code sessions, directly for panes). |
 | 🟡 | Send a prompt from aulora into a session running in VS Code, same session | Extension built and installed; prompt box in aulora. Needs the daemon restarted once to work live. |
 | ✅ | Read code and changes inside aulora | Changes tab (diffs, attribution), Files tab (tree, viewer, gutter marks). |
 | ✅ | Commit and push from aulora | `c`, `P`, `p` in Changes. |
 | ✅ | Discard changes | `X` (asks; new files go to the Trash). |
 | ✅ | Edit in a terminal editor | `e` opens $EDITOR in a pane at the line. |
-| ✅ | Open a new project without VS Code | Ctrl-O (repos on disk, recent, any path), `aulora open [dir]`. |
-| ✅ | Find anything | Ctrl-P: files, `#` projects, `@` agents, `>` actions. |
-| 🟡 | Jump from aulora to a session's VS Code terminal | `o` on a VS Code session, or its menu: `code <project>` raises the window, the extension shows the terminal. Needs the restarted daemon and reloaded VS Code to check live. |
-| 🟡 | aulora's panes inside VS Code | Extension 0.2.0: "aulora: Open a pane…" and "aulora: Open this project's panes" open daemon panes as VS Code terminals (screen, typing, resizing; closing leaves the pane running). Tested against a real daemon; check in your VS Code after reloading. |
+| ✅ | Open a new workspace without VS Code | Ctrl-O (repos on disk, recent, any path), `aulora open [dir]`. |
+| ✅ | Find anything | Ctrl-P: files, `#` workspaces, `@` agents, `>` actions. |
+| 🟡 | Jump from aulora to a session's VS Code terminal | `o` on a VS Code session, or its menu: `code <workspace>` raises the window, the extension shows the terminal. Needs the restarted daemon and reloaded VS Code to check live. |
+| 🟡 | aulora's panes inside VS Code | Extension 0.2.0: "aulora: Open a pane…" and "aulora: Open this workspace's panes" open daemon panes as VS Code terminals (screen, typing, resizing; closing leaves the pane running). Tested against a real daemon; check in your VS Code after reloading. |
 | ✅ | Side-by-side diffs | `s` in Changes: old left, new right, removals beside their additions, words marked (from 100 columns). |
 
 ## Reliability
@@ -85,7 +86,7 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 | ✅ | Restarts and updates must not kill panes | `aulora daemon restart`; the daemon upgrades itself in place when the program is replaced. |
 | ✅ | Panes come back after a reboot | Saved and restored with the same ids; Claude resumes its session. |
 | ✅ | Notifications when an agent needs you | Desktop notification from the daemon. |
-| ✅ | "Where you left off" cards | Back on a project after 30 minutes or more: a card with what each agent finished or is asking, files edited, new commits. Any key carries on. |
+| ✅ | "Where you left off" cards | Back on a workspace after 30 minutes or more: a card with what each agent finished or is asking, files edited, new commits. Any key carries on. |
 | 🟡 | Global hotkey switcher | `aulora focus` brings the dashboard's Terminal.app or iTerm2 window to the front (or opens one). A terminal program can't own a system-wide key, so bind `aulora focus` to one in macOS Shortcuts or Raycast. |
 
 ## Process

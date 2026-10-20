@@ -539,7 +539,7 @@ fn sidebar(f: &mut Frame, area: Rect, app: &mut App) {
     // One tree: each project, then its agents (most urgent first).
     let hover = app.hover.clone();
     let projects = app.projects();
-    items.push(header("projects", vec![sp(format!("{} ", projects.len()), faint())]));
+    items.push(header("workspaces", vec![sp(format!("{} ", projects.len()), faint())]));
     items.push(blank());
     for (pi, p) in projects.iter().enumerate() {
         let RowRef::Project(root) = p else { continue };
@@ -1122,7 +1122,7 @@ const TIPS: &[&str] = &[
     "aulora send <session> \"…\" prompts a session from a script",
     "F12 hands the mouse back so your terminal can select text",
     "/ searches this conversation",
-    "C starts Claude in the selected project's folder",
+    "C starts Claude in the selected workspace's folder",
     "y copies the message at the cursor",
 ];
 
@@ -1700,7 +1700,7 @@ fn empty_state(f: &mut Frame, area: Rect, app: &mut App) {
     let r = centered(area, 72, 14);
     let mut lines: Vec<Line> = LOGO.iter().map(|l| Line::from(sp(*l, bold(t.accent))).centered()).collect();
     lines.push(Line::raw(""));
-    lines.push(Line::from(sp("every Claude Code session across your projects", dim())).centered());
+    lines.push(Line::from(sp("every Claude Code session across your workspaces", dim())).centered());
     lines.push(Line::raw(""));
     let msg = match &app.conn {
         Conn::Offline(why) => vec![sp(format!("can't reach the daemon: {why} · retrying"), fg(t.red))],

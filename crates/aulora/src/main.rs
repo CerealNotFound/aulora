@@ -18,7 +18,7 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "aulora",
     version,
-    about = "See every Claude Code session across all your projects, and what each one needs from you."
+    about = "See every Claude Code session across all your workspaces, and what each one needs from you."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -35,7 +35,7 @@ enum Cmd {
         /// Print one frame as plain text at WIDTHxHEIGHT and exit.
         #[arg(long, value_name = "WxH")]
         snapshot: Option<String>,
-        /// Select this pane on start (id, prefix, name or project/name).
+        /// Select this pane on start (id, prefix, name or workspace/name).
         #[arg(long)]
         select: Option<String>,
         /// Theme to use (press t in the dashboard to browse them).
@@ -99,7 +99,7 @@ enum Cmd {
     },
     /// Put a pane in this terminal. Ctrl-Q detaches.
     Attach {
-        /// Pane id, id prefix, name, or project/name.
+        /// Pane id, id prefix, name, or workspace/name.
         pane: String,
     },
     /// Stop a pane's process, keeping its last screen.
@@ -111,7 +111,7 @@ enum Cmd {
     /// Type a prompt into a session, or a command into a pane, as if typed
     /// there, then press Enter. Reads stdin when no text is given.
     Send {
-        /// A pane (id, name, project/name), or a session (id prefix or title).
+        /// A pane (id, name, workspace/name), or a session (id prefix or title).
         target: String,
         text: Vec<String>,
     },
@@ -121,7 +121,7 @@ enum Cmd {
         #[command(subcommand)]
         action: VscodeCmd,
     },
-    /// Open a folder as a project, like `code .`: start a shell (or Claude)
+    /// Open a folder as a workspace, like `code .`: start a shell (or Claude)
     /// there and show it in the dashboard.
     Open {
         /// The folder; the current one if left out.
@@ -592,7 +592,7 @@ fn status(json: bool, all: bool) -> Result<()> {
         snap.sessions.iter().filter(|s| all || s.origin != aulora_core::model::Origin::History).collect();
     sessions.sort_by_key(|s| (s.state.rank(), -s.last_event_at));
     if sessions.is_empty() {
-        println!("No sessions yet. Start `claude` in a project (hooks: `aulora hooks status`).");
+        println!("No sessions yet. Start `claude` in a folder (hooks: `aulora hooks status`).");
         return Ok(());
     }
     for s in sessions {
