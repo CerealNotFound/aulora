@@ -235,6 +235,20 @@ impl Conversation {
 
     /// Fold hook events (permissions, subagents, compaction…) into the
     /// conversation at the time they happened.
+    /// Add a prompt you sent, unless it's already here: a queued prompt
+    /// can show up both as a queued command and as a user message.
+    fn push_prompt(&mut self, at: Option<Ms>, text: &str) -> bool {
+        let dup = self.entries.iter().rev().take(40).any(|e| {
+            matches!(&e.body, Body::You(t) if t == text)
+                && matches!((e.at, at), (Some(a), Some(b)) if (a - b).abs() < 15 * 60_000)
+        });
+        if dup {
+            return false;
+        }
+        self.push(Entry::new(at, Body::You(text.to_string())));
+        true
+    }
+
     pub fn add_notes(&mut self, events: &[&FeedEvent]) {
         for e in events {
             if !matches!(
@@ -291,6 +305,15 @@ impl Conversation {
         }
         let at = v.get("timestamp").and_then(Value::as_str).and_then(parse_iso_ms);
         let Some(msg) = v.get("message") else {
+            // A prompt sent while Claude was working: Claude Code records it
+            // as a queued command, not as a user message.
+            if v.get("type").and_then(Value::as_str) == Some("attachment")
+                && let Some(a) = v.get("attachment")
+                && a.get("type").and_then(Value::as_str) == Some("queued_command")
+                && let Some(p) = a.get("prompt").and_then(Value::as_str).map(str::trim).filter(|p| !p.is_empty())
+            {
+                return self.push_prompt(at, p);
+            }
             if v.get("type").and_then(Value::as_str) == Some("system")
                 && v.get("subtype").and_then(Value::as_str) == Some("compact_boundary")
             {
@@ -331,10 +354,10 @@ impl Conversation {
                 }
                 if t.starts_with("[Request interrupted") {
                     self.push(Entry::new(at, Body::Note(FeedKind::Info, "interrupted by you".into())));
+                    true
                 } else {
-                    self.push(Entry::new(at, Body::You(t.to_string())));
+                    self.push_prompt(at, t)
                 }
-                true
             }
             Some("assistant") => {
                 let id = msg.get("id").and_then(Value::as_str).map(str::to_string);
@@ -1012,12 +1035,16 @@ mod tests {
         r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"a\nb\nc\nd\ne\n3 passed","is_error":false}]}}"#,
         r#"{"type":"assistant","timestamp":"2026-10-19T10:00:05Z","message":{"id":"m2","content":[{"type":"text","text":"Fixed."}]}}"#,
         r#"{"type":"user","isSidechain":true,"message":{"role":"user","content":"ignored"}}"#,
+        r#"{"type":"attachment","timestamp":"2026-10-19T10:00:06Z","attachment":{"type":"queued_command","prompt":"also check the docs"}}"#,
+        r#"{"type":"user","timestamp":"2026-10-19T10:00:09Z","message":{"role":"user","content":"also check the docs"}}"#,
     ];
 
     #[test]
     fn reads_entries_and_pairs_results() {
         let (dir, c) = transcript("pairs", LINES);
-        assert_eq!(c.entries.len(), 4);
+        // The queued prompt shows once, though it's recorded twice.
+        assert_eq!(c.entries.len(), 5);
+        assert!(matches!(&c.entries[4].body, Body::You(t) if t == "also check the docs"));
         assert!(matches!(&c.entries[2].body, Body::Tool(t) if t.result.as_deref() == Some("a\nb\nc\nd\ne\n3 passed")));
         let _ = std::fs::remove_dir_all(dir);
     }
