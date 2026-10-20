@@ -133,10 +133,14 @@ VS Code's Source Control panel, plus who did it.
 
 ## Files
 
-- A gitignore-aware project tree, loaded a folder at a time, with git and session decorations (VS Code explorer, yazi).
-- A file viewer with syntax highlighting, line numbers and change markers in the gutter (VS Code's quick diff).
-- `Ctrl-P` finds files by fuzzy name (nucleo, as helix). `/` in the tree searches contents (ripgrep's engine).
-- `e` opens the file at the current line in the user's terminal editor (`$VISUAL` / `$EDITOR`: nvim, helix, micro, nano) in a pane; aulora does not include its own editor.
+VS Code's explorer and a read-only editor, for reading code without leaving.
+
+- A gitignore-aware tree, loaded a folder at a time as you open it (VS Code's explorer, yazi), with each file's git status in its color and letter, the sessions that wrote it as dots, and folders marked when something inside changed. Folders come first; dotfiles show, `.git` doesn't.
+- Selecting a file shows it beside the tree: syntax highlighting in the theme's colors, line numbers, and VS Code's quick-diff marks in the gutter (green for added lines, blue for changed, red where lines were removed). `[` `]` jump between changes. Files over 2 MB show their start.
+- `Ctrl-P` finds a file by fuzzy name from anywhere (VS Code's quick open, matched with nucleo as in helix); `file:line` opens at that line. With an empty query, changed files come first.
+- `/` searches every file's contents with ripgrep's engine: gitignore-aware, the query taken literally, smart case. Results replace the tree, grouped by file; Enter opens the file at the match and keeps the results beside it.
+- `e` edits the file at the current line in your terminal editor (`$VISUAL`, `$EDITOR`, else nvim, vim or nano) in a new pane; aulora has no editor of its own. `o` opens it in VS Code at the line instead; a GUI editor in `$EDITOR` gets the file directly.
+- Folders and open files are re-read every few seconds while shown, so edits made elsewhere appear without a refresh.
 
 ## Visual system
 

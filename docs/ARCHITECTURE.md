@@ -88,3 +88,11 @@ Clients use two kinds of connection. The dashboard keeps one for snapshots and o
 The extension connects to the daemon's socket and sends `editor` with its window's terminals and their shell PIDs, again whenever terminals open or close. The connection stays open. Every few seconds, and when a session starts, the daemon walks each live Claude process's parents (up to 8 levels: `claude` → `zsh` is typical) and matches them against those shell PIDs. A matched session gets `terminal.editor` in the snapshot, which is what makes aulora show a prompt box for it.
 
 `send_prompt` refuses sessions that have ended or are waiting on a permission prompt or question, where typed keys would answer the dialog. Otherwise it sends `type` to the extension, which writes the text with `terminal.sendText` (a bracketed paste when it has several lines), waits briefly, sends Enter, and answers `typed`. The daemon waits up to 5 seconds for that answer, so the client hears whether the prompt really arrived.
+
+## Changes and Files
+
+The Changes and Files tabs read git and the file system on one worker thread in the dashboard (`changes.rs`), never on the UI thread. Jobs go in over a channel and answers come back to the event loop, which polls faster while any are pending. The worker drops stale requests: only the newest status per project, the newest diff, file read and search survive a burst.
+
+- Changes: one `git status --porcelain=v2 -z` and two `git diff -U0` calls give the tree, counts and per-file attribution; the selected file's diff is read with context on demand. Attribution (`attrib.rs`) reads each session's transcript incrementally for Edit and Write patches. Commit, push and pull run git in a new session with no controlling terminal and `GIT_TERMINAL_PROMPT=0`, so nothing can prompt over the dashboard.
+- Files (`files.rs`): folders listed one level at a time with the `ignore` crate, the whole tree indexed for Ctrl-P (up to 200,000 files) and ranked with `nucleo-matcher`, contents searched with `grep-searcher`, and gutter marks from `git diff -U0 HEAD`.
+- Highlighting (`highlight.rs`): syntect with two-face's grammars and a theme whose colors encode roles, mapped to aulora's palette when drawn.
