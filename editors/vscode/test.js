@@ -6,7 +6,7 @@ const net = require("net");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { create, socketPath, keystrokes } = require("./extension.js");
+const { create, socketPath, keystrokes, paneTerminal } = require("./extension.js");
 
 function fakeVscode(pids) {
   const listeners = { open: [], close: [] };
@@ -94,6 +94,36 @@ async function main() {
   await until(() => got.some((m) => m.type === "editor"));
 
   bridge.dispose();
+
+  // A pane as a terminal: attach, screen in, keys and size out.
+  class Emitter { constructor() { this.l = []; this.event = (f) => (this.l.push(f), { dispose() {} }); } fire(x) { this.l.forEach((f) => f(x)); } }
+  const fake = { EventEmitter: Emitter, window: { createTerminal: (opts) => opts } };
+  const paneMsgs = [];
+  let paneClient = null;
+  const paneSock = path.join(dir, "p.sock");
+  const paneServer = net.createServer((c) => {
+    paneClient = c;
+    lines(c, (m) => {
+      paneMsgs.push(m);
+      if (m.type === "attach") c.write(JSON.stringify({ type: "pane_screen", pane_id: "p1", cols: 80, rows: 20, data: Buffer.from("hello").toString("base64") }) + "\n");
+    });
+  });
+  await new Promise((r) => paneServer.listen(paneSock, r));
+  const term = paneTerminal(fake, paneSock, { id: "p1", name: "shell" });
+  let shown = "";
+  term.pty.onDidWrite((d) => (shown += d));
+  term.pty.open({ columns: 80, rows: 20 });
+  await until(() => shown.includes("hello"));
+  term.pty.handleInput("ls\r");
+  term.pty.setDimensions({ columns: 100, rows: 30 });
+  await until(() => paneMsgs.some((m) => m.type === "resize" && m.cols === 100));
+  assert.strictEqual(term.name, "aulora · shell");
+  assert.ok(paneMsgs.some((m) => m.type === "input" && Buffer.from(m.data, "base64").toString() === "ls\r"));
+  term.pty.close();
+  await until(() => paneMsgs.some((m) => m.type === "detach"));
+  paneServer.close();
+  if (paneClient) paneClient.destroy();
+
   server.close();
   fs.rmSync(dir, { recursive: true, force: true });
   console.log("extension tests passed");

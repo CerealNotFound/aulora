@@ -73,7 +73,7 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 | ✅ | Open a new project without VS Code | Ctrl-O (repos on disk, recent, any path), `aulora open [dir]`. |
 | ✅ | Find anything | Ctrl-P: files, `#` projects, `@` agents, `>` actions. |
 | 🟡 | Jump from aulora to a session's VS Code terminal | `o` on a VS Code session, or its menu: `code <project>` raises the window, the extension shows the terminal. Needs the restarted daemon and reloaded VS Code to check live. |
-| ⬜ | aulora's panes inside VS Code | Roadmap step 3; not built. |
+| 🟡 | aulora's panes inside VS Code | Extension 0.2.0: "aulora: Open a pane…" and "aulora: Open this project's panes" open daemon panes as VS Code terminals (screen, typing, resizing; closing leaves the pane running). Tested against a real daemon; check in your VS Code after reloading. |
 | ✅ | Side-by-side diffs | `s` in Changes: old left, new right, removals beside their additions, words marked (from 100 columns). |
 
 ## Reliability

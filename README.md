@@ -144,7 +144,7 @@ More detail is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 - [x] **1. Status dashboard.** Hooks, daemon and the terminal dashboard.
 - [x] **2. Daemon-owned terminals.** Live panes in the dashboard that survive closing it, and `aulora attach` from any terminal.
-- [ ] **3. VS Code extension.** Done: prompts from aulora typed into sessions running in VS Code terminals. Next: jump to a session's terminal, and aulora's panes inside VS Code.
+- [x] **3. VS Code extension.** Prompts from aulora typed into VS Code sessions, jumping to a session's terminal, and aulora's panes as VS Code terminals ("aulora: Open a pane…").
 - [x] **4. Restore.** Panes survive daemon restarts and updates, and come back after a reboot, Claude resuming its session.
 - [ ] **5. "Where you left off" cards.** A summary per project when you switch back to it.
 - [ ] **6. Notifications and a global hotkey switcher.** Done: a desktop notification when an agent needs you (`"notify": false` in `~/.aulora/config.json` turns it off).

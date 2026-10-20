@@ -2,7 +2,7 @@
   "name": "aulora",
   "displayName": "aulora",
   "description": "Lets the aulora dashboard type prompts into the Claude Code sessions running in your terminals.",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "publisher": "aulora",
   "license": "MIT OR Apache-2.0",
   "repository": { "type": "git", "url": "https://github.com/CerealNotFound/aulora" },
@@ -12,6 +12,10 @@
   "main": "./extension.js",
   "extensionKind": ["workspace"],
   "contributes": {
-    "commands": [{ "command": "aulora.reconnect", "title": "aulora: Reconnect to the daemon" }]
+    "commands": [
+      { "command": "aulora.openPane", "title": "aulora: Open a pane…" },
+      { "command": "aulora.openProjectPanes", "title": "aulora: Open this project's panes" },
+      { "command": "aulora.reconnect", "title": "aulora: Reconnect to the daemon" }
+    ]
   }
 }
