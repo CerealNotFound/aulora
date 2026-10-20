@@ -20,6 +20,7 @@ function fakeVscode(pids) {
     },
     env: { appName: "Visual Studio Code" },
     open(t) { terminals.push(t); listeners.open.forEach((f) => f(t)); },
+    close(t) { terminals.splice(terminals.indexOf(t), 1); listeners.close.forEach((f) => f(t)); },
   };
 }
 
@@ -75,6 +76,12 @@ async function main() {
   assert.deepStrictEqual(vscode.terminals[1].sent, ["fix the tests", "\r"]);
   assert.deepStrictEqual(got.find((m) => m.type === "typed"), { type: "typed", request_id: 9, error: null });
 
+  // Several lines go as one bracketed paste, so Claude takes them as one
+  // prompt, then Enter.
+  client.write(JSON.stringify({ type: "type", request_id: 12, terminal_id: id, text: "one\ntwo" }) + "\n");
+  await until(() => got.some((m) => m.request_id === 12));
+  assert.deepStrictEqual(vscode.terminals[1].sent.slice(-2), ["\x1b[200~one\ntwo\x1b[201~", "\r"]);
+
   // Answer keys go as they are, without Enter.
   client.write(JSON.stringify({ type: "type", request_id: 11, terminal_id: id, text: "2", enter: false }) + "\n");
   await until(() => got.some((m) => m.request_id === 11));
@@ -96,6 +103,15 @@ async function main() {
   // New terminals are announced.
   vscode.open({ name: "zsh 2", processId: Promise.resolve(333), sent: [], sendText() {} });
   await until(() => got.filter((m) => m.type === "editor").some((m) => m.terminals.length === 3));
+
+  // A terminal closed in the editor is dropped, and can't be typed into.
+  const before = got.length;
+  vscode.close(vscode.terminals[0]);
+  await until(() => got.slice(before).some((m) => m.type === "editor" && m.terminals.length === 2));
+  assert.ok(!got.slice(before).find((m) => m.type === "editor").terminals.some((t) => t.pid === 111));
+  client.write(JSON.stringify({ type: "type", request_id: 13, terminal_id: hello.terminals[0].id, text: "x" }) + "\n");
+  await until(() => got.some((m) => m.request_id === 13));
+  assert.ok(got.find((m) => m.request_id === 13).error);
 
   // It reconnects when the daemon restarts.
   client.destroy();
@@ -128,6 +144,9 @@ async function main() {
   await until(() => paneMsgs.some((m) => m.type === "resize" && m.cols === 100));
   assert.strictEqual(term.name, "aulora · shell");
   assert.ok(paneMsgs.some((m) => m.type === "input" && Buffer.from(m.data, "base64").toString() === "ls\r"));
+  // The program in the pane exiting is said in the terminal.
+  paneClient.write(JSON.stringify({ type: "pane_exited", pane_id: "p1", code: 0 }) + "\n");
+  await until(() => shown.includes("exited with code 0"));
   term.pty.close();
   await until(() => paneMsgs.some((m) => m.type === "detach"));
   paneServer.close();
