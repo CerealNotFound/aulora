@@ -64,7 +64,8 @@ pub fn encode(key: KeyEvent, app_cursor: bool) -> Option<Vec<u8>> {
         KeyCode::Tab | KeyCode::BackTab if shift => b"\x1b[Z".to_vec(),
         KeyCode::Tab => with_alt(b"\t".to_vec()),
         KeyCode::BackTab => b"\x1b[Z".to_vec(),
-        KeyCode::Backspace if ctrl => with_alt(vec![0x08]),
+        // Ctrl-Delete deletes a word, as Ctrl-W does in shells and Claude Code.
+        KeyCode::Backspace if ctrl => with_alt(vec![0x17]),
         KeyCode::Backspace => with_alt(vec![0x7f]),
         KeyCode::Esc => with_alt(vec![0x1b]),
         KeyCode::Up => csi_letter('A'),
