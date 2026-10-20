@@ -120,7 +120,7 @@ pub fn read(root: &str, rel: &str) -> Result<Text, String> {
         return Ok(Text { binary: true, modified, ..Default::default() });
     };
     let truncated = meta.len() > content.len() as u64;
-    Ok(Text { marks: marks(root, rel), modified, truncated, ..shown(rel, &content) })
+    Ok(Text { marks: marks(root, rel, &content), modified, truncated, ..shown(rel, &content) })
 }
 
 /// A file's text, highlighted, without marks.
@@ -146,10 +146,18 @@ fn shown(rel: &str, content: &str) -> Text {
 }
 
 /// Lines changed since HEAD, from `git diff -U0 HEAD`.
-fn marks(root: &str, rel: &str) -> HashMap<u32, Mark> {
+fn marks(root: &str, rel: &str, content: &str) -> HashMap<u32, Mark> {
     let mut out = HashMap::new();
     // In a folder of repositories, the file's own repository.
     let (repo, rel) = git::locate(root, rel);
+    // A renamed file is compared with what it was. git pairs the two only
+    // while they're still alike, and otherwise every line is marked new.
+    if let Some(orig) = renamed_from(&repo, &rel) {
+        return match git::run(&repo, &["show", &format!("HEAD:./{orig}")]) {
+            Ok(old) => marks_between(&String::from_utf8_lossy(&old), content),
+            Err(_) => out,
+        };
+    }
     let Ok(text) = git::run(&repo, &["diff", "--no-color", "--no-ext-diff", "-U0", "HEAD", "--", &rel]) else {
         return out;
     };
@@ -166,6 +174,46 @@ fn marks(root: &str, rel: &str) -> HashMap<u32, Mark> {
         }
     }
     out
+}
+
+/// The same marks, from two texts.
+fn marks_between(old: &str, new: &str) -> HashMap<u32, Mark> {
+    use similar::{DiffOp, TextDiff};
+    let mut out = HashMap::new();
+    for op in TextDiff::from_lines(old, new).ops() {
+        let (old_len, new_index, new_len) = match *op {
+            DiffOp::Equal { .. } => continue,
+            DiffOp::Delete { old_len, new_index, .. } => (old_len, new_index, 0),
+            DiffOp::Insert { new_index, new_len, .. } => (0, new_index, new_len),
+            DiffOp::Replace { old_len, new_index, new_len, .. } => (old_len, new_index, new_len),
+        };
+        if new_len == 0 {
+            out.insert(new_index as u32 + 1, Mark::Removed);
+        }
+        for i in 0..new_len {
+            out.insert((new_index + i) as u32 + 1, if i < old_len { Mark::Modified } else { Mark::Added });
+        }
+    }
+    out
+}
+
+/// Where a file renamed in the index was renamed from.
+fn renamed_from(repo: &str, rel: &str) -> Option<String> {
+    let args = ["diff", "--cached", "--find-renames", "--relative", "--name-status", "-z", "HEAD"];
+    let out = git::run(repo, &args).ok()?;
+    let out = String::from_utf8_lossy(&out);
+    let mut fields = out.split('\0');
+    while let Some(status) = fields.next() {
+        if status.starts_with('R') || status.starts_with('C') {
+            let (from, to) = (fields.next()?, fields.next()?);
+            if to == rel {
+                return Some(from.to_string());
+            }
+        } else {
+            fields.next();
+        }
+    }
+    None
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -269,6 +317,10 @@ mod tests {
         assert_eq!(found, [("README.md", 2)], "smart case: \"hi\" matches Hi; ignored files are skipped");
         let (hits, _) = search(&root, "Hi").unwrap();
         assert_eq!(hits.len(), 1);
+        // A renamed one only marks what changed in it.
+        git(&["mv", "src/main.rs", "src/app.rs"]);
+        let marks = read(&root, "src/app.rs").unwrap().marks;
+        assert_eq!(marks, HashMap::from([(2, Mark::Modified), (3, Mark::Added)]));
         // A deleted file shows what it was.
         std::fs::remove_file(dir.join("README.md")).unwrap();
         let t = read(&root, "README.md").unwrap();
