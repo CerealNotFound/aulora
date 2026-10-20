@@ -2,6 +2,7 @@
 //! state of every Claude Code session, and streams snapshots to clients.
 
 pub mod discover;
+pub mod editors;
 pub mod git;
 pub mod hub;
 pub mod procs;
@@ -37,7 +38,12 @@ struct Shared {
     roots: Mutex<HashMap<String, String>>,
     git_kick: Notify,
     shutdown: Notify,
+    editors: editors::Editors,
+    /// Re-match sessions to editor terminals now.
+    reach_kick: Notify,
 }
+
+static NEXT_CONN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 fn expand_home(dir: &str) -> String {
     match (dir.strip_prefix('~'), std::env::var("HOME")) {
@@ -86,6 +92,9 @@ impl Shared {
         if new_project {
             self.git_kick.notify_one();
         }
+        if self.editors.any() && env.payload.get("hook_event_name").and_then(|v| v.as_str()) == Some("SessionStart") {
+            self.reach_kick.notify_one();
+        }
         self.changed();
     }
 
@@ -101,7 +110,40 @@ impl Shared {
                 (pane.cols, pane.rows) = p.size();
             }
         }
+        let apps = self.editors.apps();
+        for s in &mut snap.sessions {
+            s.terminal.editor = apps.get(&s.id).cloned();
+        }
         snap
+    }
+
+    /// Type a prompt into the editor terminal a session runs in.
+    async fn send_prompt(self: &Arc<Self>, session_id: &str, text: String) -> Result<()> {
+        use aulora_core::model::SessionState;
+        let state = self.hub.lock().unwrap().session_state(session_id);
+        match state {
+            None => bail!("no session {session_id}"),
+            Some(SessionState::Ended { .. }) => bail!("the session has ended; resume it instead"),
+            // Keys typed now would answer the dialog, not reach Claude.
+            Some(SessionState::NeedsYou { .. }) => bail!("Claude is waiting for an answer there; answer it first"),
+            Some(_) => {}
+        }
+        if self.editors.target(session_id).is_none() {
+            self.recompute_reach().await;
+        }
+        let Some(target) = self.editors.target(session_id) else {
+            bail!("no editor with the aulora extension has this session's terminal (aulora vscode install)")
+        };
+        self.editors.type_into(&target, text).await.map_err(|e| anyhow::anyhow!(e))
+    }
+
+    async fn recompute_reach(self: &Arc<Self>) {
+        let sessions = self.hub.lock().unwrap().live_sessions();
+        let me = self.clone();
+        let changed = tokio::task::spawn_blocking(move || me.editors.recompute(&sessions)).await.unwrap_or(false);
+        if changed {
+            self.changed();
+        }
     }
 
     fn proc_(&self, id: &str) -> Option<Arc<Proc>> {
@@ -268,6 +310,8 @@ pub async fn run() -> Result<()> {
         roots: Mutex::new(HashMap::new()),
         git_kick: Notify::new(),
         shutdown: Notify::new(),
+        editors: editors::Editors::default(),
+        reach_kick: Notify::new(),
     });
     tracing::info!("aulora daemon {} listening on {}", aulora_core::VERSION, sock.display());
 
@@ -276,6 +320,7 @@ pub async fn run() -> Result<()> {
     tokio::spawn(liveness_loop(shared.clone()));
     tokio::spawn(transcript_loop(shared.clone()));
     tokio::spawn(discover_loop(shared.clone()));
+    tokio::spawn(reach_loop(shared.clone()));
 
     loop {
         tokio::select! {
@@ -397,6 +442,7 @@ async fn handle_conn(shared: Arc<Shared>, stream: UnixStream) -> Result<()> {
     let mut subscribed = false;
     let mut rx = shared.version.subscribe();
     let mut attached: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
+    let conn = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
 
     let result: Result<()> = loop {
         tokio::select! {
@@ -473,6 +519,20 @@ async fn handle_conn(shared: Arc<Shared>, stream: UnixStream) -> Result<()> {
                         if let Some(p) = shared.proc_(&pane_id) { p.write(proto::decode(&data)); }
                         None
                     }
+                    ClientMsg::Editor { app, terminals } => {
+                        tracing::debug!("{app}: {} terminals", terminals.len());
+                        shared.editors.register(conn, app, terminals, out.clone());
+                        shared.reach_kick.notify_one();
+                        None
+                    }
+                    ClientMsg::Typed { request_id, error } => {
+                        shared.editors.typed(request_id, error);
+                        None
+                    }
+                    ClientMsg::SendPrompt { session_id, text } => match shared.send_prompt(&session_id, text).await {
+                        Ok(()) => Some(ServerMsg::Ok),
+                        Err(e) => err(e),
+                    },
                     ClientMsg::Resize { pane_id, cols, rows } => {
                         if let Some(p) = shared.proc_(&pane_id)
                             && let Err(e) = p.resize(cols, rows) { tracing::debug!("resize {pane_id}: {e}"); }
@@ -493,6 +553,9 @@ async fn handle_conn(shared: Arc<Shared>, stream: UnixStream) -> Result<()> {
     };
     for (_, h) in attached {
         h.abort();
+    }
+    if shared.editors.unregister(conn) {
+        shared.changed();
     }
     drop(out);
     let _ = writer.await;
@@ -611,6 +674,19 @@ async fn liveness_loop(shared: Arc<Shared>) {
         drop(hub);
         if changed {
             shared.changed();
+        }
+    }
+}
+
+/// Keep track of which sessions run in editor terminals we can type into.
+async fn reach_loop(shared: Arc<Shared>) {
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(3)) => {}
+            _ = shared.reach_kick.notified() => {}
+        }
+        if shared.editors.any() || !shared.editors.apps().is_empty() {
+            shared.recompute_reach().await;
         }
     }
 }

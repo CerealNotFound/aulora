@@ -77,6 +77,33 @@ pub enum ClientMsg {
         cols: u16,
         rows: u16,
     },
+    /// From an editor extension: the terminals in its window. Sent on
+    /// connect and whenever they change; the connection stays open.
+    Editor {
+        /// "Visual Studio Code", "Cursor", …
+        app: String,
+        terminals: Vec<EditorTerminal>,
+    },
+    /// From an editor extension: a `Type` request was carried out (or not).
+    Typed {
+        request_id: u64,
+        error: Option<String>,
+    },
+    /// Send a prompt to a Claude session running in an editor's terminal,
+    /// as if typed there. Replies once the editor has typed it.
+    SendPrompt {
+        session_id: String,
+        text: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditorTerminal {
+    /// The extension's id for the terminal.
+    pub id: u32,
+    /// The terminal's shell process.
+    pub pid: u32,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,6 +147,13 @@ pub enum ServerMsg {
     PaneExited {
         pane_id: String,
         code: u32,
+    },
+    /// To an editor extension: type this into a terminal and press Enter.
+    /// Answer with `Typed`.
+    Type {
+        request_id: u64,
+        terminal_id: u32,
+        text: String,
     },
 }
 

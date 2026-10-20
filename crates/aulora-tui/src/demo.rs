@@ -84,6 +84,11 @@ impl Demo {
             bundle_id: env_for(app).bundle_id,
             pane_id: None,
             tmux: false,
+            editor: match app {
+                "vscode" => Some("Visual Studio Code".into()),
+                "cursor" => Some("Cursor".into()),
+                _ => None,
+            },
         };
         s.title = Some(title.into());
         s.pid = Some(40000 + (self.rng.next() % 9000) as u32);
@@ -492,6 +497,7 @@ impl Demo {
                     bundle_id: None,
                     pane_id: Some(pane_id.into()),
                     tmux: false,
+                    editor: None,
                 };
             }
         }

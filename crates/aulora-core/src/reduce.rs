@@ -169,6 +169,7 @@ pub fn apply_hook(sess: &mut Session, env: &HookEnvelope) -> Vec<FeedEvent> {
             bundle_id: e.bundle_id.clone(),
             pane_id: e.pane_id.clone(),
             tmux: e.tmux,
+            editor: sess.terminal.editor.take(),
         };
     }
 

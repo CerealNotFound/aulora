@@ -95,6 +95,10 @@ pub struct TerminalInfo {
     pub pane_id: Option<String>,
     /// Running inside tmux.
     pub tmux: bool,
+    /// The editor whose aulora extension can type into this session's
+    /// terminal, e.g. "Visual Studio Code". Set by the daemon.
+    #[serde(default)]
+    pub editor: Option<String>,
 }
 
 impl TerminalInfo {

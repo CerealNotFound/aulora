@@ -224,6 +224,15 @@ impl Hub {
         true
     }
 
+    /// Live sessions with a known Claude process: (id, pid).
+    pub fn live_sessions(&self) -> Vec<(String, u32)> {
+        self.sessions.values().filter(|s| s.state.is_live()).filter_map(|s| Some((s.id.clone(), s.pid?))).collect()
+    }
+
+    pub fn session_state(&self, id: &str) -> Option<aulora_core::model::SessionState> {
+        self.sessions.get(id).map(|s| s.state.clone())
+    }
+
     pub fn live_pids(&self) -> Vec<u32> {
         let mut pids: Vec<u32> = self.sessions.values().filter(|s| s.state.is_live()).filter_map(|s| s.pid).collect();
         pids.sort_unstable();
