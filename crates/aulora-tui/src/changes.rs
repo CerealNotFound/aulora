@@ -54,6 +54,10 @@ pub enum Job {
         paths: Vec<String>,
         unstage: bool,
     },
+    Discard {
+        root: String,
+        entry: Entry,
+    },
     Op {
         root: String,
         op: git::Op,
@@ -182,7 +186,7 @@ fn work(jobs: Receiver<Job>, done: Sender<Done>) {
                     keep[i] = !seen_diff;
                     seen_diff = true;
                 }
-                Job::Stage { .. } | Job::Op { .. } => {}
+                Job::Stage { .. } | Job::Op { .. } | Job::Discard { .. } => {}
             }
         }
         for (job, keep) in batch.into_iter().zip(keep) {
@@ -208,6 +212,10 @@ fn work(jobs: Receiver<Job>, done: Sender<Done>) {
                     Job::Search { root, query } => {
                         let result = crate::files::search(&root, &query);
                         Done::Search { root, query, result }
+                    }
+                    Job::Discard { root, entry } => {
+                        let result = git::discard(&root, &entry);
+                        Done::Staged { root, unstage: false, result }
                     }
                     Job::Op { root, op } => {
                         let result = git::perform(&root, &op);
@@ -705,6 +713,17 @@ impl App {
             }
         }
         self.diffs.get(&key).map(|(_, s)| s)
+    }
+
+    /// Throw away the changes in a file (after a yes).
+    pub fn discard(&mut self, root: &str, entry: Entry) {
+        if self.conn == Conn::Demo {
+            self.toast("Would discard (demo)");
+            return;
+        }
+        if let Some(w) = self.worker() {
+            w.send(Job::Discard { root: root.to_string(), entry });
+        }
     }
 
     /// Stage or unstage the selected file or folder (VS Code's + and −).

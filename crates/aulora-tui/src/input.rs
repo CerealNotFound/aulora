@@ -18,6 +18,8 @@ pub enum ConfirmAction {
     Fork(String),
     /// Stage everything in a project and commit it with this message.
     CommitAll(String, String),
+    /// Throw away a file's changes.
+    Discard(String, crate::git::Entry),
 }
 
 impl ConfirmAction {
@@ -26,6 +28,7 @@ impl ConfirmAction {
             ConfirmAction::KillPane(_) => "kill",
             ConfirmAction::Fork(_) => "fork",
             ConfirmAction::CommitAll(..) => "commit all",
+            ConfirmAction::Discard(..) => "discard",
         }
     }
 }
@@ -170,7 +173,7 @@ pub fn on_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx, input: &m
 /// Run an action. Returns true to quit.
 pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool {
     let scope = app.scope();
-    if scope == keymap::Scope::Changes && changes_action(app, action) {
+    if scope == keymap::Scope::Changes && changes_action(app, action, opts, ctx) {
         return false;
     }
     if scope == keymap::Scope::Files && files_action(app, action, opts, ctx) {
@@ -383,6 +386,7 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
             }
             _ => {}
         },
+        Action::Discard => {}
         Action::Finder => app.open_finder(),
         Action::OpenProject => app.open_project_picker(),
         Action::Reveal => {
@@ -478,7 +482,7 @@ fn open(app: &mut App, opts: &Options, ctx: &Ctx) {
                 }
             }
             Tab::Changes => {
-                changes_action(app, Action::Open);
+                changes_action(app, Action::Open, opts, ctx);
             }
             Tab::Files => {
                 files_action(app, Action::Open, opts, ctx);
@@ -669,6 +673,7 @@ fn run_confirmed(app: &mut App, opts: &Options, ctx: &Ctx) {
     let Some(c) = app.confirm.take() else { return };
     match c.action {
         ConfirmAction::KillPane(id) => pane_action(app, opts, ClientMsg::KillPane { pane_id: id }, "Stopped"),
+        ConfirmAction::Discard(root, entry) => app.discard(&root, entry),
         ConfirmAction::CommitAll(root, message) => app.start_op(&root, crate::git::Op::Commit { message, all: true }),
         ConfirmAction::Fork(id) => {
             let Some(cwd) = app.session(&id).map(session_dir) else { return };
@@ -839,7 +844,7 @@ pub fn open_in_editor(app: &mut App, root: &str) {
 
 /// Handle an action in the Changes tab. Returns false to fall through to
 /// the general handling (focus, tabs, help and so on).
-fn changes_action(app: &mut App, action: Action) -> bool {
+fn changes_action(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool {
     use crate::changes::Node;
     let Some(root) = app.selected_root() else { return false };
     let rows = app.change_rows(&root);
@@ -911,6 +916,34 @@ fn changes_action(app: &mut App, action: Action) -> bool {
             }
         }
         Action::Stage => app.stage_selected(&root),
+        Action::Discard | Action::Edit => {
+            let Some(file) = row.as_ref().and_then(|r| app.change_file(&root, r)) else {
+                app.toast("Pick a file first");
+                return true;
+            };
+            if action == Action::Edit {
+                let at = app.view_mut(&root).diff_scroll;
+                let line = match app.diff_for(&root, &file) {
+                    Some(crate::changes::DiffState::Ready(d)) => crate::view_changes::line_at(d, at),
+                    _ => None,
+                };
+                edit_in_pane(app, opts, ctx, &root, &file.entry.path, line);
+            } else if file.entry.group != crate::git::Group::Changes {
+                app.toast("Unstage it first (space); only unstaged changes are discarded");
+            } else {
+                let what = if file.entry.kind == crate::git::Kind::Untracked {
+                    "It's a new file: it goes to the Trash."
+                } else {
+                    "Its unstaged changes are thrown away; this can't be undone."
+                };
+                app.confirm = Some(Confirm {
+                    title: format!("discard {}?", file.name()),
+                    body: what.into(),
+                    action: ConfirmAction::Discard(root.clone(), file.entry.clone()),
+                    on_action: false,
+                });
+            }
+        }
         Action::Commit => app.start_commit_message(&root),
         Action::Push => app.start_op(&root, crate::git::Op::Push),
         Action::Pull => app.start_op(&root, crate::git::Op::Pull),

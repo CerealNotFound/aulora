@@ -518,6 +518,30 @@ pub fn perform(root: &str, op: &Op) -> Result<String, String> {
     }
 }
 
+/// Throw away a file's unstaged changes. A new file goes to the Trash,
+/// where it can be got back, rather than being deleted.
+pub fn discard(root: &str, e: &Entry) -> Result<(), String> {
+    let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let trash = if cfg!(target_os = "macos") { home.join(".Trash") } else { home.join(".local/share/Trash/files") };
+    discard_to(root, e, &trash)
+}
+
+fn discard_to(root: &str, e: &Entry, trash: &std::path::Path) -> Result<(), String> {
+    if e.kind == Kind::Untracked {
+        let path = std::path::Path::new(root).join(&e.path);
+        std::fs::create_dir_all(trash).map_err(|x| x.to_string())?;
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let mut target = trash.join(&name);
+        let mut n = 1;
+        while target.exists() {
+            target = trash.join(format!("{name} {n}"));
+            n += 1;
+        }
+        return std::fs::rename(&path, &target).map_err(|x| x.to_string());
+    }
+    run(root, &["checkout", "--", &e.path]).map(|_| ())
+}
+
 /// Stage or unstage paths (files or folders).
 pub fn stage(root: &str, paths: &[String], unstage: bool) -> Result<(), String> {
     let mut args: Vec<&str> = if unstage { vec!["reset", "-q", "--"] } else { vec!["add", "-A", "--"] };
@@ -604,6 +628,33 @@ mod tests {
         git(&a, &["add", "."]);
         perform(root, &Op::Commit { message: "Change x.".into(), all: false }).unwrap();
         assert_eq!(perform(root, &Op::Push).unwrap(), "Pushed to origin/main");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn discards_changes_and_trashes_new_files() {
+        let base = std::env::temp_dir().join(format!("aulora-discard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (repo, trash) = (base.join("r"), base.join("trash"));
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| {
+            assert!(Command::new("git").arg("-C").arg(&repo).args(args).output().unwrap().status.success())
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "init"]);
+        std::fs::write(repo.join("a.txt"), "changed\n").unwrap();
+        std::fs::write(repo.join("new.txt"), "fresh\n").unwrap();
+        let root = repo.to_str().unwrap();
+        let entry = |path: &str, kind| Entry { group: Group::Changes, kind, path: path.into(), orig: None };
+        discard_to(root, &entry("a.txt", Kind::Modified), &trash).unwrap();
+        assert_eq!(std::fs::read_to_string(repo.join("a.txt")).unwrap(), "one\n");
+        discard_to(root, &entry("new.txt", Kind::Untracked), &trash).unwrap();
+        assert!(!repo.join("new.txt").exists());
+        assert_eq!(std::fs::read_to_string(trash.join("new.txt")).unwrap(), "fresh\n", "recoverable from the Trash");
         let _ = std::fs::remove_dir_all(&base);
     }
 
