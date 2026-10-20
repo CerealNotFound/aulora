@@ -143,6 +143,10 @@ fn config_bool(key: &str) -> Option<bool> {
     v.get(key)?.as_bool()
 }
 
+pub(crate) fn config_bool_pub(key: &str) -> Option<bool> {
+    config_bool(key)
+}
+
 pub(crate) fn config_path_pub() -> PathBuf {
     config_path()
 }

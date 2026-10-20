@@ -145,6 +145,7 @@ const ACTIONS: &[(Action, &str)] = &[
     (Action::OpenEditor, "Open in your editor"),
     (Action::Reveal, "Show in Finder"),
     (Action::ToggleMouse, "Turn mouse capture on or off"),
+    (Action::ToggleSkipPermissions, "New Claude panes: skip permissions, or ask"),
     (Action::Help, "All keys"),
     (Action::Welcome, "Getting started"),
     (Action::Quit, "Quit"),

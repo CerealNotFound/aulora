@@ -110,6 +110,8 @@ pub enum Action {
     Search,
     NextMatch,
     ToggleMouse,
+    /// New Claude panes start with --dangerously-skip-permissions, or not.
+    ToggleSkipPermissions,
 }
 
 #[derive(Debug, Clone, Copy)]

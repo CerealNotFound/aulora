@@ -450,6 +450,15 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
             app.sidebar_compact = Some(!now);
         }
         Action::Welcome => app.open_welcome(),
+        Action::ToggleSkipPermissions => {
+            let on = !crate::config_bool_pub("claude_skip_permissions").unwrap_or(false);
+            crate::save_config_bool("claude_skip_permissions", on);
+            app.toast(if on {
+                "New Claude panes start with --dangerously-skip-permissions"
+            } else {
+                "New Claude panes ask for permission"
+            });
+        }
         Action::ClosePanel => app.hide_panel(),
         Action::MoveUp | Action::MoveDown => {
             let delta = if action == Action::MoveUp { -1 } else { 1 };
@@ -2171,6 +2180,14 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                         MenuItem::Run(Action::Themes, "Theme…  t"),
                         MenuItem::Run(Action::ToggleHistory, "Past sessions  h"),
                         MenuItem::Run(Action::ToggleMouse, "Mouse capture  F12"),
+                        MenuItem::Run(
+                            Action::ToggleSkipPermissions,
+                            if crate::config_bool_pub("claude_skip_permissions").unwrap_or(false) {
+                                "New Claude panes: skip permissions ✓"
+                            } else {
+                                "New Claude panes: skip permissions"
+                            },
+                        ),
                         MenuItem::Run(Action::Help, "All keys  ?"),
                         MenuItem::Run(Action::Welcome, "Getting started"),
                         MenuItem::Run(Action::Quit, "Quit  q"),

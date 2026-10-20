@@ -121,6 +121,10 @@ States, as in Herdr: <span>●</span> red **blocked** (needs you) · yellow **wo
 
 The default follows Herdr: Catppuccin on your terminal's own background, switching to Catppuccin Latte when your terminal is light. Also built in: `tmux` (your terminal's colors and the classic green status bar), `terminal` (only your terminal's 16 colors), `github-dark`, `github-light`, `tokyo-night`, `gruvbox`, `nord`, `dracula`, `one-dark` and `aurora`. Press <kbd>t</kbd> to browse them, or pass `--theme NAME`. The choice is saved in `~/.aulora/config.json`.
 
+### Claude's permissions
+
+New Claude panes start like plain `claude`, asking before they act. To start them with `--dangerously-skip-permissions` instead, choose **New Claude panes: skip permissions** in the menu (or from <kbd>Ctrl</kbd>+<kbd>P</kbd>); it's saved as `"claude_skip_permissions": true` in `~/.aulora/config.json` and covers <kbd>C</kbd>, `aulora new --claude` and `aulora open --claude`. A resumed or forked session comes back with the permissions it had, whatever this says.
+
 ## How it works
 
 ```
