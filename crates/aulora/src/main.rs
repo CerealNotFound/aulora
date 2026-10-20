@@ -1,5 +1,6 @@
 mod hook;
 mod install;
+mod vscode;
 
 use std::io::{IsTerminal, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -9,7 +10,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use aulora_core::model::{Pane, PaneKind, SessionState, Snapshot, now_ms};
 use aulora_core::paths;
-use aulora_core::proto::{ClientMsg, NewPane, ServerMsg};
+use aulora_core::proto::{self, ClientMsg, NewPane, ServerMsg};
 use aulora_core::util::{short_duration, truncate};
 use clap::{Parser, Subcommand};
 
@@ -107,9 +108,47 @@ enum Cmd {
     Close { pane: String },
     /// Start an exited pane's program again.
     Restart { pane: String },
+    /// Type a prompt into a session, or a command into a pane, as if typed
+    /// there, then press Enter. Reads stdin when no text is given.
+    Send {
+        /// A pane (id, name, project/name), or a session (id prefix or title).
+        target: String,
+        text: Vec<String>,
+    },
+    /// The VS Code (or Cursor) extension that lets aulora type into
+    /// sessions running in the editor's terminals.
+    Vscode {
+        #[command(subcommand)]
+        action: VscodeCmd,
+    },
     /// Entry point for Claude Code hooks (reads the event on stdin).
     #[command(hide = true)]
     Hook,
+}
+
+#[derive(Subcommand)]
+enum VscodeCmd {
+    /// Install or update the extension.
+    Install {
+        /// The editor's command: code, code-insiders, cursor, windsurf.
+        #[arg(long, default_value = "code")]
+        editor: String,
+    },
+    /// Remove the extension.
+    Uninstall {
+        #[arg(long, default_value = "code")]
+        editor: String,
+    },
+    /// Show whether the extension is installed.
+    Status {
+        #[arg(long, default_value = "code")]
+        editor: String,
+    },
+    /// Write the extension as a .vsix file.
+    Package {
+        #[arg(default_value = "aulora.vsix")]
+        out: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -197,6 +236,17 @@ fn dispatch(cli: Cli) -> Result<()> {
         Some(Cmd::Kill { pane }) => pane_command(&pane, "stopped", |id| ClientMsg::KillPane { pane_id: id }),
         Some(Cmd::Close { pane }) => pane_command(&pane, "closed", |id| ClientMsg::ClosePane { pane_id: id }),
         Some(Cmd::Restart { pane }) => pane_command(&pane, "restarted", |id| ClientMsg::RestartPane { pane_id: id }),
+        Some(Cmd::Send { target, text }) => send(&target, text),
+        Some(Cmd::Vscode { action }) => match action {
+            VscodeCmd::Install { editor } => vscode::install(&editor),
+            VscodeCmd::Uninstall { editor } => vscode::uninstall(&editor),
+            VscodeCmd::Status { editor } => vscode::status(&editor),
+            VscodeCmd::Package { out } => {
+                std::fs::write(&out, vscode::vsix())?;
+                println!("wrote {}", out.display());
+                Ok(())
+            }
+        },
     }
 }
 
@@ -269,10 +319,19 @@ fn tui(
 // --- daemon -----------------------------------------------------------------
 
 fn request(msg: &ClientMsg) -> Result<ServerMsg> {
+    request_after(&[], msg)
+}
+
+/// Send `before` (messages with no reply), then `msg`, and read its reply.
+fn request_after(before: &[ClientMsg], msg: &ClientMsg) -> Result<ServerMsg> {
     let mut s = UnixStream::connect(paths::socket()).context("the aulora daemon is not running")?;
-    s.set_read_timeout(Some(Duration::from_secs(3)))?;
-    let mut line = serde_json::to_string(msg)?;
-    line.push('\n');
+    // Long enough for an editor to confirm it typed a prompt.
+    s.set_read_timeout(Some(Duration::from_secs(8)))?;
+    let mut line = String::new();
+    for m in before.iter().chain([msg]) {
+        line.push_str(&serde_json::to_string(m)?);
+        line.push('\n');
+    }
     s.write_all(line.as_bytes())?;
     let mut buf = Vec::new();
     let mut byte = [0u8; 1];
@@ -582,6 +641,62 @@ fn find_pane(query: &str) -> Result<Pane> {
             many.len(),
             many.iter().map(|p| format!("{} ({})", p.id, pane_label(p))).collect::<Vec<_>>().join(", ")
         ),
+    }
+}
+
+fn send(target: &str, text: Vec<String>) -> Result<()> {
+    let mut text = text.join(" ");
+    if text.is_empty() {
+        std::io::stdin().read_to_string(&mut text)?;
+        text = text.trim_end_matches('\n').to_string();
+    }
+    if text.trim().is_empty() {
+        bail!("nothing to send");
+    }
+    let snap = request_snapshot()?;
+    // A pane first: the text goes straight to its terminal.
+    if let Ok(p) = find_pane(target) {
+        let mut bytes =
+            if text.contains('\n') { format!("\x1b[200~{text}\x1b[201~") } else { text.clone() }.into_bytes();
+        bytes.push(b'\r');
+        // Input has no reply; the ping's answer says it was handled.
+        request_after(&[ClientMsg::Input { pane_id: p.id.clone(), data: proto::encode(&bytes) }], &ClientMsg::Ping)?;
+        println!("sent to {} ({})", pane_label(&p), p.id);
+        return Ok(());
+    }
+    let live: Vec<_> = snap.sessions.iter().filter(|s| s.state.is_live()).collect();
+    let matches: Vec<_> = live
+        .iter()
+        .filter(|s| s.id.starts_with(target) || s.display_title().to_lowercase().contains(&target.to_lowercase()))
+        .collect();
+    let s = match matches.as_slice() {
+        [s] => s,
+        [] => bail!("no pane or live session matches \"{target}\" (see `aulora ls` and `aulora status`)"),
+        many => bail!(
+            "\"{target}\" matches {} sessions: {}",
+            many.len(),
+            many.iter().map(|s| format!("{} ({})", &s.id[..8], s.display_title())).collect::<Vec<_>>().join(", ")
+        ),
+    };
+    // A session in one of our panes: type into the pane.
+    if let Some(pane) = s.terminal.pane_id.as_deref().filter(|id| snap.panes.iter().any(|p| &p.id == id)) {
+        let mut bytes =
+            if text.contains('\n') { format!("\x1b[200~{text}\x1b[201~") } else { text.clone() }.into_bytes();
+        bytes.push(b'\r');
+        request_after(
+            &[ClientMsg::Input { pane_id: pane.to_string(), data: proto::encode(&bytes) }],
+            &ClientMsg::Ping,
+        )?;
+        println!("sent to {} (pane {pane})", s.display_title());
+        return Ok(());
+    }
+    match request(&ClientMsg::SendPrompt { session_id: s.id.clone(), text })? {
+        ServerMsg::Error { message } => bail!(message),
+        _ => {
+            let place = s.terminal.editor.clone().unwrap_or_else(|| "its editor".into());
+            println!("sent to {} in {place}", s.display_title());
+            Ok(())
+        }
     }
 }
 

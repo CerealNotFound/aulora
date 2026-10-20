@@ -25,6 +25,8 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all
+      - name: Test the VS Code extension
+        run: node editors/vscode/test.js
       - name: Render demo frame
         run: cargo run -q -- tui --demo --snapshot 160x48
 
