@@ -72,6 +72,8 @@ Sessions show up as soon as they start or you send a prompt. To try the dashboar
 | `aulora ls [--json]` | List panes. |
 | `aulora attach PANE` | Put a pane in this terminal, like `tmux attach`. <kbd>Ctrl</kbd>+<kbd>Q</kbd> detaches. |
 | `aulora kill\|restart\|close PANE` | Stop a pane, start its program again, or remove it. |
+| `aulora open [DIR] [--claude]` | Open a folder as a project, like `code .`: a shell (or Claude) there, shown in the dashboard. |
+| `aulora keys` | Show what your terminal sends for each key, to check Option, Shift-Enter and friends. |
 | `aulora send TARGET TEXT…` | Type a prompt into a session (in a pane, or in VS Code with the extension), or a command into a pane, and press Enter. Reads stdin when no text is given. |
 | `aulora vscode install\|uninstall\|status [--editor code\|cursor]` | Install the editor extension that lets aulora type into sessions running in VS Code or Cursor terminals. |
 
@@ -96,6 +98,8 @@ aulora follows Herdr: a sidebar with each **project** and the **agents** running
 | <kbd>r</kbd> | Restart an exited pane; resume a session in a new terminal |
 | <kbd>m</kbd> | Menu for the selection (same as right-click) |
 | <kbd>x</kbd> | Kill a pane (asks first), close an exited one, or dismiss an ended session |
+| <kbd>Ctrl</kbd>+<kbd>P</kbd> | Find anything: files, `#` projects, `@` agents, `>` actions |
+| <kbd>Ctrl</kbd>+<kbd>O</kbd> | Open a project: a folder found on disk, a recent one, or any path |
 | <kbd>z</kbd> | Zoom the focused pane |
 | <kbd>O</kbd> | Show the file or project in Finder |
 | <kbd>/</kbd> | Filter the sidebar; search a conversation |
@@ -108,7 +112,7 @@ In Changes: <kbd>⏎</kbd> reads a file's diff or opens a folder, <kbd>space</kb
 
 In Files: <kbd>Ctrl</kbd>+<kbd>P</kbd> finds a file (`path:line` works), <kbd>/</kbd> searches contents, <kbd>e</kbd> edits in your terminal editor, <kbd>o</kbd> opens VS Code at the line, <kbd>[</kbd> <kbd>]</kbd> jump between changes.
 
-In a conversation: <kbd>[</kbd> <kbd>]</kbd> jump between your prompts, <kbd>y</kbd> copies the message at the cursor, <kbd>G</kbd> goes to the latest and follows new messages, <kbd>Esc</kbd> goes back to the sidebar.
+In a conversation: <kbd>↑</kbd> <kbd>↓</kbd> scroll a line, <kbd>Ctrl</kbd>+<kbd>U</kbd>/<kbd>D</kbd> half a page, <kbd>[</kbd> <kbd>]</kbd> jump between your prompts, <kbd>y</kbd> copies the message at the cursor, <kbd>G</kbd> goes to the latest and follows new messages, <kbd>Esc</kbd> goes back to the sidebar.
 
 States, as in Herdr: <span>●</span> red **blocked** (needs you) · yellow **working** · teal **done** (finished, and you haven't looked yet) · <span>○</span> green **idle** · <span>·</span> **ended**.
 

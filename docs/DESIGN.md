@@ -76,7 +76,8 @@ One keymap table drives key handling, the footer hints and the `?` help, so they
 | `<` `>` `=` | shrink, grow, even out panes | tmux `resize-pane` |
 | `⏎` | open: type into a pane, focus a view, expand an item | |
 | `Ctrl-Q` | leave a terminal | claude-squad |
-| `Ctrl-P` / `:` | fuzzy jump to any project, agent, file or action | VS Code, k9s, posting |
+| `Ctrl-P` | find anything: files; `#` projects and folders, `@` agents, `>` actions | VS Code's quick open and command palette |
+| `Ctrl-O` | open a project: a folder found on disk, a recent one, or a typed path | VS Code's Open Folder |
 | `/` | search the focused view | less, vim, lazygit |
 | `n` | next thing that needs you (outside search) | Herdr `prefix+o` |
 | `c` / `C` | new shell / new Claude pane in this project | tmux `c` |
