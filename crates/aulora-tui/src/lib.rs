@@ -5,6 +5,7 @@ mod attach;
 mod attrib;
 mod changes;
 mod client;
+mod compose;
 mod conv;
 mod demo;
 mod git;
@@ -205,6 +206,7 @@ pub fn run(mut opts: Options) -> Result<()> {
                 dirty = true;
             }
             dirty |= app.poll_changes();
+            dirty |= app.poll_sent();
             if let Some(d) = demo.as_mut()
                 && d.tick(app.now)
             {

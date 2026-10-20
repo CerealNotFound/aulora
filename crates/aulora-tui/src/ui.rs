@@ -606,8 +606,16 @@ fn resume_bar(f: &mut Frame, area: Rect, app: &mut App, id: &str) {
     let t = theme::get();
     let Some(s) = app.session(id).cloned() else { return };
     fill(f, area, t.panel);
-    let (label, note) = if s.state.is_live() {
-        let place = s.terminal.app_name().unwrap_or_else(|| "another terminal".into());
+    let place = s.terminal.app_name().unwrap_or_else(|| "another terminal".into());
+    let in_editor = matches!(place.as_str(), "VS Code" | "Cursor" | "VSCodium" | "Windsurf");
+    let (label, note) = if let Some(editor) = s.terminal.editor.clone().filter(|_| s.state.is_live()) {
+        (" i  type here ".to_string(), format!("  running in {editor} · r fork a copy here"))
+    } else if s.state.is_live() && in_editor {
+        (
+            " r  fork here ".to_string(),
+            format!("  running in {place} · aulora vscode install to type into it from here"),
+        )
+    } else if s.state.is_live() {
         (" r  fork here ".to_string(), format!("  running in {place} · this is a read-only view"))
     } else {
         (" r  resume in a terminal ".to_string(), format!("  claude --resume, in {}", basename(&session_dir_name(&s))))
@@ -616,7 +624,12 @@ fn resume_bar(f: &mut Frame, area: Rect, app: &mut App, id: &str) {
     let bw = w(&label) as u16;
     let line = Line::from(vec![sp(" ", Style::new().bg(t.panel)), sp(label, style), sp(note, faint().bg(t.panel))]);
     f.render_widget(Paragraph::new(line), area);
-    app.hits.push((Rect { x: area.x + 1, width: bw, ..area }, Hit::Resume(id.to_string())));
+    let hit = if s.terminal.editor.is_some() && s.state.is_live() {
+        Hit::Compose(id.to_string())
+    } else {
+        Hit::Resume(id.to_string())
+    };
+    app.hits.push((Rect { x: area.x + 1, width: bw, ..area }, hit));
 }
 
 fn session_dir_name(s: &Session) -> String {
@@ -715,9 +728,99 @@ fn status_strip(app: &App, s: &Session, width: usize) -> Line<'static> {
     lr(left, right, width)
 }
 
+/// Lines of a prompt wrapped to `width`, and where the cursor lands.
+fn wrap_prompt(text: &str, cursor: usize, width: usize) -> (Vec<String>, (usize, usize)) {
+    let width = width.max(1);
+    let mut lines = vec![String::new()];
+    let mut col = 0;
+    let mut at = (0, 0);
+    for (i, ch) in text.char_indices() {
+        if i == cursor {
+            at = (lines.len() - 1, col);
+        }
+        if ch == '\n' {
+            lines.push(String::new());
+            col = 0;
+            continue;
+        }
+        let cw = ch.width().unwrap_or(0);
+        if col + cw > width {
+            lines.push(String::new());
+            col = 0;
+        }
+        lines.last_mut().expect("a line").push(ch);
+        col += cw;
+    }
+    if cursor >= text.len() {
+        at = (lines.len() - 1, col);
+        if col >= width {
+            lines.push(String::new());
+            at = (lines.len() - 1, 0);
+        }
+    }
+    (lines, at)
+}
+
+/// The prompt box under a conversation, for sessions aulora can type into
+/// (Claude Code's input box).
+fn prompt_box(f: &mut Frame, area: Rect, app: &mut App, s: &Session) -> u16 {
+    let t = theme::get();
+    let editor = s.terminal.editor.clone().unwrap_or_default();
+    let inner_w = area.width.saturating_sub(6) as usize;
+    let composing = app.compose.as_ref().filter(|c| c.session == s.id);
+    let blocked = matches!(s.state, SessionState::NeedsYou { .. });
+    let (lines, cursor) = match composing {
+        Some(c) => wrap_prompt(&c.text, c.cursor, inner_w),
+        None => (vec![], (0, 0)),
+    };
+    let shown = lines.len().clamp(1, 8);
+    let top_line = cursor.0.saturating_sub(shown - 1);
+    let height = shown as u16 + 2;
+    let boxed = Rect { y: area.bottom().saturating_sub(height), height, ..area };
+    let border = if composing.is_some() { t.accent } else { t.rule };
+    let block =
+        ratatui::widgets::Block::bordered().border_type(ratatui::widgets::BorderType::Rounded).border_style(fg(border));
+    let inner = block.inner(boxed);
+    f.render_widget(block, boxed);
+    app.hits.push((boxed, Hit::Compose(s.id.clone())));
+    let body: Vec<Line> = match composing {
+        Some(_) => lines
+            .iter()
+            .enumerate()
+            .skip(top_line)
+            .take(shown)
+            .map(|(i, l)| Line::from(vec![sp(if i == 0 { " > " } else { "   " }, fg(t.accent)), sp(l.clone(), text())]))
+            .collect(),
+        None if blocked => {
+            vec![Line::from(sp(format!(" Claude is waiting for an answer in {editor}; answer it there"), faint()))]
+        }
+        None => {
+            let draft =
+                app.drafts.get(&s.id).map(|d| crate::ui::fit(&d.replace('\n', " ⏎ "), inner_w.saturating_sub(12)));
+            match draft {
+                Some(d) => vec![Line::from(vec![sp(" > ", faint()), sp(d, dim()), sp("  (draft)", faint())])],
+                None => vec![Line::from(vec![
+                    sp(" > ", faint()),
+                    sp(format!("i  write a prompt · it's typed into {editor}"), faint()),
+                ])],
+            }
+        }
+    };
+    f.render_widget(Paragraph::new(body), inner);
+    if composing.is_some() {
+        f.set_cursor_position((inner.x + 3 + cursor.1 as u16, inner.y + (cursor.0 - top_line) as u16));
+    }
+    height
+}
+
 fn conversation(f: &mut Frame, area: Rect, app: &mut App, session_id: &str) {
     let t = theme::get();
     let Some(s) = app.session(session_id).cloned() else { return };
+    let mut area = area;
+    if app.can_compose(session_id) {
+        let h = prompt_box(f, area, app, &s);
+        area.height = area.height.saturating_sub(h);
+    }
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)]).split(area);
     f.render_widget(Paragraph::new(status_strip(app, &s, area.width as usize)), rows[0]);
     f.render_widget(Paragraph::new(Line::from(sp("─".repeat(area.width as usize), fg(t.rule)))), rows[1]);
@@ -865,6 +968,18 @@ fn mode_bar(f: &mut Frame, area: Rect, app: &App) {
     if app.typing {
         let name = app.selected_pane().map(|p| p.name.clone()).unwrap_or_default();
         left.extend([pill("TERMINAL", t.accent), lbl(&format!("keys go to {name}")), key("ctrl-q"), lbl("navigate")]);
+    } else if let Some(c) = &app.compose {
+        let editor = app.session(&c.session).and_then(|s| s.terminal.editor.clone()).unwrap_or_default();
+        left.extend([
+            pill("PROMPT", t.accent),
+            lbl(&format!("typed into {editor}")),
+            key("⏎"),
+            lbl("send"),
+            key("⇧⏎"),
+            lbl("new line"),
+            key("esc"),
+            lbl("keep as draft"),
+        ]);
     } else if app.filtering {
         left.extend([
             pill("FILTER", t.magenta),

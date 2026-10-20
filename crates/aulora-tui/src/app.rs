@@ -93,6 +93,8 @@ pub enum Hit {
     ChangeRow(usize),
     ChangeTree,
     Diff,
+    /// The prompt box under a session's conversation.
+    Compose(String),
     /// The resume button above a session.
     Resume(String),
     /// Behind an open menu.
@@ -202,6 +204,12 @@ pub struct App {
     /// new row has it (VS Code keeps Source Control open as you switch files).
     pub tab_pref: Tab,
     pub worker: Option<crate::changes::Worker>,
+    /// A prompt being written for a session in an editor.
+    pub compose: Option<crate::compose::Compose>,
+    /// Unsent prompts, by session.
+    pub drafts: HashMap<String, String>,
+    pub sent_tx: std::sync::mpsc::Sender<crate::compose::Sent>,
+    pub sent_rx: std::sync::mpsc::Receiver<crate::compose::Sent>,
     pub changes: HashMap<String, crate::changes::Project>,
     pub changes_view: HashMap<String, crate::changes::View>,
     /// Styled diffs by root and file, with the change they were made from.
@@ -226,6 +234,7 @@ fn seen_path() -> std::path::PathBuf {
 
 impl App {
     pub fn new(conn: Conn, hooks_installed: bool, editor: String) -> Self {
+        let (sent_tx, sent_rx) = std::sync::mpsc::channel();
         let seen = if conn == Conn::Demo {
             HashMap::new()
         } else {
@@ -260,6 +269,10 @@ impl App {
             view_size: None,
             conv_height: 20,
             tab_pref: Tab::Terminal,
+            compose: None,
+            drafts: HashMap::new(),
+            sent_tx,
+            sent_rx,
             worker: None,
             changes: HashMap::new(),
             changes_view: HashMap::new(),
@@ -573,6 +586,7 @@ impl App {
     pub fn select(&mut self, r: RowRef) {
         if self.selected.as_ref() != Some(&r) {
             self.typing = false;
+            self.close_compose();
         }
         self.selected = Some(r);
     }

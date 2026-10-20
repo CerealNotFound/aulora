@@ -85,6 +85,14 @@ pub fn on_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx, input: &m
         menu_key(app, key, opts, ctx);
         return false;
     }
+    if let Some(c) = app.compose.as_mut() {
+        match c.key(key) {
+            Some(crate::compose::Action::Send) => app.send_compose(&opts.socket),
+            Some(crate::compose::Action::Close) => app.close_compose(),
+            None => {}
+        }
+        return false;
+    }
     if app.help.is_some() {
         return help_key(app, key, opts, ctx, input);
     }
@@ -271,6 +279,18 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
             }
         }
         // Only meaningful in the Changes tab, handled above.
+        Action::Compose => match app.selected_session_id() {
+            Some(id) if app.can_compose(&id) => {
+                app.focus = Focus::Main;
+                app.start_compose(&id);
+            }
+            Some(id) if app.session(&id).is_some_and(|s| s.state.is_live()) => {
+                let place =
+                    app.session(&id).and_then(|s| s.terminal.app_name()).unwrap_or_else(|| "its terminal".into());
+                app.toast(format!("Can't type into {place} from here. In VS Code or Cursor: aulora vscode install"));
+            }
+            _ => {}
+        },
         Action::Stage | Action::ToggleAll | Action::PrevHunk | Action::NextHunk | Action::Left => {}
         Action::ToggleMouse => {
             app.mouse = !app.mouse;
@@ -392,6 +412,10 @@ fn terminal_key(app: &mut App, key: KeyEvent, ctx: &Ctx, input: &mut Input) {
 }
 
 pub fn paste(app: &mut App, text: &str, ctx: &Ctx) {
+    if let Some(c) = app.compose.as_mut() {
+        c.insert(text);
+        return;
+    }
     if app.typing {
         let Some((id, _)) = app.attached.clone() else { return };
         let bracketed = app.terms.get(&id).is_some_and(|t| t.parser.screen().bracketed_paste());
@@ -1041,6 +1065,13 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                     open_menu(app, col.saturating_sub(16), row + 1, items);
                 }
                 Hit::Resume(id) => resume(app, opts, ctx, &id),
+                Hit::Compose(id) => {
+                    app.focus = Focus::Main;
+                    if app.compose.as_ref().is_none_or(|c| c.session != id) {
+                        app.close_compose();
+                        app.start_compose(&id);
+                    }
+                }
                 Hit::ChangeRow(i) => {
                     app.focus = Focus::Main;
                     app.typing = false;
