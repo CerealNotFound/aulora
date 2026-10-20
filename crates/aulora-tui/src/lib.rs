@@ -227,7 +227,7 @@ pub fn run(mut opts: Options) -> Result<()> {
             app.open_welcome();
         }
         client::spawn(opts.socket.clone(), opts.spawn_daemon.take(), tx.clone());
-        ctx.stream = Some(client::Stream::spawn(opts.socket.clone(), tx));
+        ctx.stream = Some(client::Stream::spawn(opts.socket.clone(), tx.clone()));
     }
     if let Some(id) = opts.select.clone() {
         app.pending_select = Some((id, false));
@@ -247,6 +247,20 @@ pub fn run(mut opts: Options) -> Result<()> {
     if enhanced {
         let _ = execute!(out, PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES));
     }
+    // Our terminal's events come in on the same channel as the daemon's
+    // messages, so pane output wakes the loop as promptly as a key does.
+    // (Waiting on the keyboard alone held output back up to 250 ms.)
+    {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            while let Ok(ev) = event::read() {
+                if tx.send(Incoming::Term(ev)).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    drop(tx);
     // A panic must not leave the shell with mouse reporting on.
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -262,9 +276,22 @@ pub fn run(mut opts: Options) -> Result<()> {
     let result = (|| -> Result<()> {
         loop {
             app.now = now_ms();
+            // Handle everything already queued before drawing again, so fast
+            // typing, pastes, wheel bursts and pane output don't lag behind.
             while let Ok(msg) = rx.try_recv() {
-                on_incoming(&mut app, msg);
-                dirty = true;
+                match msg {
+                    Incoming::Term(ev) => {
+                        let (quit, changed) = on_term_event(&mut app, ev, &opts, &ctx, &mut input);
+                        if quit {
+                            return Ok(());
+                        }
+                        dirty |= changed;
+                    }
+                    msg => {
+                        on_incoming(&mut app, msg);
+                        dirty = true;
+                    }
+                }
             }
             dirty |= app.poll_changes();
             dirty |= app.poll_sent();
@@ -301,39 +328,26 @@ pub fn run(mut opts: Options) -> Result<()> {
             } else {
                 Duration::from_millis(250)
             };
-            if !event::poll(wait)? {
-                continue;
-            }
-            // Handle everything already queued before drawing again, so fast
-            // typing, pastes and wheel bursts don't lag behind.
-            loop {
-                match event::read()? {
-                    Event::Key(key) if key.kind != KeyEventKind::Release => {
-                        if (app.typing || key.kind == KeyEventKind::Press)
-                            && input::on_key(&mut app, key, &opts, &ctx, &mut input)
-                        {
-                            return Ok(());
+            // Sleep until a key, a message from the daemon, or the next frame.
+            match rx.recv_timeout(wait) {
+                Ok(msg) => {
+                    // Back to the top, which handles it and anything behind it.
+                    match msg {
+                        Incoming::Term(ev) => {
+                            let (quit, changed) = on_term_event(&mut app, ev, &opts, &ctx, &mut input);
+                            if quit {
+                                return Ok(());
+                            }
+                            dirty |= changed;
                         }
-                        dirty = true;
+                        msg => {
+                            on_incoming(&mut app, msg);
+                            dirty = true;
+                        }
                     }
-                    Event::Mouse(m) if m.kind == MouseEventKind::Moved => {
-                        // Only redraw when the hovered row changes.
-                        dirty |= input::on_hover(&mut app, m);
-                    }
-                    Event::Mouse(m) => {
-                        input::on_mouse(&mut app, m, &opts, &ctx, &mut input);
-                        dirty = true;
-                    }
-                    Event::Paste(text) => {
-                        input::paste(&mut app, &text, &ctx);
-                        dirty = true;
-                    }
-                    Event::Resize(..) => dirty = true,
-                    _ => {}
                 }
-                if !event::poll(Duration::ZERO)? {
-                    break;
-                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
             }
         }
     })();
@@ -365,6 +379,28 @@ fn blocked_ids(app: &App) -> HashSet<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// One event from our terminal. Returns (quit, needs a redraw).
+fn on_term_event(app: &mut App, ev: Event, opts: &Options, ctx: &Ctx, input: &mut input::Input) -> (bool, bool) {
+    match ev {
+        Event::Key(key) if key.kind != KeyEventKind::Release => {
+            let quit = (app.typing || key.kind == KeyEventKind::Press) && input::on_key(app, key, opts, ctx, input);
+            (quit, true)
+        }
+        // Only redraw when the hovered row changes.
+        Event::Mouse(m) if m.kind == MouseEventKind::Moved => (false, input::on_hover(app, m)),
+        Event::Mouse(m) => {
+            input::on_mouse(app, m, opts, ctx, input);
+            (false, true)
+        }
+        Event::Paste(text) => {
+            input::paste(app, &text, ctx);
+            (false, true)
+        }
+        Event::Resize(..) => (false, true),
+        _ => (false, false),
+    }
 }
 
 fn on_incoming(app: &mut App, msg: Incoming) {
@@ -414,6 +450,8 @@ fn on_incoming(app: &mut App, msg: Incoming) {
                 t.exited = true;
             }
         }
+        // Handled by the main loop.
+        Incoming::Term(_) => {}
     }
 }
 

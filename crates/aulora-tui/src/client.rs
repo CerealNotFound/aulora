@@ -16,9 +16,22 @@ pub enum Incoming {
     Snapshot(Box<Snapshot>),
     Connecting,
     Offline(String),
-    PaneScreen { pane_id: String, cols: u16, rows: u16, data: Vec<u8> },
-    PaneOutput { pane_id: String, data: Vec<u8> },
-    PaneExited { pane_id: String },
+    PaneScreen {
+        pane_id: String,
+        cols: u16,
+        rows: u16,
+        data: Vec<u8>,
+    },
+    PaneOutput {
+        pane_id: String,
+        data: Vec<u8>,
+    },
+    PaneExited {
+        pane_id: String,
+    },
+    /// A key, mouse or paste event from our own terminal, read on its own
+    /// thread so the main loop wakes for whichever comes first.
+    Term(ratatui::crossterm::event::Event),
 }
 
 pub type SpawnFn = Box<dyn Fn() + Send + Sync>;
