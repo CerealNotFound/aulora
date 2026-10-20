@@ -119,6 +119,46 @@ fn ask_choices(question: String, choices: &[&str]) -> Ask {
     }
 }
 
+/// The last choice of a permission prompt, answered with Esc.
+pub const PERMISSION_NO: &str = "No";
+
+/// Claude Code's plan approval (2.1.304).
+fn plan_ask() -> Ask {
+    ask_choices(
+        "Claude has written up a plan and is ready to execute. Would you like to proceed?".into(),
+        &["Yes, and use auto mode", "Yes, manually approve edits", "Tell Claude what to change"],
+    )
+}
+
+/// The second choice of a permission prompt, from the hook's first
+/// permission suggestion, in Claude Code's words where they are known.
+fn suggestion_label(s: &Value) -> Option<String> {
+    let label = match s.get("type").and_then(Value::as_str)? {
+        "addDirectories" => {
+            let dir = s.get("directories")?.get(0)?.as_str()?;
+            format!("Yes, and always allow access to {dir} from this project")
+        }
+        "setMode" if s.get("mode").and_then(Value::as_str) == Some("acceptEdits") => {
+            "Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session \
+             (shift+tab)"
+                .to_string()
+        }
+        "addRules" => "Yes, and don\u{2019}t ask again for commands like this".to_string(),
+        _ => "Yes, and don\u{2019}t ask again".to_string(),
+    };
+    Some(label)
+}
+
+/// The question of a permission prompt, as Claude Code words it.
+fn permission_question(tool: &str, input: &Value) -> String {
+    let file = s(input, "file_path").map(crate::util::basename);
+    match (tool, file) {
+        ("Write", Some(f)) => format!("Do you want to create {f}?"),
+        ("Edit" | "MultiEdit", Some(f)) => format!("Do you want to make this edit to {f}?"),
+        _ => "Do you want to proceed?".into(),
+    }
+}
+
 fn set_state(sess: &mut Session, state: SessionState, at: Ms) {
     if !matches!(state, SessionState::NeedsYou { .. }) {
         sess.ask = None;
@@ -281,10 +321,7 @@ pub fn apply_hook(sess: &mut Session, env: &HookEnvelope) -> Vec<FeedEvent> {
                         },
                         at,
                     );
-                    sess.ask = Some(ask_choices(
-                        "Ready to build the plan?".into(),
-                        &["Yes, and auto-accept edits", "Yes, and approve each edit", "No, keep planning"],
-                    ));
+                    sess.ask = Some(plan_ask());
                     push(FeedKind::Question, "plan ready for review".into());
                 }
                 _ => {
@@ -313,6 +350,15 @@ pub fn apply_hook(sess: &mut Session, env: &HookEnvelope) -> Vec<FeedEvent> {
                 push(FeedKind::Question, format!("asked: {target}"));
             }
         }
+        // And for ExitPlanMode, where it shows the plan's own choices.
+        "PermissionRequest" if tool_name == "ExitPlanMode" => {
+            if !matches!(sess.state, SessionState::NeedsYou { reason: Attention::PlanApproval, .. }) {
+                let detail = "plan ready for your review".to_string();
+                set_state(sess, SessionState::NeedsYou { reason: Attention::PlanApproval, detail }, at);
+                push(FeedKind::Question, "plan ready for review".into());
+            }
+            sess.ask = Some(plan_ask());
+        }
         "PermissionRequest" => {
             let target = tool_target(&tool_name, tool_input, &base);
             let detail = if target.is_empty() {
@@ -321,10 +367,16 @@ pub fn apply_hook(sess: &mut Session, env: &HookEnvelope) -> Vec<FeedEvent> {
                 format!("{} · {target}", tool_label(&tool_name))
             };
             set_state(sess, SessionState::NeedsYou { reason: Attention::Permission, detail: detail.clone() }, at);
-            sess.ask = Some(ask_choices(
-                format!("Allow {detail}?"),
-                &["Yes", "Yes, and don't ask again for this", "No, and tell Claude what to do differently"],
-            ));
+            // Claude Code may list more choices than the hook tells of (it
+            // adds "switch to auto mode" where it can), so "No" is always
+            // the last one here and is answered with Esc, which says no
+            // whatever Claude numbered it.
+            let mut choices = vec!["Yes".to_string()];
+            choices.extend(p.get("_suggestion").and_then(suggestion_label));
+            choices.push(PERMISSION_NO.into());
+            let choices: Vec<&str> = choices.iter().map(String::as_str).collect();
+            let question = format!("{detail}\n\n{}", permission_question(&tool_name, tool_input));
+            sess.ask = Some(ask_choices(question, &choices));
             push(FeedKind::Permission, format!("needs permission: {detail}"));
         }
         "PostToolUse" | "PostToolUseFailure" => {
@@ -515,7 +567,11 @@ fn count_lines(v: Option<&Value>) -> u64 {
 pub fn trim_payload(mut v: Value) -> Value {
     let Some(obj) = v.as_object_mut() else { return v };
     obj.remove("tool_response");
-    obj.remove("permission_suggestions");
+    // Claude Code's second permission choice comes from the first of
+    // these; the rest can be long and aren't needed.
+    if let Some(first) = obj.remove("permission_suggestions").and_then(|s| s.get(0).cloned()) {
+        obj.insert("_suggestion".into(), first);
+    }
     obj.remove("session_crons");
     if let Some(tasks) = obj.remove("background_tasks") {
         let n = tasks.as_array().map(|a| a.len()).unwrap_or(0);
@@ -648,11 +704,19 @@ mod tests {
             &mut s,
             &env(
                 25,
-                json!({"hook_event_name":"PermissionRequest","tool_name":"Bash",
-            "tool_input":{"command":"rm -rf node_modules"}}),
+                trim_payload(json!({"hook_event_name":"PermissionRequest","tool_name":"Bash",
+            "tool_input":{"command":"rm -rf node_modules"},
+            "permission_suggestions":[{"type":"addDirectories","directories":["/p"],"destination":"session"},
+                {"type":"setMode","mode":"acceptEdits","destination":"session"}]})),
             ),
         );
         assert!(matches!(s.state, SessionState::NeedsYou { reason: Attention::Permission, .. }));
+        // As Claude Code 2.1.304 lists them, but with "No" last whatever
+        // else Claude adds.
+        let q = &s.ask.as_ref().unwrap().questions[0];
+        assert_eq!(q.question, "Bash · $ rm -rf node_modules\n\nDo you want to proceed?");
+        let labels: Vec<&str> = q.options.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!(labels, ["Yes", "Yes, and always allow access to /p from this project", "No"]);
 
         apply_hook(
             &mut s,
@@ -723,6 +787,15 @@ mod tests {
         apply_hook(&mut s, &env(3, json!({"hook_event_name":"PostToolUse","tool_name":"AskUserQuestion"})));
         assert_eq!(s.state, SessionState::Working);
         assert!(s.ask.is_none(), "answered: gone");
+
+        // A plan, which Claude Code also asks permission for.
+        apply_hook(&mut s, &env(4, json!({"hook_event_name":"PreToolUse","tool_name":"ExitPlanMode"})));
+        let feed =
+            apply_hook(&mut s, &env(5, json!({"hook_event_name":"PermissionRequest","tool_name":"ExitPlanMode"})));
+        assert!(feed.is_empty());
+        assert!(matches!(s.state, SessionState::NeedsYou { reason: Attention::PlanApproval, .. }));
+        let labels: Vec<String> = s.ask.unwrap().questions[0].options.iter().map(|o| o.label.clone()).collect();
+        assert_eq!(labels, ["Yes, and use auto mode", "Yes, manually approve edits", "Tell Claude what to change"]);
     }
 
     #[test]
