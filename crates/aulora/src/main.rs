@@ -823,8 +823,11 @@ fn dashboard_ttys() -> Vec<String> {
 fn focus() -> Result<()> {
     let ttys = dashboard_ttys();
     for tty in &ttys {
+        // Only ask a terminal that is running: `tell` would launch it,
+        // and Terminal.app opens a window when it starts.
         let terminal = format!(
-            "tell application \"Terminal\"
+            "if application \"Terminal\" is not running then return \"\"
+             tell application \"Terminal\"
                repeat with w in windows
                  repeat with t in tabs of w
                    if tty of t is \"{tty}\" then
