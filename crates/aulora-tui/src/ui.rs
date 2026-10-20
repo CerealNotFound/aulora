@@ -264,7 +264,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     fill(f, area, t.bg);
 
     let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
-    if app.snap.is_some() && app.rows().is_empty() {
+    if app.snap.is_some() && app.rows().is_empty() && app.filter.is_empty() {
         empty_state(f, rows[0], app);
     } else {
         body(f, rows[0], app);
@@ -548,6 +548,9 @@ fn sidebar(f: &mut Frame, area: Rect, app: &mut App) {
     let projects = app.projects();
     items.push(header("workspaces", vec![sp(format!("{} ", projects.len()), faint())]));
     items.push(blank());
+    if projects.is_empty() && !app.filter.is_empty() {
+        items.push(Item { lines: vec![Line::from(sp(" nothing matches", faint()))], row: None, button: None });
+    }
     for (pi, p) in projects.iter().enumerate() {
         let RowRef::Project(root) = p else { continue };
         let Some(proj) = app.project(root) else { continue };

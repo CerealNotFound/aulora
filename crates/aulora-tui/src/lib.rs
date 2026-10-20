@@ -819,4 +819,17 @@ mod tests {
         });
         assert!(out.contains("resume in a terminal"), "{out}");
     }
+
+    #[test]
+    fn a_filter_that_matches_nothing_stays_on_screen() {
+        // Not the "nothing running yet" splash, which hid the filter
+        // being typed, so a typo looked like every session was gone.
+        let out = frame(None, &|app| {
+            app.filtering = true;
+            app.filter = "zzqq nomatch".into();
+        });
+        assert!(out.contains("/ zzqq nomatch"), "{out}");
+        assert!(out.contains("nothing matches"), "{out}");
+        assert!(!out.contains("nothing running yet"), "{out}");
+    }
 }
