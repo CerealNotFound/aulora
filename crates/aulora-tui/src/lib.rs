@@ -198,7 +198,9 @@ pub fn run(mut opts: Options) -> Result<()> {
         demo = Some(d);
     } else {
         app.layouts = tiles::load();
-        app.project_order = app::load_order();
+        let order = app::load_order();
+        app.project_order = order.workspaces;
+        app.agent_order = order.agents;
         if !welcome::seen() {
             app.open_welcome();
         }
@@ -592,12 +594,43 @@ mod tests {
     }
 
     #[test]
+    fn agents_move_up_and_down() {
+        let out = frame(None, &|app| {
+            let root = app
+                .snap
+                .as_ref()
+                .unwrap()
+                .projects
+                .iter()
+                .find(|p| p.root.ends_with("multibrain"))
+                .unwrap()
+                .root
+                .clone();
+            let agents = app.agents_sorted(&root);
+            let first = agents[0].clone();
+            app.move_agent(&first, 1);
+            assert_eq!(app.agents_sorted(&root)[1], first, "moved down one");
+            app.move_agent(&first, -5);
+            assert_eq!(app.agents_sorted(&root)[0], first, "back to the top, clamped");
+            app.move_agent(&agents[1], 99);
+            assert_eq!(app.agents_sorted(&root).last(), Some(&agents[1]), "to the bottom, clamped");
+        });
+        let lines: Vec<&str> = out.lines().collect();
+        let project = lines.iter().position(|l| l.contains("● multibrain")).expect("project row");
+        assert!(lines[project + 2].contains("├ ● dev server"), "{}", lines[project + 2]);
+        let last = lines[project..].iter().position(|l| l.contains(" └ ")).map(|i| lines[project + i]).unwrap_or("");
+        assert!(!last.contains("Fix streaming"), "the moved agent now sits last: {last}");
+    }
+
+    #[test]
     fn the_menu_lists_actions_for_the_row() {
         let out = frame(Some("a41c07"), &|app| {
             let items = app.menu_for(&RowRef::Pane("a41c07".into()));
             app.menu = Some(Menu { x: 10, y: 10, items, selected: 0 });
         });
-        for label in ["Type here", "Close", "New Claude here", "New shell here", "Open in VS Code"] {
+        for label in
+            ["Type here", "Close", "Move up", "Move down", "New Claude here", "New shell here", "Open in VS Code"]
+        {
             assert!(out.contains(label), "missing {label}:\n{out}");
         }
     }

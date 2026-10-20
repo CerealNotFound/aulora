@@ -433,9 +433,12 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
             app.sidebar_compact = Some(!now);
         }
         Action::Welcome => app.open_welcome(),
-        Action::MoveProjectUp | Action::MoveProjectDown => {
-            if let Some(root) = app.selected_root() {
-                app.move_project(&root, if action == Action::MoveProjectUp { -1 } else { 1 });
+        Action::MoveUp | Action::MoveDown => {
+            let delta = if action == Action::MoveUp { -1 } else { 1 };
+            match app.selected.clone() {
+                Some(RowRef::Project(root)) => app.move_project(&root, delta),
+                Some(r) => app.move_agent(&r, delta),
+                None => {}
             }
         }
         Action::Finder => app.open_finder(),

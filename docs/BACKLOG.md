@@ -11,7 +11,7 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 
 | | Request | Where it stands |
 |---|---|---|
-| 🟡 | Option-Delete deletes a whole word | Done in every aulora text field (with Ctrl-W, Ctrl-U). In panes it passes ESC DEL through, which works only if the terminal sends it: Terminal.app needs "Use Option as Meta key". `aulora keys` shows what arrives; waiting on that check. |
+| ⬜ | Option-Delete deletes a whole word | Reported 2026-10-20: it doesn't. aulora handles ESC DEL (and Ctrl-W, Ctrl-U) in its text fields and passes it to panes, but Terminal.app sends a plain Delete for Option-Delete unless "Use Option as Meta key" is on, so nothing can tell it apart. Fix in progress. |
 | ✅ | Option-arrows keep jumping words while typing in a pane | They go to the program; pane focus moves with Tab, clicks, or Option-arrows only when not typing. |
 | ✅ | Ctrl-Delete deletes a word in panes | Sends Ctrl-W. |
 | ✅ | Scroll a conversation reliably with the keyboard | ↑↓ / j k a line, Ctrl-U / Ctrl-D half a page, PgUp / PgDn, g / G; J / K move the cursor. |
@@ -31,6 +31,7 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 |---|---|---|
 | ✅ | Scrolling and clicks that do something | Wheel under the pointer, click to focus or type, drag pane borders. |
 | 🟡 | Cmd-click a URL to open it | A URL under the pointer underlines; a click (Cmd-click arrives as a click) opens it. Untested in Terminal.app, which may also open it itself (twice). |
+| ⬜ | Select text with the mouse and copy it, as in Claude Code | Reported 2026-10-20: no text is copyable (aulora takes the mouse, so the terminal can't select). Open: drag selects anywhere aulora draws text, highlighted; letting go copies it and says so; double-click a word. |
 | ✅ | Open in Finder | `O`, and "Open in Finder" in row menus. |
 
 ## Layout and look
@@ -47,6 +48,7 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 | ✅ | No truncation that hides what you came to read | Agent rows wrap to 2+2 lines; notes wrap to 6 lines. |
 | ✅ | Notes such as "agent done" readable in full | Whole summary kept (1,200 chars), wrapped. |
 | ✅ | The workspace list mustn't shuffle | Workspaces keep the order they first appeared in, saved across restarts; agents keep the order they started. `J` / `K` move a workspace. Dots and `n` show what needs you. |
+| 🟡 | Move agents up and down in the sidebar | `J` / `K` on an agent moves it within its workspace (on a workspace row, the workspace), and the row menu has Move up / Move down; kept across restarts in `~/.aulora/order.json`. New agents still join at the bottom. |
 | ✅ | A better name than "projects" | "workspaces", as VS Code calls the folder you open: the sidebar, palette (`#`), Ctrl-O, menus, help, welcome and docs. |
 | ✅ | Compact sidebar on narrow terminals | Below 100 columns, or `\` any time: a strip of status dots and workspace initials; click to select. |
 | ✅ | First-run onboarding | A welcome checklist on first launch: connect Claude Code (`H`), the VS Code extension (`V`), open a workspace (Ctrl-O), the keys that matter, the Terminal.app Option tip. "Getting started" in the menu brings it back. |
@@ -78,6 +80,8 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 | 🟡 | Jump from aulora to a session's VS Code terminal | `o` on a VS Code session, or its menu: `code <workspace>` raises the window, the extension shows the terminal. Needs the restarted daemon and reloaded VS Code to check live. |
 | 🟡 | aulora's panes inside VS Code | Extension 0.2.0: "aulora: Open a pane…" and "aulora: Open this workspace's panes" open daemon panes as VS Code terminals (screen, typing, resizing; closing leaves the pane running). Tested against a real daemon; check in your VS Code after reloading. |
 | ✅ | Side-by-side diffs | `s` in Changes: old left, new right, removals beside their additions, words marked (from 100 columns). |
+| ⬜ | Files and Changes in a panel | Asked 2026-10-20: show them in a panel beside the panes instead of taking over the view. |
+| ⬜ | Changes showed nothing for aulora and adarshji (both git repos) | Reported 2026-10-20: investigating. |
 
 ## Reliability
 
