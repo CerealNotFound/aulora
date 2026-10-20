@@ -349,7 +349,18 @@ impl Conversation {
                 }
                 let t = text_of(&content);
                 let t = t.trim();
-                if t.is_empty() || t.starts_with("<command-") || t.starts_with("<local-command") {
+                if t.starts_with("<task-notification") {
+                    // A background task finished; Claude takes it from here.
+                    let summary = t.split("<summary>").nth(1).and_then(|s| s.split("</summary>").next()).unwrap_or("");
+                    let note = if summary.is_empty() {
+                        "a background task finished".to_string()
+                    } else {
+                        format!("background task: {summary}")
+                    };
+                    self.push(Entry::new(at, Body::Note(FeedKind::Info, note)));
+                    return true;
+                }
+                if t.is_empty() || aulora_core::util::is_injected(t) {
                     return false;
                 }
                 if t.starts_with("[Request interrupted") {

@@ -101,6 +101,15 @@ pub fn basename(path: &str) -> String {
 
 /// Parse an RFC 3339 UTC timestamp like "2026-10-19T11:01:39.619Z" into
 /// epoch milliseconds. Offsets other than Z are applied.
+/// Text Claude Code puts in the user's turn that the user didn't type:
+/// slash-command records, background task notifications, reminders.
+pub fn is_injected(text: &str) -> bool {
+    let t = text.trim_start();
+    ["<command-", "<local-command", "<task-notification", "<system-reminder", "<user-prompt-submit-hook"]
+        .iter()
+        .any(|p| t.starts_with(p))
+}
+
 pub fn parse_iso_ms(s: &str) -> Option<Ms> {
     let b = s.as_bytes();
     if b.len() < 19 || b[4] != b'-' || b[7] != b'-' || b[13] != b':' || b[16] != b':' {
@@ -139,6 +148,13 @@ pub fn parse_iso_ms(s: &str) -> Option<Ms> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn injected_text_is_not_a_prompt() {
+        assert!(is_injected("<task-notification>\n<task-id>a8</task-id>"));
+        assert!(is_injected("  <command-name>/clear</command-name>"));
+        assert!(!is_injected("fix the <div> layout"));
+    }
 
     #[test]
     fn iso_timestamps() {

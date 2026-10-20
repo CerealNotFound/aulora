@@ -156,7 +156,7 @@ fn process_line(line: &[u8], sum: &mut Summary) {
                 sum.turn_text = None;
                 let text = v.get("message").and_then(|m| m.get("content")).and_then(Value::as_str).unwrap_or("");
                 // Slash commands and their output are recorded as tagged text.
-                if !text.trim().is_empty() && !text.starts_with("<command-") && !text.starts_with("<local-command") {
+                if !text.trim().is_empty() && !crate::util::is_injected(text) {
                     sum.prompt_count += 1;
                     sum.prompts.push(PromptEntry { at, text: truncate(text, 600) });
                     if sum.prompts.len() > MAX_PROMPTS {

@@ -193,10 +193,15 @@ pub fn apply_hook(sess: &mut Session, env: &HookEnvelope) -> Vec<FeedEvent> {
         }
         "UserPromptSubmit" => {
             let prompt = s(p, "prompt").unwrap_or("").to_string();
-            sess.last_prompt = Some(prompt.clone());
-            sess.last_prompt_at = Some(at);
+            // A background task's notification starts a turn, but it isn't
+            // something you asked.
+            let typed = !crate::util::is_injected(&prompt);
+            if typed {
+                sess.last_prompt = Some(prompt.clone());
+                sess.last_prompt_at = Some(at);
+            }
             sess.live_text = None;
-            if !prompt.trim().is_empty() {
+            if typed && !prompt.trim().is_empty() {
                 sess.prompts.push(PromptEntry { at, text: truncate(&prompt, 600) });
                 if sess.prompts.len() > PROMPT_HISTORY {
                     sess.prompts.remove(0);
