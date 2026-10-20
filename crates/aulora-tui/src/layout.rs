@@ -137,6 +137,15 @@ impl Tab {
         }
     }
 
+    /// The leaf a new pane should take over instead of splitting: the
+    /// split target when it's only a view, like a conversation or the
+    /// overview. Views are cheap to open again; terminals and the panel
+    /// aren't covered.
+    pub fn view_to_replace(&self) -> Option<u64> {
+        let target = self.split_target();
+        self.view(target).is_some_and(|v| !v.is_terminal() && !v.is_panel()).then_some(target)
+    }
+
     pub fn find(&self, pred: impl Fn(&View) -> bool) -> Option<u64> {
         self.leaves().into_iter().find(|(_, v)| pred(v)).map(|(id, _)| id)
     }
@@ -422,6 +431,18 @@ mod tests {
         assert_eq!(tab.split_target(), a, "beside the main view instead");
         tab.focus = a;
         assert_eq!(tab.split_target(), a);
+    }
+
+    #[test]
+    fn a_new_pane_takes_a_views_place_but_not_a_terminals() {
+        let mut l = Layouts::default();
+        let a = l.new_tab("/p", View::Conversation { session: "s".into() });
+        let (p, s1) = (l.id(), l.id());
+        let tab = l.space("/p").tab_mut().unwrap();
+        tab.add_panel(View::Files, p, s1);
+        assert_eq!(tab.view_to_replace(), Some(a), "from the panel, the view beside it");
+        tab.replace(a, pane("a"));
+        assert_eq!(tab.view_to_replace(), None);
     }
 
     #[test]

@@ -1039,15 +1039,19 @@ fn spawn_named(
     }
     let _ = ctx;
     // Beside the focused leaf unless asked otherwise (None: a new tab).
+    // Unasked, a pane started from a conversation or the overview takes
+    // that view's place rather than squeezing in next to it; | and -
+    // still split.
+    let take_view = app.place_next.is_none() && app.tab().is_some_and(|t| t.view_to_replace().is_some());
     let dir = app.place_next.take().unwrap_or(Some(crate::layout::Dir::Right));
-    let (cols, rows) = app.new_pane_size(dir).unwrap_or_else(|| {
+    let (cols, rows) = app.new_pane_size(if take_view { None } else { dir }).unwrap_or_else(|| {
         crate::terminal_size().map(|(w, h)| (w.saturating_sub(40), h.saturating_sub(4))).unwrap_or((100, 30))
     });
     let root = app.place_root.take().or_else(|| app.space_root()).unwrap_or_else(|| cwd.clone());
     let req = NewPane { cwd, kind, args, name, cols: cols.max(20), rows: rows.max(5) };
     match client::command(&opts.socket, &ClientMsg::NewPane(req)) {
         Some(ServerMsg::PaneCreated { pane_id }) => {
-            app.place_pane(&root, &pane_id, dir);
+            app.place_pane(&root, &pane_id, dir, take_view);
             app.focus = Focus::Main;
             app.pending_select = Some((pane_id, true));
             app.toast(if label == "the session" { "Resumed".to_string() } else { format!("Started {label}") });

@@ -338,18 +338,27 @@ impl App {
         self.layouts_dirty = true;
     }
 
-    /// Put a new pane beside the focused leaf (or in a new tab).
-    pub fn place_pane(&mut self, root: &str, pane: &str, dir: Option<Dir>) {
+    /// Put a new pane beside the focused leaf (or in a new tab). With
+    /// `take_view`, it takes the place of a focused view instead, such as
+    /// the conversation it was started from.
+    pub fn place_pane(&mut self, root: &str, pane: &str, dir: Option<Dir>, take_view: bool) {
         self.layouts_dirty = true;
         self.fresh_leaves.push((pane.to_string(), self.now));
         let view = View::Pane { id: pane.to_string() };
         let (leaf_id, split_id) = (self.layouts.id(), self.layouts.id());
         let space = self.layouts.space(root);
         match (dir, space.tab_mut()) {
-            (Some(dir), Some(tab)) => {
-                let target = tab.split_target();
-                tab.split(target, dir, view, leaf_id, split_id);
-            }
+            (Some(dir), Some(tab)) => match tab.view_to_replace().filter(|_| take_view) {
+                Some(leaf) => {
+                    tab.replace(leaf, view);
+                    tab.focus = leaf;
+                    tab.zoom = false;
+                }
+                None => {
+                    let target = tab.split_target();
+                    tab.split(target, dir, view, leaf_id, split_id);
+                }
+            },
             _ => {
                 self.layouts.new_tab(root, view);
             }
