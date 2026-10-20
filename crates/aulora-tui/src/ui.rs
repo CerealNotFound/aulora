@@ -894,17 +894,20 @@ fn draw_leaf(
         block = block.title_top(Line::from(sp(" ⏎ type ", faint())).right_aligned());
     }
     let panel = view.is_panel() && !zoomed;
-    if panel {
+    // Every pane and panel can be closed from its frame.
+    let close = match view {
+        View::Pane { id } => Some(Hit::Close(RowRef::Pane(id.clone()))),
+        _ if panel => Some(Hit::Action(crate::keymap::Action::ClosePanel)),
+        _ => None,
+    };
+    if close.is_some() {
         block = block.title_top(Line::from(sp(" × ", fg(t.dim))).right_aligned());
     }
     let inner = block.inner(r);
     f.render_widget(block, r);
     app.hits.push((r, Hit::Leaf(leaf)));
-    if panel {
-        app.hits.push((
-            Rect { x: r.right().saturating_sub(4), y: r.y, width: 3, height: 1 },
-            Hit::Action(crate::keymap::Action::ClosePanel),
-        ));
+    if let Some(hit) = close {
+        app.hits.push((Rect { x: r.right().saturating_sub(4), y: r.y, width: 3, height: 1 }, hit));
     }
     app.leaf_focused = focused;
     match view {
@@ -1717,7 +1720,7 @@ fn confirm(f: &mut Frame, area: Rect, app: &App) {
     let t = theme::get();
     let Some(c) = &app.confirm else { return };
     let body = crate::conv::wrap(&c.body, 54);
-    let color = if matches!(c.action, crate::ConfirmAction::KillPane(_) | crate::ConfirmAction::EndSession(_)) {
+    let color = if matches!(c.action, crate::ConfirmAction::ClosePane(_) | crate::ConfirmAction::EndSession(_)) {
         t.red
     } else {
         t.accent
@@ -1731,7 +1734,8 @@ fn confirm(f: &mut Frame, area: Rect, app: &App) {
             sp(" ", text()),
             button("esc cancel", !c.on_action, false),
             sp("  ", text()),
-            button(&format!("↵ {}", c.action.verb()), c.on_action, true),
+            // ↵ picks whichever is highlighted; y always means yes.
+            button(&format!("{} {}", if c.on_action { "↵" } else { "y" }, c.action.verb()), c.on_action, true),
             sp("    ←→ choose", faint()),
         ]),
     ]);

@@ -13,7 +13,8 @@ use crate::{Ctx, Options, client, keys, theme};
 /// Something that needs a yes before it happens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfirmAction {
-    KillPane(String),
+    /// Stop what runs in a pane and remove it.
+    ClosePane(String),
     /// End a live session running outside aulora.
     EndSession(String),
     /// Resume a session that is still running somewhere else, as a fork.
@@ -27,7 +28,7 @@ pub enum ConfirmAction {
 impl ConfirmAction {
     pub fn verb(&self) -> &'static str {
         match self {
-            ConfirmAction::KillPane(_) => "kill",
+            ConfirmAction::ClosePane(_) => "close",
             ConfirmAction::EndSession(_) => "end",
             ConfirmAction::Fork(_) => "fork",
             ConfirmAction::CommitAll(..) => "commit all",
@@ -814,7 +815,7 @@ fn confirm_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx) {
 fn run_confirmed(app: &mut App, opts: &Options, ctx: &Ctx) {
     let Some(c) = app.confirm.take() else { return };
     match c.action {
-        ConfirmAction::KillPane(id) => pane_action(app, opts, ClientMsg::KillPane { pane_id: id }, "Stopped"),
+        ConfirmAction::ClosePane(id) => pane_action(app, opts, ClientMsg::ClosePane { pane_id: id }, "Closed"),
         ConfirmAction::EndSession(id) => match client::command(&opts.socket, &ClientMsg::EndSession { session_id: id })
         {
             Some(ServerMsg::Error { message }) => app.error(message),
@@ -842,13 +843,17 @@ fn close(app: &mut App, opts: &Options, row: RowRef) {
                 let what = match app.status(&RowRef::Pane(id.clone())) {
                     Status::Working => "It is working right now; whatever it's doing stops.",
                     Status::Blocked => "It is waiting for you; whatever it was doing stops.",
-                    _ => "Its process gets SIGHUP. The last screen stays until you close it.",
+                    _ if p.kind == PaneKind::Command => {
+                        "What runs in it stops (unsaved changes in an editor are lost)."
+                    }
+                    _ => "What runs in it stops.",
                 };
                 app.confirm = Some(Confirm {
-                    title: format!("kill {}?", p.name),
+                    title: format!("close {}?", p.name),
                     body: what.into(),
-                    action: ConfirmAction::KillPane(id),
-                    on_action: false,
+                    action: ConfirmAction::ClosePane(id),
+                    // You clicked × or pressed x on purpose: ↵ closes.
+                    on_action: true,
                 });
             } else {
                 pane_action(app, opts, ClientMsg::ClosePane { pane_id: id }, "Closed");
@@ -1555,7 +1560,9 @@ fn click_file(app: &mut App, i: usize, double: bool, opts: &Options, ctx: &Ctx) 
     if r.is_dir {
         toggle_dir(app, &root, &r.rel);
     } else if double {
-        edit_in_pane(app, opts, ctx, &root, &r.rel, Some(1));
+        // Straight into your editor (VS Code), as `o` does.
+        let _ = (opts, ctx);
+        open_file_in_editor(app, &root, &r.rel, None);
     }
 }
 
