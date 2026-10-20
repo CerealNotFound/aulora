@@ -390,8 +390,29 @@ pub fn conflict_file(path: &str, content: &str) -> FileDiff {
     FileDiff { path: path.to_string(), hunks: vec![Hunk { lines, ..Default::default() }], binary: false }
 }
 
+/// `git`, ignoring the repository that whatever started us was in.
+/// Git hooks and `git rebase --exec` export GIT_DIR and friends, which
+/// beat `-C <dir>`: inherited, every command (tests included) would act
+/// on that repository instead of the one asked for.
+pub fn command() -> Command {
+    let mut c = Command::new("git");
+    for k in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_PREFIX",
+        "GIT_NAMESPACE",
+    ] {
+        c.env_remove(k);
+    }
+    c
+}
+
 pub fn run(root: &str, args: &[&str]) -> Result<Vec<u8>, String> {
-    let out = Command::new("git")
+    let out = command()
         .args(["--no-optional-locks", "-c", "core.quotepath=off", "-C", root])
         .args(args)
         .env("GIT_OPTIONAL_LOCKS", "0")
@@ -499,7 +520,7 @@ fn run_detached(root: &str, args: &[&str], input: Option<&str>) -> Result<String
     use std::io::Write;
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
-    let mut cmd = Command::new("git");
+    let mut cmd = command();
     cmd.args(["-C", root])
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -677,13 +698,22 @@ mod tests {
     }
 
     #[test]
+    fn ignores_the_callers_repository() {
+        // Under `git rebase --exec cargo test`, GIT_DIR points at the
+        // real repository; every git command must drop it.
+        let names: Vec<String> =
+            command().get_envs().filter(|(_, v)| v.is_none()).map(|(k, _)| k.to_string_lossy().to_string()).collect();
+        assert!(names.contains(&"GIT_DIR".to_string()) && names.contains(&"GIT_WORK_TREE".to_string()));
+    }
+
+    #[test]
     fn commits_publishes_pushes_and_pulls() {
         let base = std::env::temp_dir().join(format!("aulora-ops-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let (remote, a, b) = (base.join("remote.git"), base.join("a"), base.join("b"));
         std::fs::create_dir_all(&a).unwrap();
         let git = |dir: &std::path::Path, args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+            let out = command().arg("-C").arg(dir).args(args).output().unwrap();
             assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
         };
         git(&base, &["init", "-q", "--bare", "-b", "main", "remote.git"]);
@@ -726,9 +756,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         let (repo, trash) = (base.join("r"), base.join("trash"));
         std::fs::create_dir_all(&repo).unwrap();
-        let git = |args: &[&str]| {
-            assert!(Command::new("git").arg("-C").arg(&repo).args(args).output().unwrap().status.success())
-        };
+        let git = |args: &[&str]| assert!(command().arg("-C").arg(&repo).args(args).output().unwrap().status.success());
         git(&["init", "-q"]);
         git(&["config", "user.email", "t@t"]);
         git(&["config", "user.name", "t"]);

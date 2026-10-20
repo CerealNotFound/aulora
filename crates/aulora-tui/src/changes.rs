@@ -869,8 +869,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("src")).unwrap();
         let root = dir.canonicalize().unwrap().to_string_lossy().to_string();
         let sh = |args: &[&str]| {
-            let ok =
-                std::process::Command::new("git").arg("-C").arg(&root).args(args).output().unwrap().status.success();
+            let ok = crate::git::command().arg("-C").arg(&root).args(args).output().unwrap().status.success();
             assert!(ok, "git {args:?}");
         };
         sh(&["init", "-q"]);
@@ -918,7 +917,7 @@ mod tests {
             let r = dir.join(repo);
             std::fs::create_dir_all(r.join("src")).unwrap();
             let sh = |args: &[&str]| {
-                let out = std::process::Command::new("git").arg("-C").arg(&r).args(args).output().unwrap();
+                let out = crate::git::command().arg("-C").arg(&r).args(args).output().unwrap();
                 assert!(out.status.success(), "git {args:?}");
             };
             sh(&["init", "-q"]);

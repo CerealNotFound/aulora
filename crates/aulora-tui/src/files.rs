@@ -283,9 +283,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("target")).unwrap();
         let root = dir.to_string_lossy().to_string();
         let git = |args: &[&str]| {
-            assert!(
-                std::process::Command::new("git").arg("-C").arg(&root).args(args).output().unwrap().status.success()
-            )
+            assert!(crate::git::command().arg("-C").arg(&root).args(args).output().unwrap().status.success())
         };
         git(&["init", "-q"]);
         git(&["config", "user.email", "t@t"]);
