@@ -133,6 +133,10 @@ enum Cmd {
         #[arg(long)]
         no_ui: bool,
     },
+    /// Bring the terminal window running the dashboard to the front
+    /// (Terminal.app, iTerm2). Bind it to a global key with macOS Shortcuts
+    /// or Raycast; starts the dashboard in a new Terminal window if none runs.
+    Focus,
     /// Show the bytes each key press sends and what they mean, to check
     /// what your terminal does with Option, Shift-Enter and the like.
     Keys,
@@ -259,6 +263,7 @@ fn dispatch(cli: Cli) -> Result<()> {
         Some(Cmd::Restart { pane }) => pane_command(&pane, "restarted", |id| ClientMsg::RestartPane { pane_id: id }),
         Some(Cmd::Send { target, text }) => send(&target, text),
         Some(Cmd::Keys) => Ok(aulora_tui::keys_probe()?),
+        Some(Cmd::Focus) => focus(),
         Some(Cmd::Open { dir, claude, no_ui }) => open(dir, claude, no_ui),
         Some(Cmd::Vscode { action }) => match action {
             VscodeCmd::Install { editor } => vscode::install(&editor),
@@ -795,6 +800,71 @@ fn new_pane(
         return aulora_tui::attach(&paths::socket(), &id, &pane_label(&p));
     }
     println!("{id}  {}", pane_label(&p));
+    Ok(())
+}
+
+/// The terminals (ttys) of running dashboards.
+fn dashboard_ttys() -> Vec<String> {
+    let Ok(out) = std::process::Command::new("ps").args(["-axo", "tty=,args="]).output() else { return vec![] };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let mut it = l.split_whitespace();
+            let tty = it.next()?;
+            let exe = it.next()?;
+            let rest: Vec<&str> = it.collect();
+            let is_aulora = exe == "aulora" || exe.ends_with("/aulora");
+            let ui = rest.is_empty() || rest[0] == "tui" || rest[0] == "open";
+            (is_aulora && ui && tty != "??" && !rest.contains(&"--snapshot")).then(|| format!("/dev/{tty}"))
+        })
+        .collect()
+}
+
+fn focus() -> Result<()> {
+    let ttys = dashboard_ttys();
+    for tty in &ttys {
+        let terminal = format!(
+            "tell application \"Terminal\"
+               repeat with w in windows
+                 repeat with t in tabs of w
+                   if tty of t is \"{tty}\" then
+                     set selected of t to true
+                     set index of w to 1
+                     activate
+                     return \"ok\"
+                   end if
+                 end repeat
+               end repeat
+             end tell"
+        );
+        let iterm = format!(
+            "tell application \"System Events\" to if not (exists process \"iTerm2\") then return \"\"
+             tell application \"iTerm2\"
+               repeat with w in windows
+                 repeat with t in tabs of w
+                   repeat with s in sessions of t
+                     if tty of s is \"{tty}\" then
+                       select w
+                       select t
+                       activate
+                       return \"ok\"
+                     end if
+                   end repeat
+                 end repeat
+               end repeat
+             end tell"
+        );
+        for script in [terminal, iterm] {
+            let out = std::process::Command::new("osascript").args(["-e", &script]).output();
+            if out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "ok") {
+                return Ok(());
+            }
+        }
+    }
+    // No dashboard found in a terminal we can script: open one.
+    let exe = exe()?;
+    let script = format!("tell application \"Terminal\"\n do script \"{}\"\n activate\n end tell", exe.display());
+    std::process::Command::new("osascript").args(["-e", &script]).status()?;
     Ok(())
 }
 

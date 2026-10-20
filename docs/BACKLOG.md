@@ -84,7 +84,7 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 | ✅ | Panes come back after a reboot | Saved and restored with the same ids; Claude resumes its session. |
 | ✅ | Notifications when an agent needs you | Desktop notification from the daemon. |
 | ✅ | "Where you left off" cards | Back on a project after 30 minutes or more: a card with what each agent finished or is asking, files edited, new commits. Any key carries on. |
-| ⬜ | Global hotkey switcher | Roadmap step 6; not built. |
+| 🟡 | Global hotkey switcher | `aulora focus` brings the dashboard's Terminal.app or iTerm2 window to the front (or opens one). A terminal program can't own a system-wide key, so bind `aulora focus` to one in macOS Shortcuts or Raycast. |
 
 ## Process
 

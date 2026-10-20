@@ -73,6 +73,7 @@ Sessions show up as soon as they start or you send a prompt. To try the dashboar
 | `aulora attach PANE` | Put a pane in this terminal, like `tmux attach`. <kbd>Ctrl</kbd>+<kbd>Q</kbd> detaches. |
 | `aulora kill\|restart\|close PANE` | Stop a pane, start its program again, or remove it. |
 | `aulora open [DIR] [--claude]` | Open a folder as a project, like `code .`: a shell (or Claude) there, shown in the dashboard. |
+| `aulora focus` | Bring the dashboard's terminal window to the front, or open one. Bind it to a global key with macOS Shortcuts or Raycast. |
 | `aulora keys` | Show what your terminal sends for each key, to check Option, Shift-Enter and friends. |
 | `aulora send TARGET TEXT…` | Type a prompt into a session (in a pane, or in VS Code with the extension), or a command into a pane, and press Enter. Reads stdin when no text is given. |
 | `aulora vscode install\|uninstall\|status [--editor code\|cursor]` | Install the editor extension that lets aulora type into sessions running in VS Code or Cursor terminals. |
