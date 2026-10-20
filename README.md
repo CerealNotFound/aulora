@@ -20,11 +20,13 @@ If you run Claude Code in several projects at once, you end up with a VS Code wi
 
 aulora watches every session through Claude Code's hooks and shows them all in one terminal dashboard:
 
+- **Everything on screen at once.** Like Herdr and tmux, each project's tab is a layout of split panes: Claude, your shells and dev server, your editor, and aulora's own views (Changes, Files, a session's conversation) side by side. <kbd>|</kbd> and <kbd>-</kbd> split, <kbd>d</kbd> and <kbd>f</kbd> open Changes and Files beside the focused pane, drag a border to resize, <kbd>z</kbd> zooms one pane. Layouts come back when you reopen aulora.
 - **What needs you.** Permission prompts, questions (`AskUserQuestion`) and plans waiting for review show in amber at the top, with what Claude is asking for.
 - **What's happening where.** One tree: each project with its branch and git status, and under it every agent running there. Every agent is a terminal. Sessions that have ended open again with `claude --resume`, in the folder they ran in. Sessions running in another app (VS Code, Ghostty) show their whole conversation, scrollable and searchable, with every tool call.
 - **What changed, and who changed it.** The Changes tab is VS Code's Source Control view: staged and unstaged files in a tree, a syntax-highlighted diff with changed words marked, and a colored dot for the Claude session that wrote each change, read from its transcript. Select an agent to see only what it wrote. <kbd>space</kbd> stages, <kbd>c</kbd> commits, <kbd>P</kbd> pushes, <kbd>o</kbd> opens the editor at the change.
 - **Read the code without VS Code.** The Files tab is a gitignore-aware tree with git status and who-wrote-it dots, a highlighted file view with change marks in the gutter, <kbd>Ctrl</kbd>+<kbd>P</kbd> to find any file by name, and <kbd>/</kbd> to search contents with ripgrep's engine. <kbd>e</kbd> opens the file in your terminal editor in a pane, at the line you're on.
 - **Run Claude and your shells inside it.** <kbd>C</kbd> starts Claude Code in a pane and <kbd>c</kbd> starts a shell. The daemon owns these terminals, so they keep running when you close the dashboard, and `aulora attach` puts any of them in another terminal. A Claude session in a pane shows its live status right above its screen.
+- **Paste images into Claude.** In a Claude pane, Ctrl-V pastes the clipboard's image as in Claude Code, and so does Cmd-V when the clipboard holds only an image. In the prompt box for a VS Code session, Ctrl-V saves the image and attaches it by path.
 - **Prompt sessions running in VS Code.** With the aulora extension (`aulora vscode install`), a session running in a VS Code or Cursor terminal gets a prompt box in aulora. What you write is typed into that terminal, so it shows up there as if you'd typed it, in the same session. aulora won't send while Claude is waiting on a permission prompt, where the keys would answer the dialog instead.
 - **Jump straight there.** <kbd>⏎</kbd> opens the project in your editor, and VS Code brings that project's window to the front. <kbd>n</kbd> cycles through the sessions that need you.
 
@@ -77,21 +79,25 @@ Sessions show up as soon as they start or you send a prompt. To try the dashboar
 
 ### Keys
 
-aulora follows Herdr: a sidebar with each **project** and the **agents** running in it (Claude panes, shells, Claude sessions elsewhere), and a main area with tabs. The mouse works everywhere: click to select or focus, wheel to scroll whatever is under the pointer, click a pane to type into it, <kbd>×</kbd> to close, right-click for a menu.
+aulora follows Herdr: a sidebar with each **project** and the **agents** running in it (Claude panes, shells, Claude sessions elsewhere), and a main area with tabs. The mouse works everywhere: click to select or focus, wheel to scroll whatever is under the pointer, click a pane to type into it, drag a border to resize, click (or Cmd-click) a link to open it, <kbd>×</kbd> to close, right-click for a menu.
 
 | Key | Action |
 |---|---|
 | <kbd>↑</kbd> <kbd>↓</kbd> / <kbd>j</kbd> <kbd>k</kbd> | Move in the sidebar; scroll a line in the main area |
 | <kbd>⏎</kbd> | Open: type into a pane, resume an ended session, expand a tool call |
-| <kbd>⇥</kbd> | Switch focus between the sidebar and the main area |
-| <kbd>1</kbd>–<kbd>4</kbd> | Switch tabs |
+| <kbd>⇥</kbd> / <kbd>⌥</kbd>+arrows | Next pane / the pane in that direction |
+| <kbd>\|</kbd> <kbd>-</kbd> | Split: a new shell to the right, below |
+| <kbd>d</kbd> <kbd>f</kbd> | Show Changes, Files beside this pane |
+| <kbd>T</kbd>, <kbd>1</kbd>–<kbd>9</kbd> | New tab; go to a tab |
+| <kbd><</kbd> <kbd>></kbd> <kbd>=</kbd> | Shrink, grow, even out panes (or drag a border) |
 | <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Leave a terminal you're typing into (press it again to send Ctrl-Q to the program) |
-| <kbd>c</kbd> / <kbd>C</kbd> | New shell / new Claude Code pane in the selected project |
+| <kbd>c</kbd> / <kbd>C</kbd> | New shell / new Claude Code pane beside the focused one |
 | <kbd>n</kbd> | Jump to the next agent that needs you |
 | <kbd>r</kbd> | Restart an exited pane; resume a session in a new terminal |
 | <kbd>m</kbd> | Menu for the selection (same as right-click) |
 | <kbd>x</kbd> | Kill a pane (asks first), close an exited one, or dismiss an ended session |
-| <kbd>z</kbd> | Zoom the main area to the whole screen |
+| <kbd>z</kbd> | Zoom the focused pane |
+| <kbd>O</kbd> | Show the file or project in Finder |
 | <kbd>/</kbd> | Filter the sidebar; search a conversation |
 | <kbd>h</kbd> / <kbd>e</kbd> | Show past sessions / ended sessions |
 | <kbd>t</kbd> | Choose a theme |
