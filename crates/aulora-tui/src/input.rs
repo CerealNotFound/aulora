@@ -1479,6 +1479,7 @@ fn files_action(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> boo
                 v.selected = Some(r.rel.clone());
                 v.file_scroll = 0;
                 v.mark_line = None;
+                v.to_first_change = false;
             }
         }
     };
@@ -1630,6 +1631,7 @@ fn click_file(app: &mut App, i: usize, double: bool, opts: &Options, ctx: &Ctx) 
         v.selected = Some(r.rel.clone());
         v.file_scroll = 0;
         v.mark_line = None;
+        v.to_first_change = false;
     }
     v.focus_file = false;
     if r.is_dir {
@@ -2235,6 +2237,7 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                     if let Some(root) = app.selected_root() {
                         let line = app.first_change_line(&root, &path);
                         app.reveal_file(&root, &path, line);
+                        app.files_view(&root).to_first_change = line.is_none();
                     }
                 }
                 Hit::Split(id) => app.dragging = Some(id),

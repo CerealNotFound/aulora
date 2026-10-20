@@ -483,6 +483,13 @@ fn file(f: &mut Frame, area: Rect, app: &mut App, root: &str, rel: &str) {
     let h = body.height as usize;
     let v = app.files_view(root);
     v.file_height = h;
+    if v.to_first_change {
+        v.to_first_change = false;
+        if let Some(&n) = text.marks.keys().min() {
+            v.mark_line = Some(n);
+            v.file_scroll = (n as usize).saturating_sub(h / 3);
+        }
+    }
     v.file_scroll = v.file_scroll.min(lines.len().saturating_sub(h));
     let scroll = v.file_scroll;
     let mark_line = v.mark_line;

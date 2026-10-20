@@ -388,6 +388,9 @@ pub struct View {
     pub focus_file: bool,
     /// A line to point at (a search result, a Ctrl-P `file:line`).
     pub mark_line: Option<u32>,
+    /// Point at the file's first change once its text is read: a changed
+    /// file clicked before then can't know where that is yet.
+    pub to_first_change: bool,
     pub tree_height: usize,
     pub file_height: usize,
     pub search: Option<Search>,
@@ -630,6 +633,7 @@ impl App {
         v.selected = Some(rel.to_string());
         v.focus_file = true;
         v.mark_line = line;
+        v.to_first_change = false;
         let height = v.file_height.max(10);
         v.file_scroll = line.map_or(0, |l| (l as usize).saturating_sub(height / 3));
         self.open_view(root, crate::layout::View::Files, true);
