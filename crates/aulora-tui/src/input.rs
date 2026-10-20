@@ -91,6 +91,12 @@ pub fn on_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx, input: &m
         menu_key(app, key, opts, ctx);
         return false;
     }
+    if app.welcome.is_some() {
+        if let Some(a) = app.welcome_key(key) {
+            return perform(app, a, opts, ctx);
+        }
+        return false;
+    }
     if app.finder.is_some() {
         if let Some(out) = app.finder_key(key) {
             return finder_outcome(app, out, opts, ctx);
@@ -399,6 +405,7 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
             let now = app.sidebar_compact.unwrap_or(!wide);
             app.sidebar_compact = Some(!now);
         }
+        Action::Welcome => app.open_welcome(),
         Action::Finder => app.open_finder(),
         Action::OpenProject => app.open_project_picker(),
         Action::Reveal => {
@@ -1805,6 +1812,7 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                         MenuItem::Run(Action::ToggleHistory, "Past sessions  h"),
                         MenuItem::Run(Action::ToggleMouse, "Mouse capture  F12"),
                         MenuItem::Run(Action::Help, "All keys  ?"),
+                        MenuItem::Run(Action::Welcome, "Getting started"),
                         MenuItem::Run(Action::Quit, "Quit  q"),
                     ];
                     open_menu(app, col.saturating_sub(24), row.saturating_sub(7), items);

@@ -146,6 +146,7 @@ const ACTIONS: &[(Action, &str)] = &[
     (Action::Reveal, "Show in Finder"),
     (Action::ToggleMouse, "Turn mouse capture on or off"),
     (Action::Help, "All keys"),
+    (Action::Welcome, "Getting started"),
     (Action::Quit, "Quit"),
 ];
 

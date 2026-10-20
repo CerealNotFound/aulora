@@ -67,6 +67,7 @@ pub enum Action {
     Resume,
     Menu,
     Stage,
+    Welcome,
     ToggleSidebar,
     Discard,
     HalfUp,

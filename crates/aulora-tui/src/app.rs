@@ -264,6 +264,8 @@ pub struct App {
     /// The project the next new pane belongs to, when it isn't the
     /// selected one (opening a project).
     pub place_root: Option<String>,
+    /// The first-run checklist.
+    pub welcome: Option<crate::welcome::Welcome>,
     /// Ctrl-P.
     pub finder: Option<crate::finder::Finder>,
     /// Styled diffs by root and file, with the change they were made from.
@@ -346,6 +348,7 @@ impl App {
             files: HashMap::new(),
             files_view: HashMap::new(),
             finder: None,
+            welcome: None,
             folders: None,
             folders_requested: false,
             place_root: None,

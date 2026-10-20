@@ -284,6 +284,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.finder.is_some() {
         crate::view_files::finder(f, area, app);
     }
+    if app.welcome.is_some() {
+        dim_behind(f.buffer_mut());
+        crate::welcome::draw(f, area, app);
+    }
     menu(f, area, app);
     toast(f, rows[0], app);
     app.hover_url = if app.menu.is_none() && app.finder.is_none() {

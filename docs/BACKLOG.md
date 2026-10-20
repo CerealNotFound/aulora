@@ -47,7 +47,7 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 | ✅ | No truncation that hides what you came to read | Agent rows wrap to 2+2 lines; notes wrap to 6 lines. |
 | ✅ | Notes such as "agent done" readable in full | Whole summary kept (1,200 chars), wrapped. |
 | ✅ | Compact sidebar on narrow terminals | Below 100 columns, or `\` any time: a strip of status dots and project initials; click to select. |
-| ⬜ | First-run onboarding | Not built. |
+| ✅ | First-run onboarding | A welcome checklist on first launch: connect Claude Code (`H`), the VS Code extension (`V`), open a project (Ctrl-O), the keys that matter, the Terminal.app Option tip. "Getting started" in the menu brings it back. |
 
 ## Conversations
 

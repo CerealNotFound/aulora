@@ -25,6 +25,7 @@ mod tiles;
 mod ui;
 mod view_changes;
 mod view_files;
+mod welcome;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -119,6 +120,10 @@ pub(crate) fn which(name: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(name).is_file()))
 }
 
+pub(crate) fn config_path_pub() -> PathBuf {
+    config_path()
+}
+
 fn config_path() -> PathBuf {
     aulora_core::paths::home().join("config.json")
 }
@@ -192,6 +197,9 @@ pub fn run(mut opts: Options) -> Result<()> {
         demo = Some(d);
     } else {
         app.layouts = tiles::load();
+        if !welcome::seen() {
+            app.open_welcome();
+        }
         client::spawn(opts.socket.clone(), opts.spawn_daemon.take(), tx.clone());
         ctx.stream = Some(client::Stream::spawn(opts.socket.clone(), tx));
     }
