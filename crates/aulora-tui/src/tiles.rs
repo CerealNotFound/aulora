@@ -69,13 +69,15 @@ impl App {
         let Some(snap) = &self.snap else { return };
         let panes: Vec<(String, String)> = snap.panes.iter().map(|p| (p.id.clone(), p.project_root.clone())).collect();
         let now = self.now;
+        // A pane just started may not be in the snapshot yet, so its leaf
+        // is kept for a while; once the daemon has listed it, it isn't
+        // fresh any more, and its leaf goes as soon as the pane does.
+        self.fresh_leaves.retain(|(id, at)| now - at < 5000 && !panes.iter().any(|(p, _)| p == id));
         let fresh = &self.fresh_leaves;
-        let alive =
-            |id: &str| panes.iter().any(|(p, _)| p == id) || fresh.iter().any(|(p, at)| p == id && now - at < 5000);
+        let alive = |id: &str| panes.iter().any(|(p, _)| p == id) || fresh.iter().any(|(p, _)| p == id);
         if self.layouts.prune(alive) {
             self.layouts_dirty = true;
         }
-        self.fresh_leaves.retain(|(_, at)| now - at < 5000);
         for (id, root) in panes {
             // Its shell changed directory into another workspace: take its
             // leaf there, and follow it when it's the one you're on.
