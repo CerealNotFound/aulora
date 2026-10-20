@@ -150,6 +150,14 @@ fn nz(n: u16) -> NonZeroU16 {
     NonZeroU16::new(n.max(1)).expect("non-zero")
 }
 
+/// A terminal's size (cols, rows), asked of its master fd.
+fn winsize(fd: i32) -> Option<(u16, u16)> {
+    let mut ws = libc::winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
+    // SAFETY: TIOCGWINSZ only writes into `ws`.
+    let ok = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) } == 0;
+    (ok && ws.ws_col > 0 && ws.ws_row > 0).then_some((ws.ws_col, ws.ws_row))
+}
+
 fn shell() -> String {
     std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/zsh".into())
 }
@@ -318,6 +326,11 @@ impl Proc {
         on_wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<Arc<Proc>> {
         use std::os::unix::io::FromRawFd;
+        // The size handed over can be the one the pane started at, not the
+        // one it has now; the screen came from a parser at the terminal's
+        // real size. Rebuilt any narrower, wide lines would wrap, and the
+        // program's next redraw would leave broken copies of them behind.
+        let (cols, rows) = fd.and_then(winsize).unwrap_or((cols, rows));
         let mut parser = vt100::Parser::new_with_callbacks(nz(rows), nz(cols), SCROLLBACK, Signals::default());
         parser.process(screen);
         parser.callbacks_mut().title = title;
@@ -514,6 +527,20 @@ mod tests {
         assert_eq!(p.size(), (100, 30));
         assert!(wait_for(&p, "30 100"), "screen was: {:?}", p.text());
         p.kill();
+    }
+
+    #[test]
+    fn an_adopted_pane_takes_its_terminals_real_size() {
+        // A pane started at 120x36 and widened since: an older daemon
+        // hands over the start size, with a screen drawn 160 wide.
+        let pair =
+            native_pty_system().openpty(PtySize { rows: 20, cols: 160, pixel_width: 0, pixel_height: 0 }).unwrap();
+        let fd = pair.master.as_raw_fd().unwrap();
+        let rule = "─".repeat(160);
+        let screen = format!("\x1b[H\x1b[2J{rule}\r\n❯ hi");
+        let p = Proc::adopt("t", Some(fd), None, 120, 36, screen.as_bytes(), None, |_| {}, || {}).unwrap();
+        assert_eq!(p.size(), (160, 20));
+        assert_eq!(p.text().lines().collect::<Vec<_>>(), [rule.as_str(), "❯ hi"], "the rule wrapped");
     }
 
     #[test]
