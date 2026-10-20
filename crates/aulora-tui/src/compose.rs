@@ -80,8 +80,10 @@ impl Compose {
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let cmd = key.modifiers.contains(KeyModifiers::SUPER);
         // Select everything: Cmd-A where the terminal sends it (Terminal.app
-        // keeps Cmd-A for itself), or Ctrl-A at the start of the text.
-        if key.code == KeyCode::Char('a') && (cmd || (ctrl && self.cursor == 0 && !self.text.is_empty())) {
+        // keeps Cmd-A for itself), or Ctrl-A at the start of a line, so
+        // Ctrl-A twice selects everything on any line of the prompt.
+        let at_line_start = self.cursor == self.line_start();
+        if key.code == KeyCode::Char('a') && (cmd || (ctrl && at_line_start && !self.text.is_empty())) {
             self.all = !self.text.is_empty();
             self.cursor = self.text.len();
             return self.all.then(|| Action::Copy(self.text.clone()));
@@ -353,6 +355,12 @@ mod tests {
         assert!(matches!(c.key(ctrl_a), Some(Action::Copy(_))));
         c.key(k(KeyCode::Char('n')));
         assert_eq!(c.text, "n");
+        // On the second line of a prompt too.
+        let mut c = Compose::new("s".into(), "first\nsecond".into());
+        assert!(c.key(ctrl_a).is_none());
+        assert_eq!(c.cursor, "first\n".len());
+        assert!(matches!(c.key(ctrl_a), Some(Action::Copy(t)) if t == "first\nsecond"));
+        assert!(c.all);
         // A movement key lets the selection go and keeps the text.
         let mut c = Compose::new("s".into(), "keep".into());
         c.key(cmd_a);
