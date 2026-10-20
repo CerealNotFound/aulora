@@ -613,8 +613,7 @@ fn terminal_key(app: &mut App, key: KeyEvent, ctx: &Ctx, input: &mut Input) {
     // Ctrl-V in Claude takes only an image; with text copied, paste the
     // text, so Ctrl-V and Cmd-V do the same. Shells and editors keep
     // Ctrl-V's own meaning.
-    let claude = app.pane(&id).is_some_and(|p| p.kind == PaneKind::Claude) || app.pane_session(&id).is_some();
-    if claude
+    if is_claude_pane(app, &id)
         && key.code == KeyCode::Char('v')
         && key.modifiers == KeyModifiers::CONTROL
         && !crate::clipboard::has_image()
@@ -630,6 +629,12 @@ fn terminal_key(app: &mut App, key: KeyEvent, ctx: &Ctx, input: &mut Input) {
     if let Some(bytes) = keys::encode(key, app_cursor) {
         ctx.send(ClientMsg::Input { pane_id: id, data: proto::encode(&bytes) });
     }
+}
+
+/// Whether Claude Code runs in a pane: started as Claude, or its hooks
+/// say a session runs there.
+fn is_claude_pane(app: &App, id: &str) -> bool {
+    app.pane(id).is_some_and(|p| p.kind == PaneKind::Claude) || app.pane_session(id).is_some()
 }
 
 pub fn paste(app: &mut App, text: &str, ctx: &Ctx) {
@@ -700,8 +705,14 @@ pub fn paste(app: &mut App, text: &str, ctx: &Ctx) {
         } else if app.typing
             && let Some(id) = app.focused_pane()
         {
-            // Claude Code reads the clipboard's image itself on Ctrl-V.
-            ctx.send(ClientMsg::Input { pane_id: id, data: proto::encode(&[0x16]) });
+            if is_claude_pane(app, &id) {
+                // Claude Code reads the clipboard's image itself on Ctrl-V.
+                ctx.send(ClientMsg::Input { pane_id: id, data: proto::encode(&[0x16]) });
+            } else if crate::clipboard::has_image() {
+                // Ctrl-V means something else to a shell or an editor
+                // (quoted insert, block selection); send nothing.
+                app.toast("The clipboard holds an image; only Claude panes take images");
+            }
         }
         return;
     }
