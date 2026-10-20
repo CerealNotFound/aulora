@@ -236,6 +236,30 @@ pub struct Session {
 
     #[serde(default)]
     pub origin: Origin,
+    /// What Claude is asking, while it waits on you: the question and its
+    /// options, or a permission prompt's choices.
+    #[serde(default)]
+    pub ask: Option<Ask>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ask {
+    pub questions: Vec<AskQuestion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AskQuestion {
+    pub question: String,
+    pub header: Option<String>,
+    /// In the order Claude Code numbers them, from 1.
+    pub options: Vec<AskOption>,
+    pub multi: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AskOption {
+    pub label: String,
+    pub description: Option<String>,
 }
 
 /// How aulora learned about a session.
@@ -291,6 +315,7 @@ impl Session {
             last_turn_ms: None,
             activity: Vec::new(),
             origin: Origin::Hooks,
+            ask: None,
         }
     }
 

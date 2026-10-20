@@ -81,7 +81,48 @@ pub fn tool_label(name: &str) -> String {
     name.to_string()
 }
 
+/// The questions of an AskUserQuestion call, with their options.
+fn ask_questions(input: &Value) -> Option<Ask> {
+    let qs: Vec<AskQuestion> = input
+        .get("questions")?
+        .as_array()?
+        .iter()
+        .map(|q| AskQuestion {
+            question: q.get("question").and_then(Value::as_str).unwrap_or("").to_string(),
+            header: q.get("header").and_then(Value::as_str).map(str::to_string),
+            options: q
+                .get("options")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|o| AskOption {
+                    label: o.get("label").and_then(Value::as_str).unwrap_or("").to_string(),
+                    description: o.get("description").and_then(Value::as_str).map(str::to_string),
+                })
+                .collect(),
+            multi: q.get("multiSelect").and_then(Value::as_bool).unwrap_or(false),
+        })
+        .collect();
+    (!qs.is_empty()).then_some(Ask { questions: qs })
+}
+
+/// One question with fixed choices (permission prompts, plan approval),
+/// numbered as Claude Code numbers them.
+fn ask_choices(question: String, choices: &[&str]) -> Ask {
+    Ask {
+        questions: vec![AskQuestion {
+            question,
+            header: None,
+            options: choices.iter().map(|c| AskOption { label: c.to_string(), description: None }).collect(),
+            multi: false,
+        }],
+    }
+}
+
 fn set_state(sess: &mut Session, state: SessionState, at: Ms) {
+    if !matches!(state, SessionState::NeedsYou { .. }) {
+        sess.ask = None;
+    }
     if sess.state != state {
         if !sess.state.same_kind(&state) {
             sess.state_since = at;
@@ -228,6 +269,7 @@ pub fn apply_hook(sess: &mut Session, env: &HookEnvelope) -> Vec<FeedEvent> {
             match tool_name.as_str() {
                 "AskUserQuestion" => {
                     set_state(sess, SessionState::NeedsYou { reason: Attention::Question, detail: target.clone() }, at);
+                    sess.ask = ask_questions(tool_input);
                     push(FeedKind::Question, format!("asked: {target}"));
                 }
                 "ExitPlanMode" => {
@@ -239,6 +281,10 @@ pub fn apply_hook(sess: &mut Session, env: &HookEnvelope) -> Vec<FeedEvent> {
                         },
                         at,
                     );
+                    sess.ask = Some(ask_choices(
+                        "Ready to build the plan?".into(),
+                        &["Yes, and auto-accept edits", "Yes, and approve each edit", "No, keep planning"],
+                    ));
                     push(FeedKind::Question, "plan ready for review".into());
                 }
                 _ => {
@@ -263,6 +309,10 @@ pub fn apply_hook(sess: &mut Session, env: &HookEnvelope) -> Vec<FeedEvent> {
                 format!("{} · {target}", tool_label(&tool_name))
             };
             set_state(sess, SessionState::NeedsYou { reason: Attention::Permission, detail: detail.clone() }, at);
+            sess.ask = Some(ask_choices(
+                format!("Allow {detail}?"),
+                &["Yes", "Yes, and don't ask again for this", "No, and tell Claude what to do differently"],
+            ));
             push(FeedKind::Permission, format!("needs permission: {detail}"));
         }
         "PostToolUse" | "PostToolUseFailure" => {
@@ -497,6 +547,29 @@ pub fn trim_payload(mut v: Value) -> Value {
                                             m.insert(f.into(), x);
                                         }
                                     }
+                                    if let Some(x) = q.get("multiSelect") {
+                                        m.insert("multiSelect".into(), x.clone());
+                                    }
+                                    // The options, so the question can be answered from aulora.
+                                    let options: Vec<Value> = q
+                                        .get("options")
+                                        .and_then(Value::as_array)
+                                        .into_iter()
+                                        .flatten()
+                                        .take(9)
+                                        .map(|o| {
+                                            let mut om = Map::new();
+                                            for f in ["label", "description"] {
+                                                if let Some(x) = o.get(f) {
+                                                    let mut x = x.clone();
+                                                    clip(&mut x, 200);
+                                                    om.insert(f.into(), x);
+                                                }
+                                            }
+                                            Value::Object(om)
+                                        })
+                                        .collect();
+                                    m.insert("options".into(), Value::Array(options));
                                     Value::Object(m)
                                 })
                                 .collect(),
@@ -604,8 +677,14 @@ mod tests {
             ),
         );
         assert_eq!(s.state, SessionState::NeedsYou { reason: Attention::Question, detail: "Which DB?".into() });
+        let ask = s.ask.clone().expect("the question is kept");
+        assert_eq!(
+            (ask.questions[0].question.as_str(), ask.questions[0].options[0].label.as_str()),
+            ("Which DB?", "a")
+        );
         apply_hook(&mut s, &env(2, json!({"hook_event_name":"PostToolUse","tool_name":"AskUserQuestion"})));
         assert_eq!(s.state, SessionState::Working);
+        assert!(s.ask.is_none(), "answered: gone");
     }
 
     #[test]
