@@ -25,6 +25,21 @@ pub enum Sent {
     Failed { session: String, text: String, error: String },
 }
 
+/// The prompt as typed into Claude: each `[Image #n]` stays where it is,
+/// and the image files' paths go at the end, where Claude reads them.
+/// Never first: Claude Code holds a message that starts with an image's
+/// path until its turn ends, instead of reading it at the next step.
+pub fn with_images(text: &str, images: &[std::path::PathBuf]) -> String {
+    let mut used = Vec::new();
+    for (i, path) in images.iter().enumerate() {
+        let chip = format!("[Image #{}]", i + 1);
+        if text.contains(&chip) {
+            used.push(format!("{chip}: {}", path.display()));
+        }
+    }
+    if used.is_empty() { text.to_string() } else { format!("{} ({})", text.trim_end(), used.join(", ")) }
+}
+
 impl Compose {
     pub fn new(session: String, draft: String) -> Compose {
         let cursor = draft.len();
@@ -217,9 +232,10 @@ impl App {
         let tx = self.sent_tx.clone();
         let socket = socket.to_path_buf();
         let session = c.session.clone();
+        let wire = with_images(&text, &self.images);
         self.toast(format!("Typing into {editor}…"));
         std::thread::spawn(move || {
-            let msg = aulora_core::proto::ClientMsg::SendPrompt { session_id: session.clone(), text: text.clone() };
+            let msg = aulora_core::proto::ClientMsg::SendPrompt { session_id: session.clone(), text: wire };
             let result = match client::command(&socket, &msg) {
                 Some(aulora_core::proto::ServerMsg::Error { message }) => {
                     Sent::Failed { session, text, error: message }
@@ -303,6 +319,18 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_paths_go_last() {
+        let imgs = vec![std::path::PathBuf::from("/i/a.png"), std::path::PathBuf::from("/i/b.png")];
+        assert_eq!(
+            with_images("[Image #2] what's wrong here?", &imgs),
+            "[Image #2] what's wrong here? ([Image #2]: /i/b.png)"
+        );
+        assert_eq!(with_images("no images", &imgs), "no images");
+        let both = with_images("[Image #1] vs [Image #2]", &imgs);
+        assert!(!both.starts_with('/') && both.ends_with("([Image #1]: /i/a.png, [Image #2]: /i/b.png)"), "{both}");
+    }
 
     fn k(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)

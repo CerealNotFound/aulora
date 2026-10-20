@@ -4,6 +4,21 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+/// Whether the clipboard holds an image (macOS; elsewhere, assume it might).
+pub fn has_image() -> bool {
+    if !cfg!(target_os = "macos") {
+        return true;
+    }
+    Command::new("osascript")
+        .args(["-e", "clipboard info"])
+        .output()
+        .map(|o| {
+            let info = String::from_utf8_lossy(&o.stdout);
+            info.contains("PNGf") || info.contains("TIFF")
+        })
+        .unwrap_or(true)
+}
+
 /// Save the clipboard's image as a PNG under ~/.aulora/images. None when
 /// the clipboard holds no image.
 pub fn save_image() -> Result<Option<PathBuf>, String> {
@@ -45,6 +60,19 @@ pub fn save_image() -> Result<Option<PathBuf>, String> {
             Ok(None)
         }
     }
+}
+
+/// The clipboard's text, read with the system's clipboard tool.
+pub fn text() -> Option<String> {
+    let tools: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
+        &[("pbpaste", &[])]
+    } else {
+        &[("wl-paste", &["--no-newline"]), ("xclip", &["-selection", "clipboard", "-o"]), ("xsel", &["--clipboard"])]
+    };
+    tools.iter().find_map(|(tool, args)| {
+        let out = Command::new(tool).args(*args).output().ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    })
 }
 
 /// Put text on the clipboard. Locally through the system's clipboard tool

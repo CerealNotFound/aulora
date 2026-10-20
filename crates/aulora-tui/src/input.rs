@@ -131,7 +131,7 @@ pub fn on_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx, input: &m
         return false;
     }
     if app.compose.is_some() && key.code == KeyCode::Char('v') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        paste_image_into_prompt(app);
+        paste_clipboard_into_prompt(app);
         return false;
     }
     // A session waiting on an answer: number keys choose, Enter submits,
@@ -592,6 +592,22 @@ fn terminal_key(app: &mut App, key: KeyEvent, ctx: &Ctx, input: &mut Input) {
     if t.scrolled() > 0 {
         t.reset_scroll();
     }
+    // Ctrl-V in Claude takes only an image; with text copied, paste the
+    // text, so Ctrl-V and Cmd-V do the same. Shells and editors keep
+    // Ctrl-V's own meaning.
+    let claude = app.pane(&id).is_some_and(|p| p.kind == PaneKind::Claude) || app.pane_session(&id).is_some();
+    if claude
+        && key.code == KeyCode::Char('v')
+        && key.modifiers == KeyModifiers::CONTROL
+        && !crate::clipboard::has_image()
+        && let Some(text) = crate::clipboard::text().filter(|t| !t.is_empty())
+    {
+        let Some(t) = app.terms.get(&id) else { return };
+        let bracketed = t.parser.screen().bracketed_paste();
+        ctx.send(ClientMsg::Input { pane_id: id, data: proto::encode(&keys::paste(&text, bracketed)) });
+        return;
+    }
+    let Some(t) = app.terms.get_mut(&id) else { return };
     let app_cursor = t.parser.screen().application_cursor();
     if let Some(bytes) = keys::encode(key, app_cursor) {
         ctx.send(ClientMsg::Input { pane_id: id, data: proto::encode(&bytes) });
@@ -662,7 +678,7 @@ pub fn paste(app: &mut App, text: &str, ctx: &Ctx) {
     // can't paste images as text. Hand it to whatever can take the image.
     if text.is_empty() {
         if app.compose.is_some() {
-            paste_image_into_prompt(app);
+            paste_clipboard_into_prompt(app);
         } else if app.typing
             && let Some(id) = app.focused_pane()
         {
@@ -682,18 +698,26 @@ pub fn paste(app: &mut App, text: &str, ctx: &Ctx) {
     }
 }
 
-/// Save the clipboard's image and put its path in the prompt being
-/// written; Claude Code attaches an image given by its path.
-fn paste_image_into_prompt(app: &mut App) {
+/// Cmd-V and Ctrl-V in the prompt box, which do the same: a copied image
+/// goes in as `[Image #n]` (as in Claude Code), copied text as text.
+fn paste_clipboard_into_prompt(app: &mut App) {
     match crate::clipboard::save_image() {
         Ok(Some(path)) => {
+            app.images.push(path);
+            let chip = format!("[Image #{}]", app.images.len());
             if let Some(c) = app.compose.as_mut() {
                 let sep = if c.text.is_empty() || c.text.ends_with(' ') { "" } else { " " };
-                c.insert(&format!("{sep}{} ", path.display()));
+                c.insert(&format!("{sep}{chip} "));
             }
-            app.toast("Image attached");
         }
-        Ok(None) => app.toast("No image on the clipboard"),
+        Ok(None) => match crate::clipboard::text().filter(|t| !t.is_empty()) {
+            Some(text) => {
+                if let Some(c) = app.compose.as_mut() {
+                    c.insert(&text);
+                }
+            }
+            None => app.toast("The clipboard is empty"),
+        },
         Err(e) => app.error(format!("Couldn't read the clipboard: {e}")),
     }
 }

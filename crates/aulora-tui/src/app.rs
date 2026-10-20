@@ -258,6 +258,8 @@ pub struct App {
     pub slash: HashMap<String, Vec<(String, String)>>,
     /// Unsent prompts, by session.
     pub drafts: HashMap<String, String>,
+    /// Images pasted into prompts; `[Image #n]` in a prompt is entry n-1.
+    pub images: Vec<std::path::PathBuf>,
     pub sent_tx: std::sync::mpsc::Sender<crate::compose::Sent>,
     pub sent_rx: std::sync::mpsc::Receiver<crate::compose::Sent>,
     pub changes: HashMap<String, crate::changes::Project>,
@@ -374,6 +376,7 @@ impl App {
             hover_url: None,
             compose: None,
             drafts: HashMap::new(),
+            images: Vec::new(),
             slash: HashMap::new(),
             commit_edit: None,
             commit_drafts: HashMap::new(),
