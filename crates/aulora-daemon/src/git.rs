@@ -2,8 +2,29 @@ use std::process::Command;
 
 use aulora_core::model::GitInfo;
 
+/// `git`, ignoring the repository that whatever started us was in.
+/// Git hooks and `git rebase --exec` export GIT_DIR and friends, which
+/// beat `-C <dir>`: inherited, every command (tests included) would act
+/// on that repository instead of the one asked for.
+fn command() -> Command {
+    let mut c = Command::new("git");
+    for k in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_PREFIX",
+        "GIT_NAMESPACE",
+    ] {
+        c.env_remove(k);
+    }
+    c
+}
+
 fn git(dir: &str, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
+    let out = command()
         .arg("--no-optional-locks")
         .arg("-C")
         .arg(dir)
