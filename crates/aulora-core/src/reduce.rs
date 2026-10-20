@@ -301,6 +301,18 @@ pub fn apply_hook(sess: &mut Session, env: &HookEnvelope) -> Vec<FeedEvent> {
                 }
             }
         }
+        // Claude Code asks permission for AskUserQuestion too, but what it
+        // shows is the question itself, not an allow/deny prompt.
+        "PermissionRequest" if tool_name == "AskUserQuestion" => {
+            let target = tool_target(&tool_name, tool_input, &base);
+            let asked = matches!(sess.state, SessionState::NeedsYou { reason: Attention::Question, .. });
+            let ask = ask_questions(tool_input).or_else(|| if asked { sess.ask.take() } else { None });
+            set_state(sess, SessionState::NeedsYou { reason: Attention::Question, detail: target.clone() }, at);
+            sess.ask = ask;
+            if !asked {
+                push(FeedKind::Question, format!("asked: {target}"));
+            }
+        }
         "PermissionRequest" => {
             let target = tool_target(&tool_name, tool_input, &base);
             let detail = if target.is_empty() {
@@ -366,8 +378,10 @@ pub fn apply_hook(sess: &mut Session, env: &HookEnvelope) -> Vec<FeedEvent> {
         "Notification" => {
             let msg = s(p, "message").unwrap_or("").to_string();
             match s(p, "notification_type").unwrap_or("") {
+                // Also sent for a question or a plan on screen, which the
+                // tool's own events already described better.
                 "permission_prompt" => {
-                    if !matches!(sess.state, SessionState::NeedsYou { reason: Attention::Permission, .. }) {
+                    if !matches!(sess.state, SessionState::NeedsYou { .. }) {
                         set_state(
                             sess,
                             SessionState::NeedsYou { reason: Attention::Permission, detail: msg.clone() },
@@ -682,7 +696,31 @@ mod tests {
             (ask.questions[0].question.as_str(), ask.questions[0].options[0].label.as_str()),
             ("Which DB?", "a")
         );
-        apply_hook(&mut s, &env(2, json!({"hook_event_name":"PostToolUse","tool_name":"AskUserQuestion"})));
+        // Claude Code 2.1.304 then asks permission for the tool; the
+        // question is still what it shows, so the question stays.
+        let feed = apply_hook(
+            &mut s,
+            &env(
+                2,
+                json!({"hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion",
+            "tool_input":{"questions":[{"question":"Which DB?","header":"DB","options":[{"label":"a"}]}]}}),
+            ),
+        );
+        assert!(feed.is_empty(), "asked once");
+        assert_eq!(s.state, SessionState::NeedsYou { reason: Attention::Question, detail: "Which DB?".into() });
+        assert_eq!(s.ask, Some(ask.clone()));
+        // And its "Claude needs your permission" notification after that.
+        apply_hook(
+            &mut s,
+            &env(
+                3,
+                json!({"hook_event_name":"Notification","notification_type":"permission_prompt",
+            "message":"Claude needs your permission"}),
+            ),
+        );
+        assert_eq!(s.state, SessionState::NeedsYou { reason: Attention::Question, detail: "Which DB?".into() });
+        assert_eq!(s.ask, Some(ask));
+        apply_hook(&mut s, &env(3, json!({"hook_event_name":"PostToolUse","tool_name":"AskUserQuestion"})));
         assert_eq!(s.state, SessionState::Working);
         assert!(s.ask.is_none(), "answered: gone");
     }
