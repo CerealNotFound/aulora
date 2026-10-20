@@ -109,8 +109,18 @@ impl App {
         if self.selected == self.shown_row {
             return;
         }
+        let before = self.shown_row.as_ref().and_then(|r| self.root_of(r));
         self.shown_row = self.selected.clone();
         self.ensure_space();
+        // Coming to another project: maybe a "since you were here" card.
+        if let Some(root) = self.space_root()
+            && before.as_deref() != Some(root.as_str())
+        {
+            if let Some(prev) = before {
+                self.visits.insert(prev, self.now);
+            }
+            self.visit(&root);
+        }
         match self.selected.clone() {
             Some(RowRef::Pane(id)) => {
                 if let Some((root, tab, leaf)) = self.layouts.find_pane(&id) {

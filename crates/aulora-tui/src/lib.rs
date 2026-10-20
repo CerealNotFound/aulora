@@ -3,6 +3,7 @@
 mod app;
 mod attach;
 mod attrib;
+mod away;
 mod changes;
 mod client;
 mod clipboard;
@@ -313,6 +314,8 @@ pub fn run(mut opts: Options) -> Result<()> {
     })();
     app.seen_dirty = true;
     app.save_seen();
+    app.now = now_ms();
+    app.leave();
     let _ = std::panic::take_hook();
     restore_terminal(enhanced);
     result

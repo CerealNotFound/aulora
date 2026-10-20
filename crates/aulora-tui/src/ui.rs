@@ -284,6 +284,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.finder.is_some() {
         crate::view_files::finder(f, area, app);
     }
+    if app.away.is_some() && app.welcome.is_none() {
+        crate::away::draw(f, area, app);
+    }
     if app.welcome.is_some() {
         dim_behind(f.buffer_mut());
         crate::welcome::draw(f, area, app);

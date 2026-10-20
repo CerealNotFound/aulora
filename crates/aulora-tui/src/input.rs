@@ -91,6 +91,10 @@ pub fn on_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx, input: &m
         menu_key(app, key, opts, ctx);
         return false;
     }
+    if app.away.take().is_some() {
+        // The card goes away on any key, which isn't otherwise used.
+        return false;
+    }
     if app.welcome.is_some() {
         if let Some(a) = app.welcome_key(key) {
             return perform(app, a, opts, ctx);
@@ -1595,6 +1599,10 @@ pub fn on_hover(app: &mut App, ev: MouseEvent) -> bool {
 pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input: &mut Input) {
     let Some((rect, hit)) = app.hit(ev.column, ev.row) else { return };
     let (col, row) = (ev.column, ev.row);
+    if app.away.is_some() && matches!(ev.kind, MouseEventKind::Down(_)) {
+        app.away = None;
+        return;
+    }
     // Ctrl-P is open: a click outside it closes it.
     if app.finder.is_some() && matches!(ev.kind, MouseEventKind::Down(_)) && !matches!(hit, Hit::FinderItem(_)) {
         app.finder = None;

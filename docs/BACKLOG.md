@@ -83,7 +83,7 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 | ✅ | Restarts and updates must not kill panes | `aulora daemon restart`; the daemon upgrades itself in place when the program is replaced. |
 | ✅ | Panes come back after a reboot | Saved and restored with the same ids; Claude resumes its session. |
 | ✅ | Notifications when an agent needs you | Desktop notification from the daemon. |
-| ⬜ | "Where you left off" cards | Roadmap step 5; not built. |
+| ✅ | "Where you left off" cards | Back on a project after 30 minutes or more: a card with what each agent finished or is asking, files edited, new commits. Any key carries on. |
 | ⬜ | Global hotkey switcher | Roadmap step 6; not built. |
 
 ## Process

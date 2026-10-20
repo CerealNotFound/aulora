@@ -264,6 +264,9 @@ pub struct App {
     /// The project the next new pane belongs to, when it isn't the
     /// selected one (opening a project).
     pub place_root: Option<String>,
+    /// When each project was last looked at, and the card for coming back.
+    pub visits: HashMap<String, Ms>,
+    pub away: Option<crate::away::Card>,
     /// The first-run checklist.
     pub welcome: Option<crate::welcome::Welcome>,
     /// Ctrl-P.
@@ -349,6 +352,8 @@ impl App {
             files_view: HashMap::new(),
             finder: None,
             welcome: None,
+            visits: crate::away::load(),
+            away: None,
             folders: None,
             folders_requested: false,
             place_root: None,
