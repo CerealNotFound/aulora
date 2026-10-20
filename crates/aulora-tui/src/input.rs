@@ -70,7 +70,8 @@ impl Wheel {
 #[derive(Default)]
 pub struct Input {
     pub wheel: Wheel,
-    last_click: Option<(Instant, u16, u16)>,
+    /// When and where the last click was, and what it hit.
+    last_click: Option<(Instant, u16, u16, Hit)>,
     /// Where the left button went down on selectable text.
     press: Option<(ratatui::layout::Rect, Option<String>, (u16, u16))>,
     last_ctrl_q: Option<Instant>,
@@ -2028,11 +2029,23 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
             }
         }
         MouseEventKind::Down(MouseButton::Left) => {
-            let double = input
+            let first = input
                 .last_click
-                .is_some_and(|(t, c, r)| t.elapsed() < Duration::from_millis(350) && c == col && r == row);
-            input.last_click = Some((Instant::now(), col, row));
+                .take()
+                .filter(|(t, c, r, _)| t.elapsed() < Duration::from_millis(350) && *c == col && *r == row);
+            let double = first.is_some();
+            input.last_click = Some((Instant::now(), col, row, hit.clone()));
             app.selection = None;
+            // A changed file at the top of the Files panel opens on the
+            // first click, so the second lands on its text: the double
+            // click still means the file, straight into your editor.
+            if let Some((_, _, _, Hit::ChangedFile(path))) = first
+                && let Some(root) = app.selected_root()
+            {
+                let line = app.first_change_line(&root, &path);
+                open_file_in_editor(app, &root, &path, line);
+                return;
+            }
             input.press = selectable(app, &hit, rect, col, row).map(|(r, p)| (r, p, (col, row)));
             // Double-click selects a word in a pane, a file or a diff.
             if double
