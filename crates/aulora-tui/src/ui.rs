@@ -1766,8 +1766,6 @@ fn empty_state(f: &mut Frame, area: Rect, app: &mut App) {
     let r = centered(area, 72, 16);
     let mut lines: Vec<Line> = crate::brand::banner(t, r.width, t.bg).into_iter().map(Line::centered).collect();
     lines.push(Line::raw(""));
-    lines.push(Line::from(sp(crate::brand::TAGLINE, dim())).centered());
-    lines.push(Line::raw(""));
     let msg = match &app.conn {
         Conn::Offline(why) => vec![sp(format!("can't reach the daemon: {why} · retrying"), fg(t.red))],
         Conn::Connecting => vec![sp(format!("{} starting the daemon…", spinner(app.now)), dim())],

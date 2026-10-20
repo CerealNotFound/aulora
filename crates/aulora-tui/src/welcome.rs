@@ -148,8 +148,8 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
     let meta = *w.meta.lock().unwrap();
     let width = area.width.saturating_sub(4).min(76);
     // The wordmark when there's room for it and the checklist.
-    let art = area.height >= 36;
-    let height = (if art { 32 } else { 25 }).min(area.height.saturating_sub(2));
+    let art = area.height >= 35;
+    let height = (if art { 31 } else { 25 }).min(area.height.saturating_sub(2));
     let r = Rect {
         x: area.x + (area.width - width) / 2,
         y: area.y + (area.height.saturating_sub(height)) / 2,
@@ -177,10 +177,11 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
             spans.extend(l.spans);
             Line::from(spans)
         }));
-        lines.push(Line::raw(""));
+    } else {
+        // The banner's tagline says it when the banner is there.
+        lines.push(Line::from(sp(" Every Claude session and terminal, for every workspace, in one place.", dim())));
     }
     lines.extend([
-        Line::from(sp(" Every Claude session and terminal, for every workspace, in one place.", dim())),
         Line::raw(""),
         Line::from(vec![
             check(Some(app.hooks_installed)),
@@ -234,13 +235,11 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(vec![
             check(Some(on)),
             sp("Option as Meta in Terminal.app", text()),
-            sp("  so Option-Delete deletes a word, Option-Enter a new line", faint()),
+            sp("  for Option-Delete and Option-Enter", faint()),
         ]));
         if !on {
-            lines.push(Line::from(sp(
-                "     Terminal → Settings → Profiles → Keyboard → tick \"Use Option as Meta key\"",
-                faint(),
-            )));
+            lines
+                .push(Line::from(sp("     Settings → Profiles → Keyboard → tick \"Use Option as Meta key\"", faint())));
         }
     }
     lines.push(Line::raw(""));
