@@ -121,6 +121,21 @@ enum Cmd {
         #[command(subcommand)]
         action: VscodeCmd,
     },
+    /// Open a folder as a project, like `code .`: start a shell (or Claude)
+    /// there and show it in the dashboard.
+    Open {
+        /// The folder; the current one if left out.
+        dir: Option<PathBuf>,
+        /// Start Claude Code instead of a shell.
+        #[arg(long)]
+        claude: bool,
+        /// Only start the pane; don't open the dashboard.
+        #[arg(long)]
+        no_ui: bool,
+    },
+    /// Show the bytes each key press sends and what they mean, to check
+    /// what your terminal does with Option, Shift-Enter and the like.
+    Keys,
     /// Entry point for Claude Code hooks (reads the event on stdin).
     #[command(hide = true)]
     Hook,
@@ -237,6 +252,8 @@ fn dispatch(cli: Cli) -> Result<()> {
         Some(Cmd::Close { pane }) => pane_command(&pane, "closed", |id| ClientMsg::ClosePane { pane_id: id }),
         Some(Cmd::Restart { pane }) => pane_command(&pane, "restarted", |id| ClientMsg::RestartPane { pane_id: id }),
         Some(Cmd::Send { target, text }) => send(&target, text),
+        Some(Cmd::Keys) => Ok(aulora_tui::keys_probe()?),
+        Some(Cmd::Open { dir, claude, no_ui }) => open(dir, claude, no_ui),
         Some(Cmd::Vscode { action }) => match action {
             VscodeCmd::Install { editor } => vscode::install(&editor),
             VscodeCmd::Uninstall { editor } => vscode::uninstall(&editor),
@@ -744,6 +761,31 @@ fn new_pane(
     }
     println!("{id}  {}", pane_label(&p));
     Ok(())
+}
+
+fn open(dir: Option<PathBuf>, claude: bool, no_ui: bool) -> Result<()> {
+    ensure_daemon()?;
+    let dir = match dir {
+        Some(d) => d,
+        None => std::env::current_dir()?,
+    };
+    let dir = dir.canonicalize().with_context(|| format!("{} does not exist", dir.display()))?;
+    if !dir.is_dir() {
+        bail!("{} is not a folder", dir.display());
+    }
+    let kind = if claude { PaneKind::Claude } else { PaneKind::Shell };
+    let (cols, rows) = ratatui_size();
+    let req = NewPane { cwd: dir.to_string_lossy().to_string(), kind, args: vec![], name: None, cols, rows };
+    let id = match request(&ClientMsg::NewPane(req))? {
+        ServerMsg::PaneCreated { pane_id } => pane_id,
+        ServerMsg::Error { message } => bail!(message),
+        other => bail!("unexpected reply: {other:?}"),
+    };
+    if no_ui || !std::io::stdout().is_terminal() {
+        println!("opened {} ({id})", dir.display());
+        return Ok(());
+    }
+    tui(false, None, Some(id), None, None, false)
 }
 
 fn ratatui_size() -> (u16, u16) {
