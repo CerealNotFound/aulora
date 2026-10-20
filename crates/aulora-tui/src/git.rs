@@ -597,7 +597,7 @@ mod tests {
             let out = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
             assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
         };
-        git(&base, &["init", "-q", "--bare", "remote.git"]);
+        git(&base, &["init", "-q", "--bare", "-b", "main", "remote.git"]);
         git(&a, &["init", "-q", "-b", "main"]);
         git(&a, &["config", "user.email", "t@t"]);
         git(&a, &["config", "user.name", "t"]);
@@ -613,7 +613,7 @@ mod tests {
         assert_eq!(perform(root, &Op::Push).unwrap(), "Published main to origin");
 
         // Another clone pushes; pulling here fast-forwards.
-        git(&base, &["clone", "-q", remote.to_str().unwrap(), "b"]);
+        git(&base, &["clone", "-q", "-b", "main", remote.to_str().unwrap(), "b"]);
         git(&b, &["config", "user.email", "t@t"]);
         git(&b, &["config", "user.name", "t"]);
         std::fs::write(b.join("y.txt"), "two\n").unwrap();
