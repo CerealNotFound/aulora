@@ -67,6 +67,20 @@ pub enum Action {
     Resume,
     Menu,
     Stage,
+    Reveal,
+    FocusLeft,
+    FocusRight,
+    FocusUp,
+    FocusDown,
+    SplitRight,
+    SplitDown,
+    NewTab,
+    OpenChanges,
+    OpenFiles,
+    Grow,
+    Shrink,
+    Equalize,
+    CloseLeaf,
     Edit,
     Finder,
     Commit,
@@ -99,6 +113,9 @@ const fn code(code: KeyCode) -> Key {
 }
 const fn ctrl(c: char) -> Key {
     Key { code: KeyCode::Char(c), mods: KeyModifiers::CONTROL }
+}
+const fn alt(code: KeyCode) -> Key {
+    Key { code, mods: KeyModifiers::ALT }
 }
 
 impl Key {
@@ -175,6 +192,7 @@ pub static BINDINGS: &[Binding] = &[
     b!(Conversation, "g", [k('g'), code(KeyCode::Home)], Top, "start of the conversation"),
     b!(Conversation, "G", [k('G'), code(KeyCode::End)], Bottom, "latest message, and follow new ones", "latest"),
     b!(Conversation, "esc", [code(KeyCode::Esc), code(KeyCode::Left), k('h')], Back, "back to the sidebar", "back"),
+    b!(Conversation, "x", [k('x')], CloseLeaf, "close this pane"),
     // Pane (focused, not typing).
     b!(Pane, "⏎", [code(KeyCode::Enter), k('i')], Open, "type into the pane (ctrl-q comes back)", "type"),
     b!(
@@ -220,6 +238,7 @@ pub static BINDINGS: &[Binding] = &[
     b!(Changes, "g", [k('g'), code(KeyCode::Home)], Top, "first file"),
     b!(Changes, "G", [k('G'), code(KeyCode::End)], Bottom, "last file"),
     b!(Changes, "esc", [code(KeyCode::Esc)], Back, "back to the files, then the sidebar", "back"),
+    b!(Changes, "x", [k('x')], CloseLeaf, "close this pane"),
     // Files.
     b!(
         Files,
@@ -247,17 +266,42 @@ pub static BINDINGS: &[Binding] = &[
     b!(Files, "g", [k('g'), code(KeyCode::Home)], Top, "top"),
     b!(Files, "G", [k('G'), code(KeyCode::End)], Bottom, "bottom"),
     b!(Files, "esc", [code(KeyCode::Esc)], Back, "back to the tree, then the sidebar", "back"),
+    b!(Files, "x", [k('x')], CloseLeaf, "close this pane"),
     // Project overview.
     b!(Overview, "esc", [code(KeyCode::Esc), code(KeyCode::Left), k('h')], Back, "back to the sidebar", "back"),
+    b!(Overview, "x", [k('x')], CloseLeaf, "close this pane"),
     // Everywhere.
-    b!(Global, "⇥", [code(KeyCode::Tab)], FocusNext, "switch between the sidebar and the main area", "focus"),
-    b!(Global, "⇧⇥", [code(KeyCode::BackTab)], FocusPrev, "switch focus back"),
-    b!(Global, "1-4", [k('1'), k('2'), k('3'), k('4')], Tab(0), "switch tabs", "tabs"),
+    b!(Global, "⇥", [code(KeyCode::Tab)], FocusNext, "next pane (the sidebar, then each pane)", "focus"),
+    b!(Global, "⇧⇥", [code(KeyCode::BackTab)], FocusPrev, "previous pane"),
+    b!(
+        Global,
+        "⌥←↑↓→",
+        [alt(KeyCode::Left), alt(KeyCode::Right), alt(KeyCode::Up), alt(KeyCode::Down)],
+        FocusLeft,
+        "move to the pane in that direction (zellij)"
+    ),
+    b!(Global, "|", [k('|')], SplitRight, "split: a new shell to the right", "split"),
+    b!(Global, "-", [k('-')], SplitDown, "split: a new shell below"),
+    b!(Global, "C", [k('C')], NewClaude, "Claude Code in a new pane beside this one"),
+    b!(Global, "T", [k('T')], NewTab, "a new tab with a shell"),
+    b!(Global, "d", [k('d')], OpenChanges, "show Changes beside this pane", "changes"),
+    b!(Global, "f", [k('f')], OpenFiles, "show Files beside this pane", "files"),
+    b!(Global, "< >", [k('<'), k('>')], Shrink, "make this pane smaller / bigger"),
+    b!(Global, "=", [k('=')], Equalize, "make every pane even"),
+    b!(
+        Global,
+        "1-9",
+        [k('1'), k('2'), k('3'), k('4'), k('5'), k('6'), k('7'), k('8'), k('9')],
+        Tab(0),
+        "go to tab n",
+        "tabs"
+    ),
     b!(Global, "{ }", [k('{'), k('}')], PrevTab, "previous / next tab"),
     b!(Global, "ctrl-p", [ctrl('p')], Finder, "find a file in this project by name (path:line works)", "find file"),
     b!(Global, "n", [k('n')], NextAlert, "jump to the next agent that needs you", "next alert"),
-    b!(Global, "z", [k('z')], Zoom, "zoom the main area to the whole screen"),
+    b!(Global, "z", [k('z')], Zoom, "zoom this pane (again to unzoom)"),
     b!(Global, "o", [k('o')], OpenEditor, "open the project in your editor"),
+    b!(Global, "O", [k('O')], Reveal, "show it in Finder"),
     b!(Global, "t", [k('t')], Themes, "choose a theme", "theme"),
     b!(Global, "F12", [code(KeyCode::F(12))], ToggleMouse, "turn mouse capture off so the terminal can select text"),
     b!(Global, "?", [k('?')], Help, "all keys", "help"),
@@ -283,6 +327,10 @@ fn resolve(b: &Binding, i: usize) -> Action {
         (PageUp, 1) => PageDown,
         (PrevPrompt, 1) => NextPrompt,
         (PrevHunk, 1) => NextHunk,
+        (FocusLeft, 1) => FocusRight,
+        (FocusLeft, 2) => FocusUp,
+        (FocusLeft, 3) => FocusDown,
+        (Shrink, 1) => Grow,
         (PrevTab, 1) => NextTab,
         (Tab(_), n) => Tab(n as u8),
         (a, _) => a,

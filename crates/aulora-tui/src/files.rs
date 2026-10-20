@@ -510,7 +510,7 @@ impl App {
         v.mark_line = line;
         let height = v.file_height.max(10);
         v.file_scroll = line.map_or(0, |l| (l as usize).saturating_sub(height / 3));
-        self.set_tab(crate::app::Tab::Files);
+        self.open_view(root, crate::layout::View::Files, true);
         self.focus = crate::app::Focus::Main;
     }
 }

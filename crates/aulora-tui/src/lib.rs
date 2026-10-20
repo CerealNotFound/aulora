@@ -5,6 +5,7 @@ mod attach;
 mod attrib;
 mod changes;
 mod client;
+mod clipboard;
 mod compose;
 mod conv;
 mod demo;
@@ -15,13 +16,16 @@ mod highlight;
 mod input;
 mod keymap;
 mod keys;
+mod layout;
+mod links;
 mod term;
 mod theme;
+mod tiles;
 mod ui;
 mod view_changes;
 mod view_files;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -146,7 +150,8 @@ fn choose_theme(explicit: Option<&str>, detect: bool) {
 /// Connection state the input code needs besides `App`.
 pub(crate) struct Ctx {
     stream: Option<client::Stream>,
-    pub(crate) sent_size: Option<(String, u16, u16)>,
+    /// The size last sent for each attached pane.
+    pub(crate) sent_size: HashMap<String, (u16, u16)>,
 }
 
 impl Ctx {
@@ -172,13 +177,15 @@ pub fn run(mut opts: Options) -> Result<()> {
     let mut demo = None;
     let mut app =
         App::new(if opts.demo { Conn::Demo } else { Conn::Connecting }, opts.hooks_installed, opts.editor.clone());
-    let mut ctx = Ctx { stream: None, sent_size: None };
+    let mut ctx = Ctx { stream: None, sent_size: HashMap::new() };
     if opts.demo {
         let d = demo::Demo::new();
         app.set_snapshot(d.snap.clone());
         load_demo_screens(&mut app);
+        app.layouts = demo::layouts();
         demo = Some(d);
     } else {
+        app.layouts = tiles::load();
         client::spawn(opts.socket.clone(), opts.spawn_daemon.take(), tx.clone());
         ctx.stream = Some(client::Stream::spawn(opts.socket.clone(), tx));
     }
@@ -235,10 +242,11 @@ pub fn run(mut opts: Options) -> Result<()> {
                 dirty = true;
             }
             if dirty && since >= frame {
-                sync_attach(&mut app, &mut ctx);
                 app.mark_seen();
                 std::io::stdout().sync_update(|_| term.draw(|f| ui::draw(f, &mut app)).map(|_| ()))??;
+                sync_attach(&mut app, &mut ctx);
                 sync_size(&mut app, &mut ctx);
+                app.save_layouts();
                 app.save_seen();
                 dirty = false;
                 last_draw = Instant::now();
@@ -367,42 +375,48 @@ fn on_incoming(app: &mut App, msg: Incoming) {
     }
 }
 
-/// Stream exactly the selected pane, re-attaching after a restart.
+/// Stream every pane on screen, re-attaching after a restart, and stop
+/// streaming the ones that left the screen.
 fn sync_attach(app: &mut App, ctx: &mut Ctx) {
     if ctx.stream.is_none() {
         return;
     }
-    let want = app.selected_pane().map(|p| (p.id.clone(), p.generation));
-    if want == app.attached {
-        return;
+    let want: HashMap<String, u32> =
+        app.view_sizes.iter().filter_map(|(id, _, _)| app.pane(id).map(|p| (id.clone(), p.generation))).collect();
+    let gone: Vec<String> = app.attached.keys().filter(|id| !want.contains_key(*id)).cloned().collect();
+    for id in gone {
+        app.attached.remove(&id);
+        ctx.sent_size.remove(&id);
+        ctx.send(ClientMsg::Detach { pane_id: id });
     }
-    if let Some((old, _)) = app.attached.take() {
-        ctx.send(ClientMsg::Detach { pane_id: old });
-    }
-    if let Some((id, generation)) = &want {
-        if app.terms.get(id).is_some_and(|t| t.generation != *generation) {
-            app.terms.remove(id);
+    for (id, generation) in want {
+        if app.attached.get(&id) == Some(&generation) {
+            continue;
         }
-        ctx.sent_size = None;
+        if app.terms.get(&id).is_some_and(|t| t.generation != generation) {
+            app.terms.remove(&id);
+        }
+        ctx.sent_size.remove(&id);
         ctx.send(ClientMsg::Attach { pane_id: id.clone() });
+        app.attached.insert(id, generation);
     }
-    app.attached = want;
 }
 
-/// Make the pane's terminal match the space it's drawn in.
+/// Make each pane's terminal match the space it's drawn in.
 fn sync_size(app: &mut App, ctx: &mut Ctx) {
-    let Some((id, cols, rows)) = app.view_size.take() else { return };
-    if cols < 2 || rows < 1 || app.attached.as_ref().map(|a| &a.0) != Some(&id) {
-        return;
+    for (id, cols, rows) in std::mem::take(&mut app.view_sizes) {
+        if cols < 2 || rows < 1 || !app.attached.contains_key(&id) {
+            continue;
+        }
+        if ctx.sent_size.get(&id) == Some(&(cols, rows)) {
+            continue;
+        }
+        if let Some(t) = app.terms.get_mut(&id) {
+            t.resize(cols, rows);
+        }
+        ctx.send(ClientMsg::Resize { pane_id: id.clone(), cols, rows });
+        ctx.sent_size.insert(id, (cols, rows));
     }
-    if ctx.sent_size.as_ref() == Some(&(id.clone(), cols, rows)) {
-        return;
-    }
-    if let Some(t) = app.terms.get_mut(&id) {
-        t.resize(cols, rows);
-    }
-    ctx.send(ClientMsg::Resize { pane_id: id.clone(), cols, rows });
-    ctx.sent_size = Some((id, cols, rows));
 }
 
 pub fn render_text(
@@ -472,6 +486,7 @@ fn render(
         (true, _) => {
             app.set_snapshot(demo::Demo::new().snap);
             load_demo_screens(&mut app);
+            app.layouts = demo::layouts();
         }
         (false, Some(s)) => app.set_snapshot(s),
         (false, None) => app.conn = Conn::Offline("not running".into()),

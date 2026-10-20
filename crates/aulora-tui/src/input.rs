@@ -108,6 +108,10 @@ pub fn on_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx, input: &m
         }
         return false;
     }
+    if app.compose.is_some() && key.code == KeyCode::Char('v') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        paste_image_into_prompt(app);
+        return false;
+    }
     if let Some(c) = app.compose.as_mut() {
         match c.key(key) {
             Some(crate::compose::Action::Send) => app.send_compose(&opts.socket),
@@ -130,11 +134,9 @@ pub fn on_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx, input: &m
                 app.filtering = false;
             }
             KeyCode::Enter => app.filtering = false,
-            KeyCode::Backspace => {
-                app.filter.pop();
+            _ => {
+                crate::compose::edit_line(&mut app.filter, &key);
             }
-            KeyCode::Char(c) => app.filter.push(c),
-            _ => {}
         }
         app.move_selection(0);
         return false;
@@ -148,7 +150,7 @@ pub fn on_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx, input: &m
     if ctrl
         && matches!(key.code, KeyCode::Char('q'))
         && input.last_ctrl_q.is_some_and(|t| t.elapsed() < Duration::from_millis(600))
-        && let Some((id, _)) = app.attached.clone()
+        && let Some(id) = app.focused_pane()
     {
         ctx.send(ClientMsg::Input { pane_id: id, data: proto::encode(&[0x11]) });
         app.typing = true;
@@ -193,24 +195,59 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
                     with_conv(app, |c, h| if top { c.go_top(h) } else { c.go_bottom() });
                 }
                 keymap::Scope::Pane => {
-                    if let Some(t) = app.attached.clone().and_then(|(id, _)| app.terms.get_mut(&id)) {
+                    if let Some(t) = app.focused_pane().and_then(|id| app.terms.get_mut(&id)) {
                         t.reset_scroll();
                     }
                 }
                 _ => app.select_edge(!top),
             }
         }
-        Action::FocusNext | Action::FocusPrev => {
-            app.typing = false;
-            app.focus = match app.focus {
-                Focus::Sidebar if app.selected.is_some() => Focus::Main,
-                _ => Focus::Sidebar,
-            };
+        Action::FocusNext => app.cycle_focus(1),
+        Action::FocusPrev => app.cycle_focus(-1),
+        Action::FocusLeft => {
+            app.move_focus(-1, 0);
         }
-        Action::Tab(n) => {
-            if let Some(tab) = app.tabs().get(n as usize).copied() {
-                app.set_tab(tab);
+        Action::FocusRight => {
+            app.move_focus(1, 0);
+        }
+        Action::FocusUp => {
+            app.move_focus(0, -1);
+        }
+        Action::FocusDown => {
+            app.move_focus(0, 1);
+        }
+        Action::SplitRight | Action::SplitDown | Action::NewTab => {
+            app.place_next = Some(match action {
+                Action::SplitRight => Some(crate::layout::Dir::Right),
+                Action::SplitDown => Some(crate::layout::Dir::Down),
+                _ => None,
+            });
+            new_pane(app, opts, ctx, PaneKind::Shell);
+        }
+        Action::OpenChanges => {
+            if app.selected_root().and_then(|r| app.project(&r)).is_some_and(|p| p.git.is_some()) {
+                app.set_tab(Tab::Changes);
+            } else {
+                app.toast("Not a git repository");
             }
+        }
+        Action::OpenFiles => app.set_tab(Tab::Files),
+        Action::Grow | Action::Shrink => {
+            let d = if action == Action::Grow { 0.05 } else { -0.05 };
+            if let Some(tab) = app.tab_mut()
+                && !tab.nudge(crate::layout::Dir::Right, d)
+            {
+                tab.nudge(crate::layout::Dir::Down, d);
+            }
+        }
+        Action::Equalize => {
+            if let Some(tab) = app.tab_mut() {
+                tab.equalize();
+            }
+        }
+        Action::CloseLeaf => close_leaf(app, opts),
+        Action::Tab(n) => {
+            app.switch_tab(n as usize);
         }
         Action::NextTab => app.cycle_tab(1),
         Action::PrevTab => app.cycle_tab(-1),
@@ -227,7 +264,11 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
             }
         }
         Action::Filter => app.filtering = true,
-        Action::Zoom => app.zoom = !app.zoom,
+        Action::Zoom => {
+            if let Some(tab) = app.tab_mut() {
+                tab.zoom = !tab.zoom && tab.leaves().len() > 1;
+            }
+        }
         Action::OpenEditor => {
             if let Some(root) = app.selected_root() {
                 open_in_editor(app, &root);
@@ -318,6 +359,21 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
             _ => {}
         },
         Action::Finder => app.open_finder(),
+        Action::Reveal => {
+            let path = match (app.current_tab(), app.selected_root()) {
+                (Tab::Files, Some(root)) if app.focus == Focus::Main => {
+                    let sel = app.files_view(&root).selected.clone();
+                    sel.map(|s| format!("{root}/{s}")).or(Some(root))
+                }
+                (_, root) => match app.selected.clone() {
+                    Some(RowRef::Pane(id)) => app.pane(&id).map(|p| p.cwd.clone()),
+                    _ => root,
+                },
+            };
+            if let Some(p) = path {
+                reveal_in_finder(app, &p);
+            }
+        }
         Action::Edit => {}
         Action::Commit
         | Action::Push
@@ -357,7 +413,7 @@ fn with_conv(app: &mut App, f: impl FnOnce(&mut crate::conv::Conversation, usize
 }
 
 fn scroll_pane(app: &mut App, delta: isize) {
-    if let Some((id, _)) = app.attached.clone()
+    if let Some(id) = app.focused_pane()
         && let Some(t) = app.terms.get_mut(&id)
     {
         t.scroll_by(-delta as i32);
@@ -421,7 +477,7 @@ fn start_typing(app: &mut App, _opts: &Options, id: &str) {
 }
 
 fn terminal_key(app: &mut App, key: KeyEvent, ctx: &Ctx, input: &mut Input) {
-    let Some((id, _)) = app.attached.clone() else {
+    let Some(id) = app.focused_pane() else {
         app.typing = false;
         return;
     };
@@ -450,12 +506,25 @@ fn terminal_key(app: &mut App, key: KeyEvent, ctx: &Ctx, input: &mut Input) {
 }
 
 pub fn paste(app: &mut App, text: &str, ctx: &Ctx) {
+    // Cmd-V with only an image on the clipboard pastes nothing: terminals
+    // can't paste images as text. Hand it to whatever can take the image.
+    if text.is_empty() {
+        if app.compose.is_some() {
+            paste_image_into_prompt(app);
+        } else if app.typing
+            && let Some(id) = app.focused_pane()
+        {
+            // Claude Code reads the clipboard's image itself on Ctrl-V.
+            ctx.send(ClientMsg::Input { pane_id: id, data: proto::encode(&[0x16]) });
+        }
+        return;
+    }
     if let Some(c) = app.commit_edit.as_mut().or(app.compose.as_mut()) {
         c.insert(text);
         return;
     }
     if app.typing {
-        let Some((id, _)) = app.attached.clone() else { return };
+        let Some(id) = app.focused_pane() else { return };
         let bracketed = app.terms.get(&id).is_some_and(|t| t.parser.screen().bracketed_paste());
         ctx.send(ClientMsg::Input { pane_id: id, data: proto::encode(&keys::paste(text, bracketed)) });
     } else if app.filtering {
@@ -465,12 +534,25 @@ pub fn paste(app: &mut App, text: &str, ctx: &Ctx) {
     }
 }
 
+/// Save the clipboard's image and put its path in the prompt being
+/// written; Claude Code attaches an image given by its path.
+fn paste_image_into_prompt(app: &mut App) {
+    match crate::clipboard::save_image() {
+        Ok(Some(path)) => {
+            if let Some(c) = app.compose.as_mut() {
+                let sep = if c.text.is_empty() || c.text.ends_with(' ') { "" } else { " " };
+                c.insert(&format!("{sep}{} ", path.display()));
+            }
+            app.toast("Image attached");
+        }
+        Ok(None) => app.toast("No image on the clipboard"),
+        Err(e) => app.error(format!("Couldn't read the clipboard: {e}")),
+    }
+}
+
 fn search_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => app.searching = false,
-        KeyCode::Backspace => {
-            app.query.pop();
-        }
         KeyCode::Enter => {
             app.searching = false;
             let q = app.query.clone();
@@ -483,8 +565,9 @@ fn search_key(app: &mut App, key: KeyEvent) {
                 app.toast("No matches");
             }
         }
-        KeyCode::Char(c) => app.query.push(c),
-        _ => {}
+        _ => {
+            crate::compose::edit_line(&mut app.query, &key);
+        }
     }
 }
 
@@ -502,10 +585,7 @@ fn help_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx, _input: &mu
         }
         KeyCode::Up => h.selected = h.selected.saturating_sub(1),
         KeyCode::Down => h.selected = (h.selected + 1).min(rows.len().saturating_sub(1)),
-        KeyCode::Backspace => {
-            h.query.pop();
-            h.selected = 0;
-        }
+        KeyCode::Backspace | KeyCode::Char(_) if crate::compose::edit_line(&mut h.query, &key) => h.selected = 0,
         KeyCode::Enter => {
             let action = rows.get(h.selected).map(|r| r.3);
             app.help = None;
@@ -514,10 +594,6 @@ fn help_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx, _input: &mu
             {
                 return perform(app, a, opts, ctx);
             }
-        }
-        KeyCode::Char(c) => {
-            h.query.push(c);
-            h.selected = 0;
         }
         _ => {}
     }
@@ -693,15 +769,18 @@ fn spawn_named(
         app.toast(format!("Would start {label} in {} (demo)", aulora_core::util::basename(&cwd)));
         return;
     }
-    let (cols, rows) = match &ctx.sent_size {
-        Some((_, c, r)) => (*c, *r),
-        None => crate::terminal_size()
-            .map(|(w, h)| (w.saturating_sub(if w >= 90 { 40 } else { 2 }), h.saturating_sub(4)))
-            .unwrap_or((100, 30)),
-    };
+    let _ = ctx;
+    // Beside the focused leaf unless asked otherwise (None: a new tab).
+    let dir = app.place_next.take().unwrap_or(Some(crate::layout::Dir::Right));
+    let (cols, rows) = app.new_pane_size(dir).unwrap_or_else(|| {
+        crate::terminal_size().map(|(w, h)| (w.saturating_sub(40), h.saturating_sub(4))).unwrap_or((100, 30))
+    });
+    let root = app.space_root().unwrap_or_else(|| cwd.clone());
     let req = NewPane { cwd, kind, args, name, cols: cols.max(20), rows: rows.max(5) };
     match client::command(&opts.socket, &ClientMsg::NewPane(req)) {
         Some(ServerMsg::PaneCreated { pane_id }) => {
+            app.place_pane(&root, &pane_id, dir);
+            app.focus = Focus::Main;
             app.pending_select = Some((pane_id, true));
             app.toast(if label == "the session" { "Resumed".to_string() } else { format!("Started {label}") });
         }
@@ -810,8 +889,17 @@ fn changes_action(app: &mut App, action: Action) -> bool {
         Action::Push => app.start_op(&root, crate::git::Op::Push),
         Action::Pull => app.start_op(&root, crate::git::Op::Pull),
         Action::ToggleAll => {
+            // Every change → each agent's in turn → every change again.
+            let authors = app.change_authors(&root);
+            let next = match app.focused_filter() {
+                None => authors.first().cloned(),
+                Some(cur) => authors.iter().position(|a| *a == cur).and_then(|i| authors.get(i + 1)).cloned(),
+            };
+            if let Some(tab) = app.tab_mut() {
+                let f = tab.focus;
+                tab.replace(f, crate::layout::View::Changes { filter: next });
+            }
             let v = app.view_mut(&root);
-            v.all = !v.all;
             v.selected = None;
             v.scroll = 0;
         }
@@ -920,6 +1008,64 @@ fn open_file_in_editor(app: &mut App, root: &str, rel: &str, line: Option<u32>) 
     match spawned {
         Ok(_) => app.toast(format!("Opened {rel} in {editor}")),
         Err(e) => app.error(format!("Couldn't run `{editor}`: {e}. Set AULORA_EDITOR.")),
+    }
+}
+
+/// Show a file or folder in Finder (`open -R`), or the system's file
+/// manager elsewhere.
+pub fn reveal_in_finder(app: &mut App, path: &str) {
+    let name = aulora_core::util::basename(path);
+    if app.conn == Conn::Demo {
+        app.toast(format!("Would show {name} in Finder (demo)"));
+        return;
+    }
+    let mut cmd = if cfg!(target_os = "macos") {
+        let mut c = std::process::Command::new("open");
+        c.arg("-R").arg(path);
+        c
+    } else {
+        let dir = if std::path::Path::new(path).is_dir() {
+            path.to_string()
+        } else {
+            std::path::Path::new(path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
+        };
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(dir);
+        c
+    };
+    let spawned = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    match spawned {
+        Ok(_) => app.toast(format!("Showing {name} in Finder")),
+        Err(e) => app.error(format!("Couldn't open Finder: {e}")),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Leaves
+
+/// Close the focused leaf: a view just goes; a terminal is killed (asking
+/// first if it's running) and its leaf goes when the pane does.
+fn close_leaf(app: &mut App, opts: &Options) {
+    let Some(view) = app.focused_view() else { return };
+    match view {
+        crate::layout::View::Pane { id } => close(app, opts, RowRef::Pane(id)),
+        _ => {
+            let Some(root) = app.space_root() else { return };
+            let space = app.layouts.space(&root);
+            let Some(tab) = space.tab_mut() else { return };
+            let leaf = tab.focus;
+            if !tab.close(leaf) {
+                let active = space.active;
+                space.tabs.remove(active);
+                space.active = active.saturating_sub(1).min(space.tabs.len().saturating_sub(1));
+            }
+            app.layouts_dirty = true;
+            app.sync_selection();
+        }
     }
 }
 
@@ -1131,12 +1277,9 @@ fn files_search_key(app: &mut App, root: &str, key: KeyEvent) {
             s.editing = false;
             app.start_search(root, q);
         }
-        KeyCode::Backspace => {
-            s.query.pop();
+        _ => {
+            crate::compose::edit_line(&mut s.query, &key);
         }
-        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => s.query.clear(),
-        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => s.query.push(c),
-        _ => {}
     }
 }
 
@@ -1230,6 +1373,14 @@ fn run_menu_item(app: &mut App, opts: &Options, ctx: &Ctx, item: MenuItem) {
         MenuItem::OpenEditor(root) => open_in_editor(app, &root),
         MenuItem::NewClaude(root) => spawn(app, opts, ctx, PaneKind::Claude, root, vec![], "Claude Code"),
         MenuItem::NewShell(root) => spawn(app, opts, ctx, PaneKind::Shell, root, vec![], "a shell"),
+        MenuItem::NewTab(root) => {
+            app.place_next = Some(None);
+            spawn(app, opts, ctx, PaneKind::Shell, root, vec![], "a shell");
+        }
+        MenuItem::Reveal(path) => reveal_in_finder(app, &path),
+        MenuItem::Run(action, _) => {
+            perform(app, action, opts, ctx);
+        }
     }
 }
 
@@ -1260,6 +1411,12 @@ fn mouse_bytes(screen: &vt100::Screen, button: u8, col: u16, row: u16, release: 
 
 /// Track the row under the mouse. Returns true when it changed.
 pub fn on_hover(app: &mut App, ev: MouseEvent) -> bool {
+    let before = app.hover_url.clone();
+    app.mouse_pos = Some((ev.column, ev.row));
+    // Redraw when entering or leaving a link, or moving along text where
+    // one might be.
+    let over_link = before.as_ref().is_some_and(|(r, x0, x1, _)| ev.row == *r && ev.column >= *x0 && ev.column < *x1);
+    let link_changed = before.is_some() != over_link || before.is_none();
     let hit = app.hit(ev.column, ev.row).map(|(_, h)| h);
     if let Some(m) = app.menu.as_mut() {
         if let Some(Hit::MenuItem(i)) = hit
@@ -1277,7 +1434,7 @@ pub fn on_hover(app: &mut App, ev: MouseEvent) -> bool {
     };
     let changed = hover != app.hover;
     app.hover = hover;
-    changed
+    changed || link_changed
 }
 
 pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input: &mut Input) {
@@ -1315,7 +1472,7 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
         let target = match &hit {
             Hit::Row(r) | Hit::Close(r) => Some(r.clone()),
             Hit::Add(root) => Some(RowRef::Project(root.clone())),
-            Hit::Terminal(_) | Hit::Conversation(_) | Hit::Main | Hit::Tab(_) => app.selected.clone(),
+            Hit::Terminal(_) | Hit::Conversation(_) | Hit::Main | Hit::Leaf(_) => app.selected.clone(),
             _ => None,
         };
         if let Some(r) = target {
@@ -1379,6 +1536,34 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                 .last_click
                 .is_some_and(|(t, c, r)| t.elapsed() < Duration::from_millis(350) && c == col && r == row);
             input.last_click = Some((Instant::now(), col, row));
+            // A click on an underlined link opens it, unless a program in
+            // the pane asked for the mouse and you're typing into it.
+            let program_wants_mouse = matches!(&hit, Hit::Terminal(id) if app.typing
+                && app.terms.get(id).is_some_and(|t| t.parser.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None));
+            if let Some((r, x0, x1, url)) = app.hover_url.clone()
+                && row == r
+                && col >= x0
+                && col < x1
+                && !program_wants_mouse
+            {
+                if app.conn == Conn::Demo {
+                    app.toast(format!("Would open {url} (demo)"));
+                } else {
+                    match crate::links::open(&url) {
+                        Ok(()) => app.toast(format!("Opened {}", crate::ui::fit(&url, 60))),
+                        Err(e) => app.error(format!("Couldn't open the link: {e}")),
+                    }
+                }
+                return;
+            }
+            // A click in a pane focuses it first (Herdr, zellij).
+            let inside = |r: &ratatui::layout::Rect| col >= r.x && col < r.right() && row >= r.y && row < r.bottom();
+            if !matches!(hit, Hit::Split(_))
+                && let Some(leaf) = app.leaf_rects.iter().find(|(_, r)| inside(r)).map(|(id, _)| *id)
+                && (app.focus != Focus::Main || app.tab().is_some_and(|t| t.focus != leaf))
+            {
+                app.focus_leaf(leaf);
+            }
             match hit {
                 Hit::Row(r) => {
                     let was = app.selected.as_ref() == Some(&r);
@@ -1462,12 +1647,37 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                     }
                 }
                 Hit::MenuItem(_) | Hit::Dismiss => {}
-                Hit::NewClaude => new_pane(app, opts, ctx, PaneKind::Claude),
-                Hit::NewShell => new_pane(app, opts, ctx, PaneKind::Shell),
-                Hit::Tab(t) => {
-                    app.set_tab(t);
+                Hit::NewMenu => {
+                    if let Some(root) = app.selected_root() {
+                        let items = vec![
+                            MenuItem::NewClaude(root.clone()),
+                            MenuItem::NewShell(root.clone()),
+                            MenuItem::NewTab(root),
+                        ];
+                        open_menu(app, col, row.saturating_sub(4), items);
+                    }
+                }
+                Hit::AppMenu => {
+                    let items = vec![
+                        MenuItem::Run(Action::Finder, "Find a file…  ctrl-p"),
+                        MenuItem::Run(Action::Themes, "Theme…  t"),
+                        MenuItem::Run(Action::ToggleHistory, "Past sessions  h"),
+                        MenuItem::Run(Action::ToggleMouse, "Mouse capture  F12"),
+                        MenuItem::Run(Action::Help, "All keys  ?"),
+                        MenuItem::Run(Action::Quit, "Quit  q"),
+                    ];
+                    open_menu(app, col.saturating_sub(24), row.saturating_sub(7), items);
+                }
+                Hit::SpaceTab(i) => {
+                    app.switch_tab(i);
                     app.focus = Focus::Main;
                 }
+                Hit::NewTab => {
+                    app.place_next = Some(None);
+                    new_pane(app, opts, ctx, PaneKind::Shell);
+                }
+                Hit::Leaf(_) => {}
+                Hit::Split(id) => app.dragging = Some(id),
                 Hit::Terminal(id) => {
                     let wants_mouse = app
                         .terms
@@ -1499,6 +1709,20 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                 }
             }
         }
+        MouseEventKind::Drag(MouseButton::Left) if app.dragging.is_some() => {
+            // Move the split border under the pointer.
+            let split = app.dragging.unwrap_or_default();
+            if let Some((_, dir, area, _)) = app.split_rects.iter().find(|(id, ..)| *id == split).cloned() {
+                let ratio = match dir {
+                    crate::layout::Dir::Right => (col.saturating_sub(area.x) as f32 + 0.5) / area.width.max(1) as f32,
+                    crate::layout::Dir::Down => (row.saturating_sub(area.y) as f32 + 0.5) / area.height.max(1) as f32,
+                };
+                if let Some(tab) = app.tab_mut() {
+                    tab.set_ratio(split, ratio);
+                }
+            }
+        }
+        MouseEventKind::Up(MouseButton::Left) if app.dragging.is_some() => app.dragging = None,
         MouseEventKind::Up(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left) => {
             if let Hit::Terminal(id) = hit
                 && app.typing

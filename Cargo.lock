@@ -171,6 +171,7 @@ dependencies = [
  "libc",
  "nucleo-matcher",
  "ratatui",
+ "serde",
  "serde_json",
  "similar",
  "syntect",

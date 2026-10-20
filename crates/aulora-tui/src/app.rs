@@ -36,18 +36,6 @@ pub enum Tab {
     Files,
 }
 
-impl Tab {
-    pub fn label(self) -> &'static str {
-        match self {
-            Tab::Terminal => "Terminal",
-            Tab::Conversation => "Conversation",
-            Tab::Overview => "Overview",
-            Tab::Changes => "Changes",
-            Tab::Files => "Files",
-        }
-    }
-}
-
 /// The five states shown everywhere (Herdr).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Status {
@@ -104,15 +92,22 @@ pub enum Hit {
     Action(crate::keymap::Action),
     /// The prompt box under a session's conversation.
     Compose(String),
+    /// The sidebar's `new` and `menu`.
+    NewMenu,
+    AppMenu,
     /// The resume button above a session.
     Resume(String),
     /// Behind an open menu.
     Dismiss,
-    Tab(Tab),
+    /// A project tab in the strip.
+    SpaceTab(usize),
+    NewTab,
+    /// Anywhere in a leaf.
+    Leaf(u64),
+    /// The border between a split's sides.
+    Split(u64),
     Terminal(String),
     Conversation(String),
-    NewClaude,
-    NewShell,
     Sidebar,
     Main,
 }
@@ -135,6 +130,11 @@ pub enum MenuItem {
     OpenEditor(String),
     NewClaude(String),
     NewShell(String),
+    NewTab(String),
+    /// Show a file or folder in Finder.
+    Reveal(String),
+    /// Run an action, with its label.
+    Run(crate::keymap::Action, &'static str),
 }
 
 impl MenuItem {
@@ -148,6 +148,9 @@ impl MenuItem {
             MenuItem::OpenEditor(_) => "Open in VS Code",
             MenuItem::NewClaude(_) => "New Claude here",
             MenuItem::NewShell(_) => "New shell here",
+            MenuItem::NewTab(_) => "New tab",
+            MenuItem::Reveal(_) => "Open in Finder",
+            MenuItem::Run(_, label) => label,
         }
     }
 
@@ -197,21 +200,40 @@ pub struct App {
     pub hooks_installed: bool,
     pub editor: String,
     pub sidebar_scroll: usize,
-    pub zoom: bool,
     pub mouse: bool,
     /// Local screens of attached panes.
     pub terms: HashMap<String, Term>,
     /// Pane (and generation) this client is attached to.
-    pub attached: Option<(String, u32)>,
+    /// Panes streaming to us, with the generation attached.
+    pub attached: HashMap<String, u32>,
     /// Select (and maybe focus) this pane as soon as it appears.
     pub pending_select: Option<(String, bool)>,
     /// Size of the pane view in the last frame.
-    pub view_size: Option<(String, u16, u16)>,
+    pub view_sizes: Vec<(String, u16, u16)>,
     /// Height of the conversation viewport in the last frame.
     pub conv_height: usize,
     /// The tab last chosen; it stays as you move between rows, when the
     /// new row has it (VS Code keeps Source Control open as you switch files).
-    pub tab_pref: Tab,
+    pub layouts: crate::layout::Layouts,
+    pub layouts_dirty: bool,
+    /// Where each leaf of the current tab was drawn last frame.
+    pub leaf_rects: Vec<(u64, ratatui::layout::Rect)>,
+    /// Splits drawn last frame: id, direction, area, dividing line.
+    pub split_rects: Vec<(u64, crate::layout::Dir, ratatui::layout::Rect, ratatui::layout::Rect)>,
+    /// Where the next new pane goes: Some(dir) beside the focused leaf,
+    /// None in a new tab.
+    pub place_next: Option<Option<crate::layout::Dir>>,
+    /// A split border being dragged.
+    pub dragging: Option<u64>,
+    /// Panes just placed, kept even before the daemon lists them.
+    pub fresh_leaves: Vec<(String, Ms)>,
+    /// The sidebar row the main area last followed.
+    pub shown_row: Option<RowRef>,
+    /// Where the mouse is, and the link under it in the last frame.
+    pub mouse_pos: Option<(u16, u16)>,
+    pub hover_url: Option<(u16, u16, u16, String)>,
+    /// While drawing: whether the leaf being drawn has focus.
+    pub leaf_focused: bool,
     pub worker: Option<crate::changes::Worker>,
     /// A prompt being written for a session in an editor.
     pub compose: Option<crate::compose::Compose>,
@@ -279,14 +301,23 @@ impl App {
             hooks_installed,
             editor,
             sidebar_scroll: 0,
-            zoom: false,
             mouse: true,
             terms: HashMap::new(),
-            attached: None,
+            attached: HashMap::new(),
             pending_select: None,
-            view_size: None,
+            view_sizes: Vec::new(),
             conv_height: 20,
-            tab_pref: Tab::Terminal,
+            layouts: crate::layout::Layouts::default(),
+            layouts_dirty: false,
+            leaf_rects: Vec::new(),
+            split_rects: Vec::new(),
+            dragging: None,
+            place_next: None,
+            fresh_leaves: Vec::new(),
+            shown_row: None,
+            leaf_focused: false,
+            mouse_pos: None,
+            hover_url: None,
             compose: None,
             drafts: HashMap::new(),
             commit_edit: None,
@@ -327,11 +358,11 @@ impl App {
     pub fn set_snapshot(&mut self, snap: Snapshot) {
         let prev_root = self.selected_root();
         self.snap = Some(snap);
+        self.reconcile_layouts();
         if let Some((id, focus)) = self.pending_select.clone()
             && self.pane(&id).is_some()
         {
             self.selected = Some(RowRef::Pane(id));
-            self.tab_pref = Tab::Terminal;
             if focus {
                 self.focus = Focus::Main;
                 self.typing = true;
@@ -345,7 +376,7 @@ impl App {
             let project = prev_root.map(RowRef::Project).filter(|p| rows.contains(p));
             self.selected = project.or_else(|| self.agents().first().cloned()).or(rows.first().cloned());
         }
-        if self.typing && self.selected_pane().is_none_or(|p| !p.is_running()) {
+        if self.typing && self.focused_pane().and_then(|id| self.pane(&id).cloned()).is_none_or(|p| !p.is_running()) {
             self.typing = false;
         }
         let live: std::collections::HashSet<String> =
@@ -591,7 +622,13 @@ impl App {
         if let Some(root) = self.root_of(r) {
             items.push(MenuItem::NewClaude(root.clone()));
             items.push(MenuItem::NewShell(root.clone()));
-            items.push(MenuItem::OpenEditor(root));
+            items.push(MenuItem::OpenEditor(root.clone()));
+            let dir = match r {
+                RowRef::Pane(id) => self.pane(id).map(|p| p.cwd.clone()),
+                RowRef::Session(id) => self.session(id).map(|s| s.cwd.clone()),
+                RowRef::Project(_) => None,
+            };
+            items.push(MenuItem::Reveal(dir.filter(|d| !d.is_empty()).unwrap_or(root)));
         }
         items
     }
@@ -659,46 +696,9 @@ impl App {
 
     // --- tabs and focus ---------------------------------------------------
 
-    pub fn tabs(&self) -> Vec<Tab> {
-        let Some(sel) = &self.selected else { return vec![] };
-        let mut tabs = match sel {
-            RowRef::Pane(_) => vec![Tab::Terminal],
-            RowRef::Session(_) => vec![Tab::Conversation],
-            RowRef::Project(_) => vec![Tab::Overview],
-        };
-        if self.root_of(sel).and_then(|r| self.project(&r)).is_some_and(|p| p.git.is_some()) {
-            tabs.push(Tab::Changes);
-        }
-        if self.root_of(sel).is_some() {
-            tabs.push(Tab::Files);
-        }
-        tabs
-    }
-
-    pub fn current_tab(&self) -> Tab {
-        let tabs = self.tabs();
-        if tabs.contains(&self.tab_pref) {
-            return self.tab_pref;
-        }
-        tabs.first().copied().unwrap_or(Tab::Overview)
-    }
-
-    pub fn set_tab(&mut self, tab: Tab) {
-        if self.tabs().contains(&tab) {
-            self.tab_pref = tab;
-            if tab != Tab::Terminal {
-                self.typing = false;
-            }
-        }
-    }
-
-    pub fn cycle_tab(&mut self, delta: i32) {
-        let tabs = self.tabs();
-        if tabs.len() < 2 {
-            return;
-        }
-        let cur = tabs.iter().position(|t| *t == self.current_tab()).unwrap_or(0) as i32;
-        self.set_tab(tabs[(cur + delta).rem_euclid(tabs.len() as i32) as usize]);
+    /// Whether the view being drawn has the keyboard.
+    pub fn here(&self) -> bool {
+        self.focus == Focus::Main && self.leaf_focused
     }
 
     /// The keymap scope for where focus is now.

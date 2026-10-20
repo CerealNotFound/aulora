@@ -9,7 +9,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 
-use crate::app::{App, Focus, Hit};
+use crate::app::{App, Hit};
 use crate::files::{Loaded, Mark, Row};
 use crate::git::Kind;
 use crate::theme::{self, bold, dim, faint, fg, spinner, text};
@@ -118,7 +118,7 @@ fn tree(f: &mut Frame, area: Rect, app: &mut App, root: &str) {
     let decor = decor(app, root);
     let h = area.height as usize;
     let width = area.width.saturating_sub(1) as usize;
-    let focused = app.focus == Focus::Main && !app.files_view(root).focus_file;
+    let focused = app.here() && !app.files_view(root).focus_file;
     let v = app.files_view(root);
     if v.selected.is_none() {
         v.selected = rows.first().map(|r| r.rel.clone());
@@ -199,7 +199,7 @@ fn results(f: &mut Frame, area: Rect, app: &mut App, root: &str) {
     let t = theme::get();
     let h = area.height as usize;
     let width = area.width.saturating_sub(1) as usize;
-    let focused = app.focus == Focus::Main && !app.files_view(root).focus_file;
+    let focused = app.here() && !app.files_view(root).focus_file;
     let now = app.now;
     let Some(s) = app.files_view(root).search.as_mut() else { return };
     let (matches, more) = match &s.results {
@@ -302,7 +302,7 @@ fn highlight_query(s: &str, q: &str) -> Vec<Span<'static>> {
 
 fn file(f: &mut Frame, area: Rect, app: &mut App, root: &str, rel: &str) {
     let t = theme::get();
-    let focused = app.focus == Focus::Main && app.files_view(root).focus_file;
+    let focused = app.here() && app.files_view(root).focus_file;
     let now = app.now;
     let text = match app.file_text(root, rel) {
         Some(Loaded::Ready(text, _)) => text.clone(),

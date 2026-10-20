@@ -1,5 +1,6 @@
 //! Background connection to the daemon. Reconnects forever.
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -101,7 +102,8 @@ pub fn command(socket: &PathBuf, msg: &ClientMsg) -> Option<ServerMsg> {
 }
 
 /// A long-lived connection for pane streams: attach, input, resize.
-/// It reconnects on its own and re-attaches whatever was attached.
+/// It reconnects on its own and re-attaches whatever was attached, at the
+/// size it last had.
 pub struct Stream {
     tx: mpsc::Sender<ClientMsg>,
 }
@@ -122,13 +124,13 @@ impl Stream {
 }
 
 fn stream_loop(socket: PathBuf, rx: mpsc::Receiver<ClientMsg>, incoming: Sender<Incoming>) {
-    let mut attached: Option<String> = None;
-    let mut size: Option<ClientMsg> = None;
+    // Attached panes, with the last resize sent for each.
+    let mut attached: HashMap<String, Option<ClientMsg>> = HashMap::new();
     loop {
         let Ok(stream) = UnixStream::connect(&socket) else {
             // Keep track of what we want while the daemon is away.
             match rx.recv_timeout(Duration::from_millis(300)) {
-                Ok(msg) => track(&msg, &mut attached, &mut size),
+                Ok(msg) => track(&msg, &mut attached),
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
                 Err(_) => {}
             }
@@ -166,16 +168,16 @@ fn stream_loop(socket: PathBuf, rx: mpsc::Receiver<ClientMsg>, incoming: Sender<
             w.write_all(&line).is_ok()
         };
         // Restore what this client had before the connection dropped.
-        if let Some(id) = &attached {
+        for (id, size) in &attached {
             write(&ClientMsg::Attach { pane_id: id.clone() });
-        }
-        if let Some(r) = &size {
-            write(r);
+            if let Some(r) = size {
+                write(r);
+            }
         }
         while alive.load(Ordering::SeqCst) {
             match rx.recv_timeout(Duration::from_millis(200)) {
                 Ok(msg) => {
-                    track(&msg, &mut attached, &mut size);
+                    track(&msg, &mut attached);
                     if !write(&msg) {
                         break;
                     }
@@ -188,11 +190,19 @@ fn stream_loop(socket: PathBuf, rx: mpsc::Receiver<ClientMsg>, incoming: Sender<
     }
 }
 
-fn track(msg: &ClientMsg, attached: &mut Option<String>, size: &mut Option<ClientMsg>) {
+fn track(msg: &ClientMsg, attached: &mut HashMap<String, Option<ClientMsg>>) {
     match msg {
-        ClientMsg::Attach { pane_id } => *attached = Some(pane_id.clone()),
-        ClientMsg::Detach { pane_id } if attached.as_deref() == Some(pane_id.as_str()) => *attached = None,
-        ClientMsg::Resize { .. } => *size = Some(msg.clone()),
+        ClientMsg::Attach { pane_id } => {
+            attached.entry(pane_id.clone()).or_insert(None);
+        }
+        ClientMsg::Detach { pane_id } => {
+            attached.remove(pane_id);
+        }
+        ClientMsg::Resize { pane_id, .. } => {
+            if let Some(size) = attached.get_mut(pane_id) {
+                *size = Some(msg.clone());
+            }
+        }
         _ => {}
     }
 }

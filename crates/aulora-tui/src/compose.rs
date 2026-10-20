@@ -99,6 +99,38 @@ impl Compose {
     }
 }
 
+/// Edit a one-line text field (filter, search, Ctrl-P, help) as a shell
+/// would: Option- or Ctrl-Delete and Ctrl-W delete a word, Ctrl-U the line.
+/// Returns true if the key changed the text.
+pub fn edit_line(s: &mut String, key: &KeyEvent) -> bool {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    match key.code {
+        KeyCode::Backspace if alt || ctrl => delete_word(s),
+        KeyCode::Char('w') if ctrl => delete_word(s),
+        KeyCode::Char('h') if ctrl => s.pop().is_some(),
+        KeyCode::Backspace => s.pop().is_some(),
+        KeyCode::Char('u') if ctrl => {
+            let had = !s.is_empty();
+            s.clear();
+            had
+        }
+        KeyCode::Char(c) if !ctrl && !alt => {
+            s.push(c);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn delete_word(s: &mut String) -> bool {
+    let trimmed = s.trim_end_matches(char::is_whitespace);
+    let start = trimmed.rfind(|c: char| c.is_whitespace() || c == '/').map_or(0, |i| i + 1);
+    let changed = start < s.len();
+    s.truncate(start);
+    changed
+}
+
 pub enum Action {
     Send,
     Close,
@@ -180,6 +212,19 @@ mod tests {
 
     fn k(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn one_line_fields_delete_words() {
+        let mut s = String::from("web/app/billing page");
+        assert!(edit_line(&mut s, &KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT)));
+        assert_eq!(s, "web/app/billing ");
+        assert!(edit_line(&mut s, &KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL)));
+        assert_eq!(s, "web/app/");
+        edit_line(&mut s, &k(KeyCode::Char('x')));
+        assert_eq!(s, "web/app/x");
+        edit_line(&mut s, &KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert!(s.is_empty());
     }
 
     #[test]

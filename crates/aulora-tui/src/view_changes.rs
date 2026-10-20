@@ -7,7 +7,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::app::{App, Focus, Hit, RowRef};
+use crate::app::{App, Hit};
 use crate::changes::{DiffState, FileChange, Node, Row};
 use crate::git::{Kind, LineKind};
 use crate::highlight::{Role, Styled};
@@ -87,7 +87,7 @@ pub fn session_label(app: &App, id: &str) -> String {
     app.session(id).map(|s| s.display_title()).unwrap_or_else(|| format!("session {}", &id[..id.len().min(8)]))
 }
 
-pub fn draw(f: &mut Frame, area: Rect, app: &mut App, root: &str) {
+pub fn draw(f: &mut Frame, area: Rect, app: &mut App, root: &str, filter: Option<String>) {
     let t = theme::get();
     app.refresh_changes(root);
     let (loaded, error) = app.changes.get(root).map(|p| (p.loaded, p.error.clone())).unwrap_or((false, None));
@@ -105,23 +105,22 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App, root: &str) {
     let used = repo_bar(f, area, app, root);
     let mut area = Rect { y: area.y + used, height: area.height.saturating_sub(used), ..area };
 
-    // Whose changes: an agent's own, or everything in the project.
-    let filter = app.changes_filter(root);
-    let agent = !matches!(app.selected, Some(RowRef::Project(_)) | None) && app.selected_session_id().is_some();
-    if agent {
+    // Whose changes: one agent's, or everything in the project.
+    let authors = app.change_authors(root);
+    if !authors.is_empty() || filter.is_some() {
         let line = match &filter {
             Some(sid) => Line::from(vec![
-                sp("  ● ", fg(session_color(sid))),
+                sp(" ● ", fg(session_color(sid))),
                 sp(format!("{}'s changes", session_label(app, sid)), dim()),
-                sp("   a all", faint()),
+                sp("   a next", faint()),
             ]),
-            None => Line::from(vec![sp("  every change in the project", dim()), sp("   a this agent's", faint())]),
+            None => Line::from(vec![sp(" every change", dim()), sp("   a one agent's", faint())]),
         };
         f.render_widget(Paragraph::new(line), Rect { height: 1, ..area });
         area = Rect { y: area.y + 2, height: area.height.saturating_sub(2), ..area };
     }
 
-    let rows = app.change_rows(root);
+    let rows = app.change_rows_for(root, filter.as_deref());
     if rows.is_empty() {
         let (head, sub) = match &filter {
             Some(_) => ("Nothing this agent wrote is uncommitted.", "a shows every change in the project"),
@@ -173,7 +172,7 @@ fn tree(f: &mut Frame, area: Rect, app: &mut App, root: &str, rows: &[Row], sele
     let t = theme::get();
     let width = area.width.saturating_sub(1) as usize;
     let h = area.height as usize;
-    let focused = app.focus == Focus::Main && !app.view_mut(root).focus_diff;
+    let focused = app.here() && !app.view_mut(root).focus_diff;
     let v = app.view_mut(root);
     v.tree_height = h;
     let sel_id = selected.map(|i| rows[i].id.clone());
@@ -334,7 +333,7 @@ fn diff(f: &mut Frame, area: Rect, app: &mut App, root: &str, file: &FileChange)
         f.render_widget(Paragraph::new(Line::from(sp("No content changes (mode or rename only).", faint()))), body);
         return;
     }
-    let focused = app.focus == Focus::Main && app.view_mut(root).focus_diff;
+    let focused = app.here() && app.view_mut(root).focus_diff;
     let total = d.rows();
     let h = body.height as usize;
     let v = app.view_mut(root);

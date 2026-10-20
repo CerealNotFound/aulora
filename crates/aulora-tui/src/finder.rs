@@ -113,22 +113,12 @@ impl App {
             KeyCode::Char('n') | KeyCode::Char('j') if ctrl => {
                 f.selected = (f.selected + 1).min(f.results.len().saturating_sub(1))
             }
-            KeyCode::Backspace => {
-                f.query.pop();
-                f.dirty = true;
-                f.selected = 0;
+            _ => {
+                if crate::compose::edit_line(&mut f.query, &key) {
+                    f.dirty = true;
+                    f.selected = 0;
+                }
             }
-            KeyCode::Char('u') if ctrl => {
-                f.query.clear();
-                f.dirty = true;
-                f.selected = 0;
-            }
-            KeyCode::Char(c) if !ctrl => {
-                f.query.push(c);
-                f.dirty = true;
-                f.selected = 0;
-            }
-            _ => {}
         }
     }
 }

@@ -8,7 +8,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 use aulora_core::model::Ms;
 
-use crate::app::{App, Conn, RowRef};
+use crate::app::{App, Conn};
 use crate::attrib;
 use crate::git::{self, Entry, Group, Kind};
 use crate::highlight::{self, Styled};
@@ -479,8 +479,6 @@ pub struct View {
     pub scroll: usize,
     pub diff_scroll: usize,
     pub focus_diff: bool,
-    /// Show every change, not only the selected agent's.
-    pub all: bool,
     pub tree_height: usize,
     pub diff_height: usize,
     /// The selection the tree last scrolled to; the wheel can move away from it.
@@ -626,23 +624,29 @@ impl App {
         any
     }
 
-    /// The session whose changes the tab shows, when an agent is selected
-    /// and "all" is off.
-    pub fn changes_filter(&self, root: &str) -> Option<String> {
-        if self.changes_view.get(root).is_some_and(|v| v.all) {
-            return None;
-        }
-        match &self.selected {
-            Some(RowRef::Project(_)) | None => None,
-            _ => self.selected_session_id(),
-        }
+    /// The rows of the focused Changes view.
+    pub fn change_rows(&self, root: &str) -> Vec<Row> {
+        self.change_rows_for(root, self.focused_filter().as_deref())
     }
 
-    pub fn change_rows(&self, root: &str) -> Vec<Row> {
+    /// Sessions that wrote something still uncommitted, in order of
+    /// appearance, for `a` to step through.
+    pub fn change_authors(&self, root: &str) -> Vec<String> {
+        let mut v: Vec<String> = Vec::new();
+        for f in self.changes.get(root).map(|p| p.files.as_slice()).unwrap_or(&[]) {
+            for s in &f.sessions {
+                if !v.contains(s) {
+                    v.push(s.clone());
+                }
+            }
+        }
+        v
+    }
+
+    pub fn change_rows_for(&self, root: &str, filter: Option<&str>) -> Vec<Row> {
         let Some(p) = self.changes.get(root) else { return vec![] };
-        let filter = self.changes_filter(root);
         let visible: Vec<usize> =
-            (0..p.files.len()).filter(|&i| filter.as_ref().is_none_or(|s| p.files[i].sessions.contains(s))).collect();
+            (0..p.files.len()).filter(|&i| filter.is_none_or(|s| p.files[i].sessions.iter().any(|x| x == s))).collect();
         let empty = HashSet::new();
         let collapsed = self.changes_view.get(root).map(|v| &v.collapsed).unwrap_or(&empty);
         tree(&p.files, &visible, collapsed)

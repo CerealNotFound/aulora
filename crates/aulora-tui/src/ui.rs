@@ -14,7 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, Conn, Focus, Hit, RowRef, Status, Tab};
+use crate::app::{App, Conn, Focus, Hit, RowRef, Status};
 use crate::keymap::{self, BINDINGS, Scope};
 use crate::theme::{self, bold, dim, faint, fg, label, spinner, text};
 
@@ -181,6 +181,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let t = theme::get();
     let area = f.area();
     app.hits.clear();
+    app.view_sizes.clear();
     f.render_widget(Clear, area);
     fill(f, area, t.bg);
 
@@ -207,12 +208,17 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     menu(f, area, app);
     toast(f, rows[0], app);
+    app.hover_url = if app.menu.is_none() && app.finder.is_none() {
+        crate::links::hover(f.buffer_mut(), app.mouse_pos)
+    } else {
+        None
+    };
 }
 
 fn body(f: &mut Frame, area: Rect, app: &mut App) {
     let t = theme::get();
     let narrow = area.width < 90;
-    let main_only = (app.zoom && app.selected.is_some()) || (narrow && app.focus == Focus::Main);
+    let main_only = narrow && app.focus == Focus::Main;
     if main_only {
         main(f, area, app);
         return;
@@ -493,125 +499,192 @@ fn sidebar(f: &mut Frame, area: Rect, app: &mut App) {
         false,
     );
 
-    // " + claude   + shell" at the bottom (Herdr's " new").
+    // Herdr's "new" and "menu" at the bottom.
     let foot = Rect { y: area.y + area.height.saturating_sub(1), height: 1, ..area };
-    let line = Line::from(vec![sp(" + claude", fg(t.accent)), sp("   ", text()), sp("+ shell", fg(t.accent))]);
+    let line = lr(vec![sp(" new", fg(t.accent))], vec![sp("menu ", fg(t.dim))], width);
     f.render_widget(Paragraph::new(line), foot);
-    app.hits.push((Rect { x: foot.x, width: 9, ..foot }, Hit::NewClaude));
-    app.hits.push((Rect { x: foot.x + 12, width: 7, ..foot }, Hit::NewShell));
+    app.hits.push((Rect { x: foot.x, width: 5, ..foot }, Hit::NewMenu));
+    app.hits.push((Rect { x: foot.right().saturating_sub(6), width: 6, ..foot }, Hit::AppMenu));
 }
 
 // ---------------------------------------------------------------------------
 // Main area
 
 fn main(f: &mut Frame, area: Rect, app: &mut App) {
-    let t = theme::get();
-    let Some(sel) = app.selected.clone() else { return };
     let area = Rect { x: area.x + 1, width: area.width.saturating_sub(1), ..area };
     app.hits.push((area, Hit::Main));
-    let width = area.width as usize;
-    let now = app.now;
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)]).split(area);
+    app.follow_selection();
+    app.ensure_space();
+    let Some(root) = app.space_root() else { return };
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    tab_strip(f, rows[0], app, &root);
+    let Some(tab) = app.tab().cloned() else { return };
+    let placed = crate::layout::place(&tab, rows[1]);
+    app.leaf_rects = placed.leaves.clone();
+    app.split_rects = placed.splits.clone();
+    for (leaf, r) in &placed.leaves {
+        let Some(view) = tab.view(*leaf).cloned() else { continue };
+        let focused = app.focus == Focus::Main && *leaf == tab.focus;
+        draw_leaf(f, *r, app, &root, *leaf, &view, focused, tab.zoom);
+    }
+    // Borders between leaves can be dragged; they sit on top.
+    for (id, _, _, line) in &placed.splits {
+        app.hits.push((*line, Hit::Split(*id)));
+    }
+}
 
-    // Tab bar (Herdr): pills on the panel color, status on the right.
-    fill(f, rows[0], t.panel);
-    let focused = app.focus == Focus::Main;
-    let current = app.current_tab();
-    let mut x = rows[0].x;
+/// A short name for a tab: its first terminal's, else its first view's.
+fn tab_name(app: &App, tab: &crate::layout::Tab) -> String {
+    use crate::layout::View;
+    let leaves = tab.leaves();
+    let pick = leaves.iter().find(|(_, v)| v.is_terminal()).or(leaves.first()).map(|(_, v)| (*v).clone());
+    match pick {
+        Some(View::Pane { id }) => match (app.pane(&id), app.pane_session(&id)) {
+            (_, Some(s)) if s.title.is_some() => fit(&s.display_title(), 22),
+            (Some(p), _) => fit(&p.title.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| p.name.clone()), 22),
+            _ => "terminal".into(),
+        },
+        Some(View::Changes { .. }) => "changes".into(),
+        Some(View::Files) => "files".into(),
+        Some(View::Conversation { session }) => {
+            app.session(&session).map(|s| fit(&s.display_title(), 22)).unwrap_or_default()
+        }
+        _ => "overview".into(),
+    }
+}
+
+/// The project's tabs as pills (Herdr), `+` for a new one, and how the
+/// focused agent is doing on the right.
+fn tab_strip(f: &mut Frame, area: Rect, app: &mut App, root: &str) {
+    let t = theme::get();
+    let now = app.now;
+    fill(f, area, t.panel);
+    let Some(space) = app.layouts.spaces.get(root).cloned() else { return };
+    let mut x = area.x;
     let mut spans = Vec::new();
-    for (i, tab) in app.tabs().iter().enumerate() {
-        let count = match tab {
-            Tab::Changes => app.selected_root().and_then(|r| app.change_count(&r)).filter(|n| *n > 0),
-            _ => None,
-        };
-        let name = match count {
-            Some(n) => format!("  {} {} {n}  ", i + 1, tab.label()),
-            None => format!("  {} {}  ", i + 1, tab.label()),
-        };
-        let style = if *tab == current {
-            let bg = if focused { t.accent } else { t.select };
-            let fg_ = if focused { on_fill() } else { t.text };
-            Style::new().bg(bg).fg(fg_).add_modifier(Modifier::BOLD)
+    for (i, tab) in space.tabs.iter().enumerate() {
+        let active = i == space.active;
+        let name = format!("  {} {}  ", i + 1, tab_name(app, tab));
+        let style = if active {
+            Style::new().bg(t.accent).fg(on_fill()).add_modifier(Modifier::BOLD)
         } else {
-            Style::new().bg(t.select).fg(t.faint)
+            Style::new().bg(t.select).fg(t.dim)
         };
         let wd = w(&name) as u16;
-        app.hits.push((Rect { x, y: rows[0].y, width: wd, height: 1 }, Hit::Tab(*tab)));
+        if x + wd > area.right().saturating_sub(20) {
+            break;
+        }
+        app.hits.push((Rect { x, y: area.y, width: wd, height: 1 }, Hit::SpaceTab(i)));
         x += wd + 1;
         spans.push(sp(name, style));
         spans.push(sp(" ", Style::new().bg(t.panel)));
     }
-    let status = app.status(&sel);
+    spans.push(sp(" + ", bold(t.accent).bg(t.panel)));
+    app.hits.push((Rect { x, y: area.y, width: 3, height: 1 }, Hit::NewTab));
     let mut right = Vec::new();
-    if !sel.is_project() {
+    if let Some(sel) = app.selected.clone().filter(|s| !s.is_project()) {
+        let status = app.status(&sel);
         let glyph = if status == Status::Working { spinner(now) } else { status_glyph(status) };
         right.push(sp(format!("{glyph} {} ", status.word()), bold(status_color(status))));
         if status != Status::Ended {
             right.push(sp(format!("{} ", short_duration(now - app.since(&sel))), faint()));
         }
+    } else {
+        right.push(sp(format!("{} ", tildify(root)), faint()));
     }
-    f.render_widget(Paragraph::new(lr(spans, right, width)).style(Style::new().bg(t.panel)), rows[0]);
+    f.render_widget(Paragraph::new(lr(spans, right, area.width as usize)).style(Style::new().bg(t.panel)), area);
+}
 
-    // Title and meta.
-    let mut meta: Vec<Span<'static>> = vec![sp(app.title(&sel), bold(t.text))];
-    match &sel {
-        RowRef::Pane(id) => {
-            if let Some(p) = app.pane(id) {
-                meta.push(sp(format!("   {}", tildify(&p.cwd)), faint()));
+/// What a leaf's frame says: what it shows and how it's doing.
+fn leaf_title(app: &App, view: &crate::layout::View, focused: bool) -> Vec<Span<'static>> {
+    use crate::layout::View;
+    let t = theme::get();
+    let name_style = if focused { bold(t.text) } else { fg(t.dim) };
+    let mut v = vec![sp(" ", text())];
+    match view {
+        View::Pane { id } => {
+            let row = RowRef::Pane(id.clone());
+            let status = app.status(&row);
+            let glyph = if status == Status::Working { spinner(app.now) } else { status_glyph(status) };
+            v.push(sp(format!("{glyph} "), fg(status_color(status))));
+            v.push(sp(app.title(&row), name_style));
+            if let Some(m) = app.pane_session(id).filter(|s| s.state.is_live()).and_then(|s| s.model.clone()) {
+                v.push(sp(format!(" · {}", short_model(&m)), faint()));
             }
-            if let Some(s) = app.pane_session(id).filter(|s| s.state.is_live()).cloned() {
-                session_meta(&mut meta, &s);
+            if let Some(p) = app.pane(id).filter(|p| p.exit.is_some()) {
+                v.push(sp(format!(" · exited {}", p.exit.as_ref().map(|e| e.code).unwrap_or(0)), fg(t.red)));
             }
         }
-        RowRef::Session(id) => {
-            if let Some(s) = app.session(id).cloned() {
-                meta.push(sp(format!("   {}", basename(&s.project_root)), faint()));
-                session_meta(&mut meta, &s);
-                if let Some(a) = s.terminal.app_name() {
-                    meta.push(sp(format!(" · in {a}"), faint()));
-                }
+        View::Changes { filter } => {
+            v.push(sp("changes", name_style));
+            if let Some(n) = app.space_root().and_then(|r| app.change_count(&r)).filter(|n| *n > 0) {
+                v.push(sp(format!(" {n}"), faint()));
+            }
+            if let Some(sid) = filter {
+                v.push(sp(format!(" · {}", fit(&crate::view_changes::session_label(app, sid), 30)), faint()));
             }
         }
-        RowRef::Project(root) => meta.push(sp(format!("   {}", tildify(root)), faint())),
+        View::Files => v.push(sp("files", name_style)),
+        View::Conversation { session } => {
+            let row = RowRef::Session(session.clone());
+            let status = app.status(&row);
+            v.push(sp(format!("{} ", status_glyph(status)), fg(status_color(status))));
+            v.push(sp(app.title(&row), name_style));
+            if let Some(a) = app.session(session).and_then(|s| s.terminal.app_name()) {
+                v.push(sp(format!(" · in {a}"), faint()));
+            }
+        }
+        View::Overview => v.push(sp("overview", name_style)),
     }
-    f.render_widget(Paragraph::new(lr(meta, vec![], width)), rows[1]);
+    v.push(sp(" ", text()));
+    v
+}
 
-    let content = rows[2];
-    match (current, &sel) {
-        (Tab::Terminal, RowRef::Pane(id)) => pane_view(f, content, app, &id.clone()),
-        (Tab::Conversation, _) => {
-            let mut content = content;
-            if let RowRef::Session(id) = &sel {
-                resume_bar(f, Rect { height: 1, ..content }, app, id);
-                content = Rect { y: content.y + 2, height: content.height.saturating_sub(2), ..content };
-            }
-            if let Some(sid) = app.selected_session_id() {
-                conversation(f, content, app, &sid);
-            }
-        }
-        (Tab::Overview, RowRef::Project(root)) => project_overview(f, content, app, &root.clone()),
-        (Tab::Files, _) => {
-            if let Some(root) = app.selected_root() {
-                crate::view_files::draw(
-                    f,
-                    Rect { y: content.y + 1, height: content.height.saturating_sub(1), ..content },
-                    app,
-                    &root,
-                );
-            }
-        }
-        (Tab::Changes, _) => {
-            if let Some(root) = app.selected_root() {
-                crate::view_changes::draw(
-                    f,
-                    Rect { y: content.y + 1, height: content.height.saturating_sub(1), ..content },
-                    app,
-                    &root,
-                );
-            }
-        }
-        _ => {}
+#[allow(clippy::too_many_arguments)]
+fn draw_leaf(
+    f: &mut Frame,
+    r: Rect,
+    app: &mut App,
+    root: &str,
+    leaf: u64,
+    view: &crate::layout::View,
+    focused: bool,
+    zoomed: bool,
+) {
+    use crate::layout::View;
+    let t = theme::get();
+    let border = if focused { t.accent } else { t.rule };
+    let mut block = Block::bordered()
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_style(fg(border))
+        .title(Line::from(crate::ui::fit_spans(leaf_title(app, view, focused), r.width.saturating_sub(4) as usize)));
+    if zoomed {
+        block = block.title_top(Line::from(sp(" zoomed · z ", faint())).right_aligned());
+    } else if focused
+        && !app.typing
+        && matches!(view, View::Pane { id } if app.pane(id).is_some_and(|p| p.is_running()))
+    {
+        block = block.title_top(Line::from(sp(" ⏎ type ", faint())).right_aligned());
     }
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+    app.hits.push((r, Hit::Leaf(leaf)));
+    app.leaf_focused = focused;
+    match view {
+        View::Pane { id } => pane_view(f, inner, app, id),
+        View::Changes { filter } => crate::view_changes::draw(f, inner, app, root, filter.clone()),
+        View::Files => crate::view_files::draw(f, inner, app, root),
+        View::Conversation { session } => {
+            let mut area = inner;
+            if app.session(session).is_some() {
+                resume_bar(f, Rect { height: 1, ..area }, app, session);
+                area = Rect { y: area.y + 2, height: area.height.saturating_sub(2), ..area };
+            }
+            conversation(f, area, app, session);
+        }
+        View::Overview => project_overview(f, inner, app, root),
+    }
+    app.leaf_focused = false;
 }
 
 /// Above a session that isn't one of our panes: open it as a terminal.
@@ -649,25 +722,10 @@ fn session_dir_name(s: &Session) -> String {
     if s.cwd.is_empty() { s.project_root.clone() } else { s.cwd.clone() }
 }
 
-fn session_meta(meta: &mut Vec<Span<'static>>, s: &Session) {
-    let t = theme::get();
-    if let Some(m) = &s.model {
-        meta.push(sp(format!(" · {}", short_model(m)), fg(t.magenta)));
-    }
-    if let Some(c) = s.context_tokens {
-        meta.push(sp(format!(" · ctx {}", fmt_tokens(c)), faint()));
-    }
-    if let Some(m) = &s.permission_mode
-        && m != "default"
-    {
-        meta.push(sp(format!(" · {m}"), fg(if m == "bypassPermissions" { t.red } else { t.dim })));
-    }
-}
-
 fn pane_view(f: &mut Frame, area: Rect, app: &mut App, id: &str) {
     let t = theme::get();
-    let term_area = Rect { width: area.width.saturating_sub(1), ..area };
-    app.view_size = Some((id.to_string(), term_area.width, term_area.height));
+    let term_area = area;
+    app.view_sizes.push((id.to_string(), term_area.width, term_area.height));
     app.hits.push((area, Hit::Terminal(id.to_string())));
     let Some(term) = app.terms.get(id) else {
         let msg = Line::from(vec![sp(format!(" {} ", spinner(app.now)), fg(t.accent)), sp("attaching…", dim())]);
@@ -676,6 +734,7 @@ fn pane_view(f: &mut Frame, area: Rect, app: &mut App, id: &str) {
     };
     let cursor = crate::term::render(term, term_area, f.buffer_mut());
     if app.typing
+        && app.here()
         && let Some(pos) = cursor
     {
         f.set_cursor_position(pos);
@@ -687,7 +746,8 @@ fn pane_view(f: &mut Frame, area: Rect, app: &mut App, id: &str) {
         let view = term_area.height as usize;
         let total = history + view;
         let top = history - scrolled.min(history);
-        scrollbar(f, Rect { x: area.x + area.width - 1, width: 1, ..area }, top, view, total, app.focus == Focus::Main);
+        // On the frame's right edge.
+        scrollbar(f, Rect { x: area.right(), width: 1, ..area }, top, view, total, app.here());
     }
     let pill = Style::new().fg(t.text).bg(t.panel);
     if scrolled > 0 {
