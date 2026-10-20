@@ -496,6 +496,8 @@ pub struct View {
     pub diff_height: usize,
     /// The selection the tree last scrolled to; the wheel can move away from it.
     pub shown: Option<String>,
+    /// Show diffs side by side (when there's room).
+    pub side_by_side: bool,
 }
 
 pub enum DiffState {

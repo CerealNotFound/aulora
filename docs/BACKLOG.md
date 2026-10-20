@@ -74,7 +74,7 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 | ✅ | Find anything | Ctrl-P: files, `#` projects, `@` agents, `>` actions. |
 | 🟡 | Jump from aulora to a session's VS Code terminal | `o` on a VS Code session, or its menu: `code <project>` raises the window, the extension shows the terminal. Needs the restarted daemon and reloaded VS Code to check live. |
 | ⬜ | aulora's panes inside VS Code | Roadmap step 3; not built. |
-| ⬜ | Side-by-side diffs | Not built. |
+| ✅ | Side-by-side diffs | `s` in Changes: old left, new right, removals beside their additions, words marked (from 100 columns). |
 
 ## Reliability
 

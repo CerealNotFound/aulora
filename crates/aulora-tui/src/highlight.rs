@@ -134,12 +134,6 @@ pub struct Styled {
     pub hunks: Vec<Hunk>,
 }
 
-impl Styled {
-    pub fn rows(&self) -> usize {
-        self.hunks.iter().map(|h| h.lines.len() + 1).sum()
-    }
-}
-
 /// Lines longer than this aren't worth highlighting (minified files).
 const LONG_LINE: usize = 1000;
 /// Past this many lines a diff is shown plain.

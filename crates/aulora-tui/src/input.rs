@@ -399,7 +399,7 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
             }
             _ => {}
         },
-        Action::Discard => {}
+        Action::Discard | Action::SideBySide => {}
         Action::ToggleSidebar => {
             let wide = crate::terminal_size().is_some_and(|(w, _)| w >= 100);
             let now = app.sidebar_compact.unwrap_or(!wide);
@@ -946,6 +946,13 @@ fn changes_action(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> b
             }
         }
         Action::Stage => app.stage_selected(&root),
+        Action::SideBySide => {
+            let v = app.view_mut(&root);
+            v.side_by_side = !v.side_by_side;
+            v.diff_scroll = 0;
+            let on = v.side_by_side;
+            app.toast(if on { "Side by side (needs 100 columns for the diff)" } else { "Unified" });
+        }
         Action::Discard | Action::Edit => {
             let Some(file) = row.as_ref().and_then(|r| app.change_file(&root, r)) else {
                 app.toast("Pick a file first");
@@ -953,8 +960,9 @@ fn changes_action(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> b
             };
             if action == Action::Edit {
                 let at = app.view_mut(&root).diff_scroll;
+                let app_sbs = app.view_mut(&root).side_by_side;
                 let line = match app.diff_for(&root, &file) {
-                    Some(crate::changes::DiffState::Ready(d)) => crate::view_changes::line_at(d, at),
+                    Some(crate::changes::DiffState::Ready(d)) => crate::view_changes::line_at(d, at, app_sbs),
                     _ => None,
                 };
                 edit_in_pane(app, opts, ctx, &root, &file.entry.path, line);
@@ -995,8 +1003,9 @@ fn changes_action(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> b
         Action::PrevHunk | Action::NextHunk => {
             let file = row.as_ref().and_then(|r| app.change_file(&root, r));
             let Some(file) = file else { return true };
+            let sbs = app.changes_view.get(&root).is_some_and(|v| v.side_by_side);
             let Some(crate::changes::DiffState::Ready(d)) = app.diff_for(&root, &file) else { return true };
-            let starts = crate::view_changes::hunk_starts(d);
+            let starts = crate::view_changes::hunk_starts(d, sbs);
             let v = app.view_mut(&root);
             let cur = v.diff_scroll;
             let next = if action == Action::NextHunk {
@@ -1018,8 +1027,9 @@ fn changes_action(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> b
             match file {
                 Some(file) => {
                     let at = app.view_mut(&root).diff_scroll;
+                    let app_sbs = app.view_mut(&root).side_by_side;
                     let line = match app.diff_for(&root, &file) {
-                        Some(crate::changes::DiffState::Ready(d)) => crate::view_changes::line_at(d, at),
+                        Some(crate::changes::DiffState::Ready(d)) => crate::view_changes::line_at(d, at, app_sbs),
                         _ => None,
                     };
                     open_file_in_editor(app, &root, &file.entry.path, line);

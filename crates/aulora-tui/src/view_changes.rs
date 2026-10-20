@@ -334,20 +334,60 @@ fn diff(f: &mut Frame, area: Rect, app: &mut App, root: &str, file: &FileChange)
         return;
     }
     let focused = app.here() && app.view_mut(root).focus_diff;
-    let total = d.rows();
+    // Side by side when asked and there's room for two readable columns.
+    let sbs = app.view_mut(root).side_by_side && body.width >= 100;
+    let total = d.hunks.iter().map(|h| hunk_height(h, sbs) + 1).sum::<usize>();
     let h = body.height as usize;
     let v = app.view_mut(root);
     v.diff_height = h;
     v.diff_scroll = v.diff_scroll.min(total.saturating_sub(h));
     let scroll = v.diff_scroll;
     let label_hunks = file.sessions.len() > 1;
-    let lines = diff_lines(app, &d, scroll, h, (body.width.saturating_sub(1)) as usize, label_hunks);
+    let lines = diff_lines(app, &d, scroll, h, (body.width.saturating_sub(1)) as usize, label_hunks, sbs);
     f.render_widget(Paragraph::new(lines), Rect { width: body.width.saturating_sub(1), ..body });
     scrollbar(f, Rect { x: body.right().saturating_sub(1), width: 1, ..body }, scroll, h, total, focused);
 }
 
 /// Rows `top..top+h` of a diff: a header per hunk, then its lines.
-fn diff_lines(app: &App, d: &Styled, top: usize, h: usize, width: usize, label_hunks: bool) -> Vec<Line<'static>> {
+/// A hunk's lines as rows of (old side, new side): context on both,
+/// a block of removals beside the additions that replaced it.
+fn side_rows(h: &crate::highlight::Hunk) -> Vec<(Option<&crate::highlight::Line>, Option<&crate::highlight::Line>)> {
+    let mut rows = Vec::new();
+    let mut i = 0;
+    let lines = &h.lines;
+    while i < lines.len() {
+        match lines[i].kind {
+            LineKind::Removed | LineKind::Added => {
+                let dels: Vec<_> = lines[i..].iter().take_while(|l| l.kind == LineKind::Removed).collect();
+                let adds: Vec<_> = lines[i + dels.len()..].iter().take_while(|l| l.kind == LineKind::Added).collect();
+                for k in 0..dels.len().max(adds.len()) {
+                    rows.push((dels.get(k).copied(), adds.get(k).copied()));
+                }
+                i += dels.len() + adds.len();
+            }
+            _ => {
+                rows.push((Some(&lines[i]), Some(&lines[i])));
+                i += 1;
+            }
+        }
+    }
+    rows
+}
+
+/// Rows a hunk takes, not counting its header.
+fn hunk_height(h: &crate::highlight::Hunk, sbs: bool) -> usize {
+    if sbs { side_rows(h).len() } else { h.lines.len() }
+}
+
+fn diff_lines(
+    app: &App,
+    d: &Styled,
+    top: usize,
+    h: usize,
+    width: usize,
+    label_hunks: bool,
+    sbs: bool,
+) -> Vec<Line<'static>> {
     let t = theme::get();
     let tn = tints();
     let max_no = d.hunks.iter().flat_map(|x| &x.lines).flat_map(|l| [l.old, l.new]).flatten().max().unwrap_or(1);
@@ -356,9 +396,11 @@ fn diff_lines(app: &App, d: &Styled, top: usize, h: usize, width: usize, label_h
     let two = !d.hunks.iter().flat_map(|x| &x.lines).any(|l| l.kind == LineKind::Marker);
     let mut out = Vec::with_capacity(h);
     let mut row = 0usize;
+    let half = width.saturating_sub(1) / 2;
     for hunk in &d.hunks {
-        if row + hunk.lines.len() < top {
-            row += hunk.lines.len() + 1;
+        let height = hunk_height(hunk, sbs);
+        if row + height < top {
+            row += height + 1;
             continue;
         }
         if row >= top && out.len() < h {
@@ -382,11 +424,43 @@ fn diff_lines(app: &App, d: &Styled, top: usize, h: usize, width: usize, label_h
             ));
         }
         row += 1;
-        for l in &hunk.lines {
-            if row >= top && out.len() < h {
-                out.push(code_line(l, nw, two, width, &tn));
+        if sbs {
+            for (old, new) in side_rows(hunk) {
+                if row >= top && out.len() < h {
+                    // Each side numbers its own version.
+                    let side = |l: Option<&crate::highlight::Line>, keep_old: bool| -> Line<'static> {
+                        match l {
+                            Some(l) => {
+                                let mut l = l.clone();
+                                if keep_old {
+                                    l.new = None;
+                                } else {
+                                    l.old = None;
+                                }
+                                code_line(&l, nw, false, half, &tn)
+                            }
+                            None => Line::from(sp(" ".repeat(half), faint())),
+                        }
+                    };
+                    let (l, r) = (side(old, true), side(new, false));
+                    let mut spans = l.spans;
+                    let used = crate::ui::spans_width(&spans);
+                    if used < half {
+                        spans.push(sp(" ".repeat(half - used), text()));
+                    }
+                    spans.push(sp("│", fg(t.rule)));
+                    spans.extend(r.spans);
+                    out.push(Line::from(spans));
+                }
+                row += 1;
             }
-            row += 1;
+        } else {
+            for l in &hunk.lines {
+                if row >= top && out.len() < h {
+                    out.push(code_line(l, nw, two, width, &tn));
+                }
+                row += 1;
+            }
         }
         if out.len() >= h {
             break;
@@ -435,22 +509,22 @@ fn code_line(l: &crate::highlight::Line, nw: usize, two: bool, width: usize, tn:
 }
 
 /// Row offsets where each hunk starts, for `[` and `]`.
-pub fn hunk_starts(d: &Styled) -> Vec<usize> {
+pub fn hunk_starts(d: &Styled, sbs: bool) -> Vec<usize> {
     let mut v = Vec::with_capacity(d.hunks.len());
     let mut row = 0;
     for h in &d.hunks {
         v.push(row);
-        row += h.lines.len() + 1;
+        row += hunk_height(h, sbs) + 1;
     }
     v
 }
 
 /// The first changed line's number in the hunk at or after `row`, for
 /// opening the editor there.
-pub fn line_at(d: &Styled, row: usize) -> Option<u32> {
+pub fn line_at(d: &Styled, row: usize, sbs: bool) -> Option<u32> {
     let mut r = 0;
     for h in &d.hunks {
-        if r + h.lines.len() + 1 > row {
+        if r + hunk_height(h, sbs) + 1 > row {
             return h
                 .lines
                 .iter()
@@ -458,7 +532,7 @@ pub fn line_at(d: &Styled, row: usize) -> Option<u32> {
                 .and_then(|l| l.new.or(l.old))
                 .or(Some(h.new_start));
         }
-        r += h.lines.len() + 1;
+        r += hunk_height(h, sbs) + 1;
     }
     None
 }
