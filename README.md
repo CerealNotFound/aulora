@@ -46,7 +46,7 @@ All screenshots use `aulora demo`'s sample data.
 
 ## Install
 
-Requires Rust 1.85+ and Claude Code with hooks support.
+Requires Rust 1.95+ and Claude Code with hooks support.
 
 ```sh
 cargo install --git https://github.com/CerealNotFound/aulora aulora
@@ -66,7 +66,7 @@ Sessions show up as soon as they start or you send a prompt. To try the dashboar
 | `aulora hooks install [--dry-run]` | Add the hooks. Leaves your other hooks and settings untouched. |
 | `aulora hooks uninstall` | Remove only aulora's hooks. |
 | `aulora hooks status` | Show whether the hooks are installed. |
-| `aulora daemon start\|stop\|status` | Control the background daemon. `stop` refuses while panes run, unless `--force`. |
+| `aulora daemon start\|stop\|restart\|status` | Control the background daemon. `restart` keeps every pane running; so do updates (the daemon upgrades itself when the program is replaced) and reboots (panes come back, Claude resuming its session). `stop` refuses while panes run, unless `--force`. |
 | `aulora doctor` | Check hooks, daemon, editor and `claude` on PATH. |
 | `aulora new [--claude] [-n NAME] [--cwd DIR] [-a] [-- CMD…]` | Start a pane: a shell, Claude Code, or any command. `-a` attaches right away. |
 | `aulora ls [--json]` | List panes. |
@@ -108,7 +108,7 @@ aulora follows Herdr: a sidebar with each **project** and the **agents** running
 | <kbd>F12</kbd> | Turn mouse capture off so your terminal can select text |
 | <kbd>?</kbd> | All keys: type to filter, <kbd>⏎</kbd> to run one |
 
-In Changes: <kbd>⏎</kbd> reads a file's diff or opens a folder, <kbd>space</kbd> stages or unstages, <kbd>c</kbd> commits, <kbd>P</kbd> pushes, <kbd>p</kbd> pulls (fast-forward only), <kbd>[</kbd> <kbd>]</kbd> jump between hunks, <kbd>a</kbd> switches between the agent's changes and the whole project's, <kbd>o</kbd> opens the editor at the change.
+In Changes: <kbd>⏎</kbd> reads a file's diff or opens a folder, <kbd>space</kbd> stages or unstages, <kbd>X</kbd> discards a file's changes (new files go to the Trash), <kbd>e</kbd> edits it at the change, <kbd>c</kbd> commits, <kbd>P</kbd> pushes, <kbd>p</kbd> pulls (fast-forward only), <kbd>[</kbd> <kbd>]</kbd> jump between hunks, <kbd>a</kbd> switches between the agent's changes and the whole project's, <kbd>o</kbd> opens the editor at the change.
 
 In Files: <kbd>Ctrl</kbd>+<kbd>P</kbd> finds a file (`path:line` works), <kbd>/</kbd> searches contents, <kbd>e</kbd> edits in your terminal editor, <kbd>o</kbd> opens VS Code at the line, <kbd>[</kbd> <kbd>]</kbd> jump between changes.
 
@@ -144,9 +144,9 @@ More detail is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - [x] **1. Status dashboard.** Hooks, daemon and the terminal dashboard.
 - [x] **2. Daemon-owned terminals.** Live panes in the dashboard that survive closing it, and `aulora attach` from any terminal.
 - [ ] **3. VS Code extension.** Done: prompts from aulora typed into sessions running in VS Code terminals. Next: jump to a session's terminal, and aulora's panes inside VS Code.
-- [ ] **4. Restore.** Bring every project's terminals back after a reboot, with `claude --resume`.
+- [x] **4. Restore.** Panes survive daemon restarts and updates, and come back after a reboot, Claude resuming its session.
 - [ ] **5. "Where you left off" cards.** A summary per project when you switch back to it.
-- [ ] **6. Notifications and a global hotkey switcher.**
+- [ ] **6. Notifications and a global hotkey switcher.** Done: a desktop notification when an agent needs you (`"notify": false` in `~/.aulora/config.json` turns it off).
 
 ## Development
 
