@@ -557,19 +557,36 @@ fn sidebar(f: &mut Frame, area: Rect, app: &mut App) {
     };
     let blank = || Item { lines: vec![Line::raw("")], row: None, button: None };
 
-    let mut brand = vec![sp(" ", text())];
-    brand.extend(crate::brand::mark(t));
-    match &app.conn {
-        Conn::Offline(_) => brand.push(sp("  daemon offline", fg(t.red))),
-        Conn::Connecting => brand.push(sp(format!("  {}", spinner(now)), faint())),
-        Conn::Demo => brand.push(sp("  demo", fg(t.magenta))),
-        Conn::Live => {}
-    }
-    items.push(Item {
-        lines: vec![lr(brand, vec![sp(format!("{} ", clock(now)), faint())], width)],
-        row: None,
-        button: None,
-    });
+    let status = match &app.conn {
+        Conn::Offline(_) => sp("daemon offline", fg(t.red)),
+        Conn::Connecting => sp(spinner(now), faint()),
+        Conn::Demo => sp("demo", fg(t.magenta)),
+        Conn::Live => sp("", text()),
+    };
+    let date = chrono::DateTime::from_timestamp_millis(now)
+        .map(|d| d.with_timezone(&chrono::Local).format("%a %-d %b").to_string())
+        .unwrap_or_default();
+    // The wordmark across the top, with the connection, date and clock
+    // under it; just the mark and name if the sidebar is ever too narrow.
+    let lines = match crate::brand::side(t, area.width, t.surface) {
+        Some(art) => {
+            let mut lines = vec![Line::raw("")];
+            lines.extend(art.into_iter().map(|l| Line::from([vec![sp(" ", text())], l.spans].concat())));
+            lines.push(lr(
+                vec![sp(" ", text()), status],
+                vec![sp(format!("{date}  "), faint()), sp(format!("{} ", clock(now)), bold(t.text))],
+                width,
+            ));
+            lines
+        }
+        None => {
+            let mut brand = vec![sp(" ", text())];
+            brand.extend(crate::brand::mark(t));
+            brand.extend([sp("  ", text()), status]);
+            vec![lr(brand, vec![sp(format!("{} ", clock(now)), faint())], width)]
+        }
+    };
+    items.push(Item { lines, row: None, button: None });
     items.push(blank());
 
     if app.filtering || !app.filter.is_empty() {

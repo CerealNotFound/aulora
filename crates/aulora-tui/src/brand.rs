@@ -21,6 +21,36 @@ pub const WORDMARK: [&str; 6] = [
     "╚═╝  ╚═╝ ╚═════╝ ╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝",
 ];
 
+/// The wordmark squeezed to fit the sidebar, in the same style, 6 rows by 41.
+pub const SIDE: [&str; 6] = [
+    " ████╗ ██╗ ██╗██╗    ████╗ █████╗  ████╗ ",
+    "██╔═██╗██║ ██║██║   ██╔═██╗██╔═██╗██╔═██╗",
+    "██████║██║ ██║██║   ██║ ██║█████╔╝██████║",
+    "██╔═██║██║ ██║██║   ██║ ██║██╔═██╗██╔═██║",
+    "██║ ██║╚████╔╝█████╗╚████╔╝██║ ██║██║ ██║",
+    "╚═╝ ╚═╝ ╚═══╝ ╚════╝ ╚═══╝ ╚═╝ ╚═╝╚═╝ ╚═╝",
+];
+
+/// The same for a narrower sidebar: one-column counters, 6 rows by 36.
+pub const SIDE_NARROW: [&str; 6] = [
+    " ███╗ ██╗██╗██╗    ███╗ ████╗  ███╗ ",
+    "██╔██╗██║██║██║   ██╔██╗██╔██╗██╔██╗",
+    "█████║██║██║██║   ██║██║████╔╝█████║",
+    "██╔██║██║██║██║   ██║██║██╔██╗██╔██║",
+    "██║██║╚███╔╝█████╗╚███╔╝██║██║██║██║",
+    "╚═╝╚═╝ ╚══╝ ╚════╝ ╚══╝ ╚═╝╚═╝╚═╝╚═╝",
+];
+
+/// The slimmest, with one-column strokes, 6 rows by 28.
+pub const SIDE_THIN: [&str; 6] = [
+    " ██╗ █╗ █╗█╗  ██╗ ███╗  ██╗ ",
+    "█╔═█╗█║ █║█║ █╔═█╗█╔═█╗█╔═█╗",
+    "████║█║ █║█║ █║ █║███╔╝████║",
+    "█╔═█║█║ █║█║ █║ █║█╔█╔╝█╔═█║",
+    "█║ █║╚██╔╝██╗╚██╔╝█║╚█╗█║ █║",
+    "╚╝ ╚╝ ╚═╝ ╚═╝ ╚═╝ ╚╝ ╚╝╚╝ ╚╝",
+];
+
 /// The same letters in line drawing, 3 rows by 18, for narrow spaces.
 pub const SMALL: [&str; 3] = ["╔═╗╦ ╦╦  ╔═╗╦═╗╔═╗", "╠═╣║ ║║  ║ ║╠╦╝╠═╣", "╩ ╩╚═╝╩═╝╚═╝╩╚═╩ ╩"];
 
@@ -107,6 +137,15 @@ fn art(t: &Theme, rows: &[&str], bg: Color) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// The widest sidebar wordmark that fits `width` with a column to spare
+/// either side, drawn on `bg`; None when even the narrow one doesn't.
+pub fn side(t: &Theme, width: u16, bg: Color) -> Option<Vec<Line<'static>>> {
+    [&SIDE, &SIDE_NARROW, &SIDE_THIN]
+        .into_iter()
+        .find(|rows| rows[0].chars().count() + 2 <= width as usize)
+        .map(|rows| art(t, &rows[..], bg))
+}
+
 /// `◆ aulora`, for the sidebar's header: the mark, then the name in the
 /// gradient.
 pub fn mark(t: &Theme) -> Vec<Span<'static>> {
@@ -125,7 +164,7 @@ mod tests {
 
     #[test]
     fn the_art_is_even_and_one_cell_per_char() {
-        for art in [&WORDMARK[..], &SMALL[..]] {
+        for art in [&WORDMARK[..], &SIDE[..], &SIDE_NARROW[..], &SIDE_THIN[..], &SMALL[..]] {
             let w = art[0].chars().count();
             for row in art {
                 assert_eq!(row.chars().count(), w, "ragged row: {row:?}");
@@ -142,6 +181,17 @@ mod tests {
         assert!(!text.contains('█'));
         assert!(lines[0].spans.iter().any(|s| s.style.bg == Some(t.blue)), "the top row is blue");
         assert!(lines[5].spans.iter().all(|s| s.style.bg != Some(t.blue)));
+    }
+
+    #[test]
+    fn every_sidebar_width_gets_a_block_wordmark_that_fits() {
+        let t = crate::theme::get();
+        for w in 30u16..=44 {
+            let art = side(t, w, t.surface).expect("a wordmark at every sidebar width");
+            let used = art[0].spans.len();
+            assert!(used + 2 <= w as usize, "{used} columns don't fit {w}");
+        }
+        assert_eq!(side(t, 44, t.surface).unwrap()[0].spans.len(), SIDE[0].chars().count());
     }
 
     #[test]
