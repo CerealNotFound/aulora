@@ -1813,7 +1813,15 @@ fn copy_selection(app: &mut App) {
     let Some(s) = app.selection.clone() else { return };
     let text = match s.pane.as_ref().and_then(|p| app.terms.get(p)) {
         Some(t) => s.text_from_screen(t.parser.screen()),
-        None => app.frame.as_ref().map(|b| s.text_from(b)).unwrap_or_default(),
+        None => app
+            .frame
+            .as_ref()
+            .map(|b| {
+                s.text_from(b, |y| {
+                    app.cut_rows.iter().find(|(r, cols, _)| *r == y && cols.contains(&s.region.x)).map(|c| c.2)
+                })
+            })
+            .unwrap_or_default(),
     };
     if text.trim().is_empty() {
         app.selection = None;

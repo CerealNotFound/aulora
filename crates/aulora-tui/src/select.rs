@@ -68,14 +68,18 @@ impl Selection {
     }
 
     /// The selected text, read from the frame: each row trimmed at the
-    /// end, rows joined by line breaks.
-    pub fn text_from(&self, buf: &Buffer) -> String {
+    /// end, rows joined by line breaks. `cut` says where a row's text was
+    /// cut mid-word to go on in the next row (a long URL in a
+    /// conversation); such a word comes back whole.
+    pub fn text_from(&self, buf: &Buffer, cut: impl Fn(u16) -> Option<u16>) -> String {
         let (a, b) = self.ends();
-        let mut lines = Vec::new();
+        let mut text = String::new();
+        let mut joined = false;
         for y in a.1..=b.1 {
             let mut line = String::new();
             let mut skip = 0;
-            for x in self.region.x..self.region.right() {
+            let end = cut(y).filter(|_| y < b.1).unwrap_or(self.region.right());
+            for x in self.region.x..end.min(self.region.right()) {
                 let Some(cell) = buf.cell((x, y)) else { continue };
                 if skip > 0 {
                     skip -= 1;
@@ -87,9 +91,17 @@ impl Selection {
                     line.push_str(sym);
                 }
             }
-            lines.push(line.trim_end().to_string());
+            if joined {
+                text.push_str(line.trim());
+            } else {
+                if y > a.1 {
+                    text.push('\n');
+                }
+                text.push_str(line.trim_end());
+            }
+            joined = end < self.region.right() && y < b.1;
         }
-        lines.join("\n")
+        text
     }
 
     /// The selected text, read from a pane's own screen, so a line that
@@ -150,18 +162,28 @@ mod tests {
         // From "line" on the first row to "third" on the last, backwards.
         let mut s = Selection::new(region, (5, 2), None);
         s.extend((7, 0));
-        assert_eq!(s.text_from(&buf), "line\nsecond line\nthird");
+        assert_eq!(s.text_from(&buf, |_| None), "line\nsecond line\nthird");
         // Dragging past the region keeps to it: no borders in the copy.
         let mut s = Selection::new(region, (7, 0), None);
         s.extend((40, 2));
-        assert_eq!(s.text_from(&buf), "line\nsecond line\nthird");
+        assert_eq!(s.text_from(&buf, |_| None), "line\nsecond line\nthird");
+    }
+
+    #[test]
+    fn a_word_cut_to_fit_comes_back_whole() {
+        let buf = frame(&[" > see https://exa 18:08", "   mple.com/a and", "   more"]);
+        let region = Rect::new(0, 0, 20, 3);
+        let mut s = Selection::new(region, (7, 0), None);
+        s.extend((6, 2));
+        // The first row was cut after column 17, before the time.
+        assert_eq!(s.text_from(&buf, |y| (y == 0).then_some(18)), "https://example.com/a and\n   more");
     }
 
     #[test]
     fn double_click_takes_the_word() {
         let buf = frame(&["see src/ui.rs:120 now"]);
         let s = word_at(&buf, Rect::new(0, 0, 20, 1), (6, 0), None).unwrap();
-        assert_eq!(s.text_from(&buf), "src/ui.rs:120");
+        assert_eq!(s.text_from(&buf, |_| None), "src/ui.rs:120");
         assert!(word_at(&buf, Rect::new(0, 0, 20, 1), (3, 0), None).is_none(), "a space is no word");
     }
 
