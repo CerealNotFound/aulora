@@ -210,6 +210,9 @@ pub struct App {
     pub hooks_installed: bool,
     pub editor: String,
     pub sidebar_scroll: usize,
+    /// The selection the sidebar last scrolled to. It scrolls to the
+    /// selection only when that changes, so the wheel can move it away.
+    pub sidebar_followed: Option<RowRef>,
     pub mouse: bool,
     /// Local screens of attached panes.
     pub terms: HashMap<String, Term>,
@@ -359,6 +362,7 @@ impl App {
             hooks_installed,
             editor,
             sidebar_scroll: 0,
+            sidebar_followed: None,
             mouse: true,
             terms: HashMap::new(),
             attached: HashMap::new(),

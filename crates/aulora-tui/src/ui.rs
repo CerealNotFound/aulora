@@ -657,15 +657,13 @@ fn sidebar(f: &mut Frame, area: Rect, app: &mut App) {
         offsets.push(y);
         y += it.lines.len();
     }
-    if let Some(i) = items.iter().position(|it| it.row.is_some() && it.row == app.selected) {
-        let (start, end) = (offsets[i], offsets[i] + items[i].lines.len());
-        if start < app.sidebar_scroll {
-            app.sidebar_scroll = start.saturating_sub(1);
-        } else if end > app.sidebar_scroll + body_h {
-            app.sidebar_scroll = end - body_h;
-        }
-    }
-    app.sidebar_scroll = app.sidebar_scroll.min(total.saturating_sub(body_h));
+    let selected = items.iter().position(|it| it.row.is_some() && it.row == app.selected);
+    let span = selected.map(|i| (offsets[i], offsets[i] + items[i].lines.len()));
+    // Follow the selection only when it changes (keys, a click, a pane
+    // focused), so scrolling with the wheel isn't undone next frame.
+    let moved = app.sidebar_followed != app.selected;
+    app.sidebar_followed = app.selected.clone();
+    app.sidebar_scroll = sidebar_scroll(app.sidebar_scroll, span.filter(|_| moved), body_h, total);
     let scroll = app.sidebar_scroll;
 
     app.hits.push((area, Hit::Sidebar));
@@ -705,6 +703,18 @@ fn sidebar(f: &mut Frame, area: Rect, app: &mut App) {
     f.render_widget(Paragraph::new(line), foot);
     app.hits.push((Rect { x: foot.x, width: 5, ..foot }, Hit::NewMenu));
     app.hits.push((Rect { x: foot.right().saturating_sub(6), width: 6, ..foot }, Hit::AppMenu));
+}
+
+/// Where the sidebar's list starts: `scroll`, moved just enough to show
+/// `follow` (a selection's first and last line) if given, and never past
+/// the end.
+fn sidebar_scroll(scroll: usize, follow: Option<(usize, usize)>, body_h: usize, total: usize) -> usize {
+    let scroll = match follow {
+        Some((start, _)) if start < scroll => start.saturating_sub(1),
+        Some((_, end)) if end > scroll + body_h => end - body_h,
+        _ => scroll,
+    };
+    scroll.min(total.saturating_sub(body_h))
 }
 
 // ---------------------------------------------------------------------------
@@ -1807,6 +1817,16 @@ mod tests {
         let w = wrap_spans(&styled, &[30, 30]);
         assert_eq!(w.len(), 1);
         assert_eq!(w[0].len(), 2, "styles survive wrapping");
+    }
+
+    #[test]
+    fn the_sidebar_scrolls_freely_and_follows_a_new_selection() {
+        // 10 lines shown of 40.
+        assert_eq!(sidebar_scroll(25, None, 10, 40), 25, "the wheel's scroll stays");
+        assert_eq!(sidebar_scroll(35, None, 10, 40), 30, "but not past the end");
+        assert_eq!(sidebar_scroll(25, Some((2, 4)), 10, 40), 1, "a selection above scrolls up to it");
+        assert_eq!(sidebar_scroll(0, Some((14, 16)), 10, 40), 6, "and one below scrolls down to it");
+        assert_eq!(sidebar_scroll(5, Some((8, 10)), 10, 40), 5, "one in view leaves it alone");
     }
 
     #[test]
