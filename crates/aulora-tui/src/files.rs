@@ -19,7 +19,7 @@ pub struct DirEntry {
 }
 
 /// Never listed, as in VS Code's default `files.exclude`.
-const EXCLUDED: &[&str] = &[".git", ".DS_Store", "Thumbs.db", ".svn", ".hg"];
+pub const EXCLUDED: &[&str] = &[".git", ".DS_Store", "Thumbs.db", ".svn", ".hg"];
 
 /// A folder's children, folders first, by name. What git ignores is
 /// listed too but marked, so it can be shown faded (VS Code's explorer).

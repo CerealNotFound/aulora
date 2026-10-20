@@ -62,10 +62,11 @@ impl Size {
 }
 
 /// The workspace's changes as the panel lists them: one per file, so a
-/// file staged and then edited again is one row with both counted.
+/// file staged and then edited again is one row with both counted, and
+/// without what the tree never lists (.DS_Store), which nothing could open.
 fn per_file(files: &[FileChange]) -> Vec<FileChange> {
     let mut out: Vec<FileChange> = Vec::new();
-    for f in files {
+    for f in files.iter().filter(|f| !crate::files::EXCLUDED.contains(&f.name())) {
         match out.iter_mut().find(|o| o.entry.path == f.entry.path) {
             Some(o) => {
                 o.entry.kind = merge_kind(o.entry.kind, f.entry.kind);
@@ -645,5 +646,15 @@ mod tests {
         assert_eq!(both.sessions, ["a", "b"]);
         assert_eq!(rows[1].entry.kind, Kind::Added, "a new file edited again is still new");
         assert_eq!((rows[1].added, rows[1].removed), (4, 1));
+    }
+
+    #[test]
+    fn what_the_tree_never_lists_is_not_a_change_either() {
+        let files = [
+            change(Group::Changes, Kind::Untracked, "app/.DS_Store", 0, 0, "a"),
+            change(Group::Changes, Kind::Untracked, "app/notes.txt", 2, 0, "a"),
+        ];
+        let rows = per_file(&files);
+        assert_eq!(rows.iter().map(|r| r.entry.path.as_str()).collect::<Vec<_>>(), ["app/notes.txt"]);
     }
 }
