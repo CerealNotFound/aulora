@@ -593,15 +593,63 @@ fn terminal_key(app: &mut App, key: KeyEvent, ctx: &Ctx, input: &mut Input) {
 }
 
 pub fn paste(app: &mut App, text: &str, ctx: &Ctx) {
-    // A paste onto a focused pane or conversation goes into it, without
-    // needing to start typing first (Cmd-V just works).
-    if !app.typing && app.compose.is_none() && app.commit_edit.is_none() && app.focus == Focus::Main {
-        if app.focused_pane().is_some_and(|id| app.pane(&id).is_some_and(|p| p.is_running())) {
+    let line = text.lines().next().unwrap_or("").trim_end();
+    // Overlays with a search box take the paste's first line.
+    if let Some(fi) = app.finder.as_mut() {
+        fi.query.push_str(line);
+        fi.selected = 0;
+        fi.dirty = true;
+        return;
+    }
+    if let Some(h) = app.help.as_mut() {
+        h.query.push_str(line);
+        return;
+    }
+    if app.filtering {
+        app.filter.push_str(line);
+        return;
+    }
+    if app.searching {
+        app.query.push_str(line);
+        return;
+    }
+    // Otherwise a paste goes where you'd type: the focused pane or
+    // conversation, or with the sidebar focused, the selected row's. It
+    // never disappears silently.
+    if !app.typing && app.compose.is_none() && app.commit_edit.is_none() {
+        let main = app.focus == Focus::Main;
+        let pane = match (main, &app.selected) {
+            (true, _) => app.focused_pane(),
+            (false, Some(RowRef::Pane(id))) => Some(id.clone()),
+            _ => None,
+        };
+        let session = match (main, &app.selected) {
+            (true, _) => match app.focused_view() {
+                Some(crate::layout::View::Conversation { session }) => Some(session),
+                _ => None,
+            },
+            (false, Some(RowRef::Session(id))) => Some(id.clone()),
+            _ => None,
+        };
+        if let Some(id) = pane {
+            if !app.pane(&id).is_some_and(|p| p.is_running()) {
+                app.toast("Nothing to paste into: this pane's process has exited (r restarts it)");
+                return;
+            }
+            app.focus = Focus::Main;
             app.typing = true;
-        } else if let Some(crate::layout::View::Conversation { session }) = app.focused_view()
-            && app.can_compose(&session)
-        {
-            app.start_compose(&session);
+        } else if let Some(s) = session {
+            if !app.can_compose(&s) {
+                app.toast(
+                    "Can't paste into this session: it runs in another terminal (for VS Code: aulora vscode install)",
+                );
+                return;
+            }
+            app.focus = Focus::Main;
+            app.start_compose(&s);
+        } else {
+            app.toast("Nothing to paste into: select a pane or a session");
+            return;
         }
     }
     // Cmd-V with only an image on the clipboard pastes nothing: terminals
@@ -625,10 +673,6 @@ pub fn paste(app: &mut App, text: &str, ctx: &Ctx) {
         let Some(id) = app.focused_pane() else { return };
         let bracketed = app.terms.get(&id).is_some_and(|t| t.parser.screen().bracketed_paste());
         ctx.send(ClientMsg::Input { pane_id: id, data: proto::encode(&keys::paste(text, bracketed)) });
-    } else if app.filtering {
-        app.filter.push_str(text.lines().next().unwrap_or(""));
-    } else if app.searching {
-        app.query.push_str(text.lines().next().unwrap_or(""));
     }
 }
 

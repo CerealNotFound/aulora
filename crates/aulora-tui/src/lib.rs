@@ -646,6 +646,27 @@ mod tests {
     }
 
     #[test]
+    fn a_paste_never_disappears() {
+        use crate::app::Focus;
+        frame(None, &|app| {
+            let ctx = Ctx { stream: None, sent_size: HashMap::new() };
+            // From the sidebar, onto the selected pane: it starts typing there.
+            app.select(RowRef::Pane("a41c07".into()));
+            app.focus = Focus::Sidebar;
+            input::paste(app, "echo hi", &ctx);
+            assert!(app.typing && app.focus == Focus::Main, "the paste goes into the selected pane");
+            // Onto a workspace row: says why nothing happened.
+            app.typing = false;
+            app.focus = Focus::Sidebar;
+            let root = app.snap.as_ref().unwrap().projects[0].root.clone();
+            app.select(RowRef::Project(root));
+            app.toast = None;
+            input::paste(app, "x", &ctx);
+            assert!(app.toast.as_ref().is_some_and(|t| t.msg.contains("Nothing to paste into")), "a toast explains");
+        });
+    }
+
+    #[test]
     fn the_menu_lists_actions_for_the_row() {
         let out = frame(Some("a41c07"), &|app| {
             let items = app.menu_for(&RowRef::Pane("a41c07".into()));
