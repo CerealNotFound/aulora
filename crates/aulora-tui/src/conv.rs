@@ -659,12 +659,18 @@ impl Conversation {
 /// Word-wrap to `width` columns, keeping leading indentation and
 /// hard-breaking very long words.
 pub fn wrap(text: &str, width: usize) -> Vec<String> {
+    wrap_cut(text, width).into_iter().map(|(l, _)| l).collect()
+}
+
+/// `wrap`, also saying of each line whether a word too long for one line
+/// was cut at its end, to go on in the next.
+pub fn wrap_cut(text: &str, width: usize) -> Vec<(String, bool)> {
     let width = width.max(8);
     let mut out = Vec::new();
     for para in text.lines() {
         let para = para.replace('\t', "    ");
         if para.trim().is_empty() {
-            out.push(String::new());
+            out.push((String::new(), false));
             continue;
         }
         let indent: String = para.chars().take_while(|c| *c == ' ').collect();
@@ -674,12 +680,12 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
             let lw = UnicodeWidthStr::width(line.as_str());
             let ww = UnicodeWidthStr::width(word);
             if lw > indent.len() && lw + 1 + ww > width {
-                out.push(std::mem::replace(&mut line, indent.clone()));
+                out.push((std::mem::replace(&mut line, indent.clone()), false));
             }
             if ww > width.saturating_sub(indent.len()) {
                 for ch in word.chars() {
                     if UnicodeWidthStr::width(line.as_str()) + 1 > width {
-                        out.push(std::mem::replace(&mut line, indent.clone()));
+                        out.push((std::mem::replace(&mut line, indent.clone()), true));
                     }
                     line.push(ch);
                 }
@@ -690,12 +696,24 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
             }
             line.push_str(word);
         }
-        out.push(line);
+        out.push((line, false));
     }
-    while out.last().is_some_and(|l| l.trim().is_empty()) {
+    while out.last().is_some_and(|(l, _)| l.trim().is_empty()) {
         out.pop();
     }
     out
+}
+
+/// An empty span put right after text that was cut mid-word to fit, so
+/// that a URL cut this way still opens whole (see `links`).
+fn cut_mark() -> Span<'static> {
+    Span::styled("", Style::new().add_modifier(Modifier::HIDDEN))
+}
+
+/// Where a line's text was cut mid-word to fit: its width up to the cut.
+pub fn cut_at(line: &Line) -> Option<u16> {
+    let i = line.spans.iter().position(|s| s.content.is_empty() && s.style.add_modifier.contains(Modifier::HIDDEN))?;
+    Some(line.spans[..i].iter().map(|s| s.width()).sum::<usize>() as u16)
 }
 
 /// **bold** and `code` inside one line of text.
@@ -755,11 +773,16 @@ fn markdown(body: &str, width: usize, first: Span<'static>, rest: &'static str) 
             continue;
         }
         if in_code {
-            for chunk in wrap(raw, inner.saturating_sub(1)) {
+            for (chunk, cut) in wrap_cut(raw, inner.saturating_sub(1)) {
                 let pad = inner.saturating_sub(UnicodeWidthStr::width(chunk.as_str()) + 1);
                 let l = lead(&out);
-                let code = Span::styled(format!(" {chunk}{}", " ".repeat(pad)), Style::new().fg(t.dim).bg(t.raised));
-                out.push(Line::from(vec![l, code]));
+                let style = Style::new().fg(t.dim).bg(t.raised);
+                let mut spans = vec![l, Span::styled(format!(" {chunk}"), style)];
+                if cut {
+                    spans.push(cut_mark());
+                }
+                spans.push(Span::styled(" ".repeat(pad), style));
+                out.push(Line::from(spans));
             }
             continue;
         }
@@ -776,16 +799,19 @@ fn markdown(body: &str, width: usize, first: Span<'static>, rest: &'static str) 
             None => (false, raw),
         };
         let depth = if bullet { (raw.len() - trimmed.len()).min(8) } else { 0 };
-        let chunks = wrap(body, inner.saturating_sub(if bullet { depth + 2 } else { 0 }));
+        let chunks = wrap_cut(body, inner.saturating_sub(if bullet { depth + 2 } else { 0 }));
         if chunks.is_empty() {
             out.push(Line::raw(""));
         }
-        for (i, chunk) in chunks.into_iter().enumerate() {
+        for (i, (chunk, cut)) in chunks.into_iter().enumerate() {
             let mut spans = vec![lead(&out)];
             if bullet {
                 spans.push(Span::raw(format!("{}{}", " ".repeat(depth), if i == 0 { "• " } else { "  " })));
             }
             spans.extend(inline(chunk.trim_start_matches(' '), text()));
+            if cut {
+                spans.push(cut_mark());
+            }
             out.push(Line::from(spans));
         }
     }
@@ -805,11 +831,15 @@ fn gutter(first: bool) -> Span<'static> {
 
 /// Wrapped text under a tool call, at most `max` rows, then a "+n" marker.
 fn push_text(out: &mut Vec<Line<'static>>, s: &str, style: Style, width: usize, max: usize) {
-    let rows: Vec<String> = s.lines().flat_map(|l| wrap(l, width)).collect();
+    let rows: Vec<(String, bool)> = s.lines().flat_map(|l| wrap_cut(l, width)).collect();
     let n = rows.len();
-    for l in rows.into_iter().take(max) {
+    for (l, cut) in rows.into_iter().take(max) {
         let g = gutter(out.is_empty());
-        out.push(Line::from(vec![g, Span::styled(l, style)]));
+        let mut spans = vec![g, Span::styled(l, style)];
+        if cut {
+            spans.push(cut_mark());
+        }
+        out.push(Line::from(spans));
     }
     if n > max {
         out.push(Line::from(vec![gutter(false), Span::styled(format!("… +{} lines (⏎ to expand)", n - max), faint())]));
@@ -991,18 +1021,19 @@ fn render_entry(e: &Entry, i: usize, all: &[Entry], width: usize) -> Vec<Line<'s
             let band = Style::new().bg(t.raised);
             let time = hm(e.at);
             let inner = width.saturating_sub(4 + time.len() + 1).max(8);
-            for (j, l) in wrap(body, inner).into_iter().enumerate() {
+            for (j, (l, cut)) in wrap_cut(body, inner).into_iter().enumerate() {
                 let lead =
                     if j == 0 { Span::styled(" > ", bold(t.dim).bg(t.raised)) } else { Span::styled("   ", band) };
                 let used = 3 + UnicodeWidthStr::width(l.as_str());
                 let right = if j == 0 { format!("{time} ") } else { String::new() };
                 let pad = width.saturating_sub(used + right.len());
-                out.push(Line::from(vec![
-                    lead,
-                    Span::styled(l, Style::new().fg(t.text).bg(t.raised)),
-                    Span::styled(" ".repeat(pad), band),
-                    Span::styled(right, Style::new().fg(t.faint).bg(t.raised)),
-                ]));
+                let mut spans = vec![lead, Span::styled(l, Style::new().fg(t.text).bg(t.raised))];
+                if cut {
+                    spans.push(cut_mark());
+                }
+                spans.push(Span::styled(" ".repeat(pad), band));
+                spans.push(Span::styled(right, Style::new().fg(t.faint).bg(t.raised)));
+                out.push(Line::from(spans));
             }
         }
         Body::Claude(body) => out.extend(markdown(body, width, Span::styled(" ● ", bold(t.text)), "   ")),
@@ -1183,5 +1214,22 @@ mod tests {
         let spans = inline("a **b** `c`", text());
         let texts: Vec<&str> = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(texts, ["a ", "b", " ", "c"]);
+    }
+
+    #[test]
+    fn marks_a_word_cut_to_fit() {
+        let rows = wrap_cut("see https://example.com/abcdef ok", 12);
+        assert_eq!(
+            rows,
+            [
+                ("see".into(), false),
+                ("https://exam".into(), true),
+                ("ple.com/abcd".into(), true),
+                ("ef ok".into(), false)
+            ]
+        );
+        let lines = markdown("see https://example.com/abcdef ok", 15, Span::raw(" ● "), "   ");
+        let cuts: Vec<Option<u16>> = lines.iter().map(cut_at).collect();
+        assert_eq!(cuts, [None, Some(15), Some(15), None]);
     }
 }

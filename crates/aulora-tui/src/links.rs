@@ -69,32 +69,43 @@ pub fn url_at(cells: &[(u16, u16, char)], at: usize) -> Option<(usize, usize, St
 
 /// The cells of some rows of the drawn frame, between two columns, as
 /// (column, row, char), skipping the second half of wide characters.
-fn cells_of(buf: &Buffer, cols: std::ops::Range<u16>, rows: std::ops::RangeInclusive<u16>) -> Vec<(u16, u16, char)> {
+fn cells_of(buf: &Buffer, run: &Run) -> Vec<(u16, u16, char)> {
     let mut out = Vec::new();
-    for y in rows {
+    for (i, (y, cols)) in run.rows.iter().enumerate() {
+        let mut lead = run.indented && i > 0;
         for x in cols.clone() {
-            if let Some(c) = buf.cell((x, y)).and_then(|c| c.symbol().chars().next()) {
-                out.push((x, y, c));
+            if let Some(c) = buf.cell((x, *y)).and_then(|c| c.symbol().chars().next()) {
+                if lead && c == ' ' {
+                    continue;
+                }
+                lead = false;
+                out.push((x, *y, c));
             }
         }
     }
     out
 }
 
-/// Underline the URL under the pointer, if any, and return it. `line` is
-/// where the text under the pointer runs, when it's more than its row:
-/// (columns, rows) of a terminal line that wrapped.
-pub fn hover(
-    buf: &mut Buffer,
-    pos: Option<(u16, u16)>,
-    line: Option<(std::ops::Range<u16>, std::ops::RangeInclusive<u16>)>,
-) -> Option<Link> {
+/// Where the text under the pointer runs when it's more than its row:
+/// each row with its columns, in reading order. In an `indented` run,
+/// rows after the first start at their first character, as a
+/// conversation indents the rest of a word it cut.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Run {
+    pub rows: Vec<(u16, std::ops::Range<u16>)>,
+    pub indented: bool,
+}
+
+/// Underline the URL under the pointer, if any, and return it. `run` is
+/// where the text under the pointer goes on past its row: a terminal
+/// line that wrapped, or a word a conversation cut to fit.
+pub fn hover(buf: &mut Buffer, pos: Option<(u16, u16)>, run: Option<Run>) -> Option<Link> {
     let (col, row) = pos?;
     if row >= buf.area.bottom() {
         return None;
     }
-    let (cols, rows) = line.unwrap_or((buf.area.x..buf.area.right(), row..=row));
-    let cells = cells_of(buf, cols, rows);
+    let run = run.unwrap_or(Run { rows: vec![(row, buf.area.x..buf.area.right())], indented: false });
+    let cells = cells_of(buf, &run);
     let at = cells.iter().position(|&(x, y, _)| x == col && y == row)?;
     let (i, j, url) = url_at(&cells, at)?;
     let mut spans: Vec<(u16, u16, u16)> = Vec::new();
@@ -150,10 +161,23 @@ mod tests {
         // Its row alone: only the first half, so not as a terminal line.
         let link = hover(&mut buf.clone(), Some((10, 0)), None).unwrap();
         assert_eq!(link.url, "https://github.com/abc");
-        let line = Some((1..27, 0..=1));
-        let link = hover(&mut buf, Some((3, 1)), line).unwrap();
+        let run = Run { rows: vec![(0, 1..27), (1, 1..27)], indented: false };
+        let link = hover(&mut buf, Some((3, 1)), Some(run)).unwrap();
         assert_eq!(link.url, "https://github.com/abc/pull/12");
         assert_eq!(link.spans, vec![(0, 5, 27), (1, 1, 9)]);
         assert!(link.covers(26, 0) && link.covers(8, 1) && !link.covers(9, 1));
+    }
+
+    #[test]
+    fn a_url_a_conversation_cut_is_one_link() {
+        use ratatui::layout::Rect;
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 3));
+        buf.set_string(0, 0, " > see https://example.com/ab  18:08", ratatui::style::Style::new());
+        buf.set_string(0, 1, "   cdef/ghi and more", ratatui::style::Style::new());
+        // The first row was cut after column 28, before the time.
+        let run = Run { rows: vec![(0, 0..29), (1, 0..30)], indented: true };
+        let link = hover(&mut buf, Some((5, 1)), Some(run)).unwrap();
+        assert_eq!(link.url, "https://example.com/abcdef/ghi");
+        assert_eq!(link.spans, vec![(0, 7, 29), (1, 3, 11)]);
     }
 }

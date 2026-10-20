@@ -253,6 +253,9 @@ pub struct App {
     /// Where the mouse is, and the link under it in the last frame.
     pub mouse_pos: Option<(u16, u16)>,
     pub hover_url: Option<crate::links::Link>,
+    /// Rows drawn this frame whose text was cut mid-word and goes on in
+    /// the next row: (row, columns of the view, column where it was cut).
+    pub cut_rows: Vec<(u16, std::ops::Range<u16>, u16)>,
     /// While drawing: whether the leaf being drawn has focus.
     pub leaf_focused: bool,
     pub worker: Option<crate::changes::Worker>,
@@ -385,6 +388,7 @@ impl App {
             panel_shown: true,
             main_width: 0,
             hover_url: None,
+            cut_rows: Vec::new(),
             compose: None,
             drafts: HashMap::new(),
             images: Vec::new(),

@@ -260,6 +260,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     app.hits.clear();
     app.view_sizes.clear();
+    app.cut_rows.clear();
     f.render_widget(Clear, area);
     fill(f, area, t.bg);
 
@@ -304,10 +305,24 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 }
 
-/// The rows a terminal's line under the pointer runs over, when it
-/// wrapped, so a long URL in a narrow pane is one link.
-fn wrapped_line(app: &App) -> Option<(std::ops::Range<u16>, std::ops::RangeInclusive<u16>)> {
+/// Where the text under the pointer goes on past its row: the rows of a
+/// terminal line that wrapped, or of a word a conversation cut to fit, so
+/// a long URL is one link.
+fn wrapped_line(app: &App) -> Option<crate::links::Run> {
     let (col, row) = app.mouse_pos?;
+    let cut = |y: u16| app.cut_rows.iter().find(|(r, cols, _)| *r == y && cols.contains(&col));
+    if cut(row).is_some() || row.checked_sub(1).and_then(cut).is_some() {
+        let (mut first, mut last) = (row, row);
+        while first > 0 && cut(first - 1).is_some() {
+            first -= 1;
+        }
+        while cut(last).is_some() {
+            last += 1;
+        }
+        let cols = cut(first).map(|(_, c, _)| c.clone())?;
+        let rows = (first..=last).map(|y| (y, cols.start..cut(y).map_or(cols.end, |(_, _, at)| *at))).collect();
+        return Some(crate::links::Run { rows, indented: true });
+    }
     let (area, id) = app.hits.iter().find_map(|(r, h)| match h {
         Hit::Terminal(id) if col >= r.x && col < r.right() && row >= r.y && row < r.bottom() => Some((*r, id)),
         _ => None,
@@ -327,7 +342,8 @@ fn wrapped_line(app: &App) -> Option<(std::ops::Range<u16>, std::ops::RangeInclu
     while end < last && screen.row_wrapped(end) {
         end += 1;
     }
-    Some((area.x..area.right(), area.y + first..=area.y + end))
+    let rows = (area.y + first..=area.y + end).map(|y| (y, area.x..area.right())).collect();
+    Some(crate::links::Run { rows, indented: false })
 }
 
 fn body(f: &mut Frame, area: Rect, app: &mut App) {
@@ -1358,6 +1374,7 @@ fn conversation(f: &mut Frame, area: Rect, app: &mut App, session_id: &str) {
         return;
     }
     let buf = f.buffer_mut();
+    let mut cut_rows = Vec::new();
     for (i, (_, line)) in conv.visible(top, height).into_iter().enumerate() {
         let y = text_area.y + i as u16;
         if focused && top + i == cursor {
@@ -1365,7 +1382,11 @@ fn conversation(f: &mut Frame, area: Rect, app: &mut App, session_id: &str) {
             buf.set_style(Rect { x: text_area.x, y, width: text_area.width, height: 1 }, bg);
         }
         buf.set_line(text_area.x, y, line, text_area.width);
+        if let Some(w) = crate::conv::cut_at(line) {
+            cut_rows.push((y, text_area.x..text_area.right(), text_area.x + w));
+        }
     }
+    app.cut_rows.extend(cut_rows);
     scrollbar(f, Rect { x: view.x + view.width - 1, width: 1, ..view }, top, height, total, focused);
     let shown = total.saturating_sub(top).min(height) as u16;
     let mut y = (text_area.y + shown + 1).min(full.bottom().saturating_sub(2 + queued_rows));
