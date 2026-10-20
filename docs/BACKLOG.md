@@ -80,8 +80,8 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 | 🟡 | Jump from aulora to a session's VS Code terminal | `o` on a VS Code session, or its menu: `code <workspace>` raises the window, the extension shows the terminal. Needs the restarted daemon and reloaded VS Code to check live. |
 | 🟡 | aulora's panes inside VS Code | Extension 0.2.0: "aulora: Open a pane…" and "aulora: Open this workspace's panes" open daemon panes as VS Code terminals (screen, typing, resizing; closing leaves the pane running). Tested against a real daemon; check in your VS Code after reloading. |
 | ✅ | Side-by-side diffs | `s` in Changes: old left, new right, removals beside their additions, words marked (from 100 columns). |
-| ⬜ | Files and Changes in a panel | Asked 2026-10-20: show them in a panel beside the panes instead of taking over the view. |
-| ⬜ | Changes showed nothing for aulora and adarshji (both git repos) | Reported 2026-10-20: investigating. |
+| 🟡 | Files and Changes in a panel | `d` / `f` open one panel down the right edge of the tab, full height, beside every pane and conversation; it never replaces them. `d` or `f` again closes it; the other key switches it. Layouts saved earlier keep their Changes leaf where it was. |
+| 🟡 | Changes showed nothing for aulora and adarshji (both git repos) | Cause: `d` with an agent selected showed only that agent's edits, so changes made by another agent or by hand were hidden ("Nothing this agent wrote is uncommitted"). Changes now always opens on every change; `a` narrows to one agent. (Both repos are clean right now, so there's nothing to show until something changes.) |
 
 ## Reliability
 

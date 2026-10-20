@@ -157,9 +157,10 @@ impl App {
         self.shown_row = self.selected.clone();
     }
 
-    /// Show a view in a project: focus it if this tab has it, replace the
-    /// focused leaf if that's a view, or open it beside a terminal (views
-    /// never cover terminals).
+    /// Show a view in a project: focus it if this tab has it. Changes and
+    /// Files go in the tab's panel down the right edge, made when needed.
+    /// Anything else replaces the focused leaf if that's a view, or opens
+    /// beside it (views never cover terminals or the panel).
     pub fn open_view(&mut self, root: &str, view: View, focus_main: bool) {
         self.layouts_dirty = true;
         let same_kind = |a: &View, b: &View| std::mem::discriminant(a) == std::mem::discriminant(b);
@@ -170,12 +171,21 @@ impl App {
                 self.layouts.new_tab(root, view);
             }
             Some(tab) => {
+                let alone = tab.leaves().len() == 1 && matches!(tab.focused(), Some(View::Overview));
                 if let Some(leaf) = tab.find(|v| v == &view) {
                     tab.focus = leaf;
+                } else if view.is_panel() && !alone {
+                    match tab.find(View::is_panel) {
+                        Some(leaf) => {
+                            tab.replace(leaf, view);
+                            tab.focus = leaf;
+                        }
+                        None => tab.add_panel(view, leaf_id, split_id),
+                    }
                 } else if let Some(leaf) = tab.find(|v| same_kind(v, &view)) {
                     tab.replace(leaf, view);
                     tab.focus = leaf;
-                } else if tab.focused().is_some_and(|v| !v.is_terminal()) {
+                } else if tab.focused().is_some_and(|v| !v.is_terminal() && (alone || !v.is_panel())) {
                     let f = tab.focus;
                     tab.replace(f, view);
                 } else {
@@ -196,8 +206,25 @@ impl App {
     pub fn set_tab(&mut self, kind: Tab) {
         let Some(root) = self.space_root() else { return };
         let session = self.selected_session_id().filter(|_| !matches!(self.selected, Some(RowRef::Project(_))));
+        // Pressed again on the open panel, d and f close it.
+        let open = |v: &View| match kind {
+            Tab::Changes => matches!(v, View::Changes { .. }),
+            Tab::Files => matches!(v, View::Files),
+            _ => false,
+        };
+        if self.focus == Focus::Main
+            && let Some(tab) = self.layouts.space(&root).tab_mut()
+            && tab.leaves().len() > 1
+            && tab.focused().is_some_and(open)
+        {
+            let f = tab.focus;
+            tab.close(f);
+            self.layouts_dirty = true;
+            return;
+        }
         let view = match kind {
-            Tab::Changes => View::Changes { filter: session },
+            // Every change; `a` narrows it to one agent's.
+            Tab::Changes => View::Changes { filter: None },
             Tab::Files => View::Files,
             Tab::Overview => View::Overview,
             Tab::Conversation => match session {

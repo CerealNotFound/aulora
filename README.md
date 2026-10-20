@@ -109,7 +109,7 @@ aulora follows Herdr: a sidebar with each **workspace** and the **agents** runni
 | <kbd>F12</kbd> | Turn mouse capture off so your terminal can select text |
 | <kbd>?</kbd> | All keys: type to filter, <kbd>⏎</kbd> to run one |
 
-In Changes: <kbd>⏎</kbd> reads a file's diff or opens a folder, <kbd>space</kbd> stages or unstages, <kbd>X</kbd> discards a file's changes (new files go to the Trash), <kbd>e</kbd> edits it at the change, <kbd>c</kbd> commits, <kbd>P</kbd> pushes, <kbd>p</kbd> pulls (fast-forward only), <kbd>[</kbd> <kbd>]</kbd> jump between hunks, <kbd>a</kbd> switches between the agent's changes and the whole workspace's, <kbd>o</kbd> opens the editor at the change.
+In Changes: <kbd>⏎</kbd> reads a file's diff or opens a folder, <kbd>space</kbd> stages or unstages, <kbd>X</kbd> discards a file's changes (new files go to the Trash), <kbd>e</kbd> edits it at the change, <kbd>c</kbd> commits, <kbd>P</kbd> pushes, <kbd>p</kbd> pulls (fast-forward only), <kbd>[</kbd> <kbd>]</kbd> jump between hunks, <kbd>a</kbd> narrows it to one agent's changes, then the next agent's, <kbd>o</kbd> opens the editor at the change.
 
 In Files: <kbd>Ctrl</kbd>+<kbd>P</kbd> finds a file (`path:line` works), <kbd>/</kbd> searches contents, <kbd>e</kbd> edits in your terminal editor, <kbd>o</kbd> opens VS Code at the line, <kbd>[</kbd> <kbd>]</kbd> jump between changes.
 

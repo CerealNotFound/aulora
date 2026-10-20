@@ -29,6 +29,11 @@ impl View {
     pub fn is_terminal(&self) -> bool {
         matches!(self, View::Pane { .. })
     }
+
+    /// Changes and Files open in a panel down the right edge of a tab.
+    pub fn is_panel(&self) -> bool {
+        matches!(self, View::Changes { .. } | View::Files)
+    }
 }
 
 /// Which way a split lays its two sides out.
@@ -135,6 +140,20 @@ impl Tab {
             b: Box::new(Node::Leaf { id: leaf_id, view }),
         };
         self.focus = leaf_id;
+    }
+
+    /// Add a full-height panel down the right edge, and focus it.
+    pub fn add_panel(&mut self, view: View, leaf_id: u64, split_id: u64) {
+        let old = std::mem::replace(&mut self.root, Node::Leaf { id: 0, view: View::Overview });
+        self.root = Node::Split {
+            id: split_id,
+            dir: Dir::Right,
+            ratio: 0.58,
+            a: Box::new(old),
+            b: Box::new(Node::Leaf { id: leaf_id, view }),
+        };
+        self.focus = leaf_id;
+        self.zoom = false;
     }
 
     /// Show something else in a leaf.

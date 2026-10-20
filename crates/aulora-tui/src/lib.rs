@@ -623,6 +623,29 @@ mod tests {
     }
 
     #[test]
+    fn changes_and_files_open_in_a_panel_on_the_right() {
+        use crate::app::{Focus, Tab};
+        use crate::layout::{Layouts, View};
+        frame(None, &|app| {
+            let s = "b5a4c3d2-e1f0-4a9b-8c7d-6e5f4a3b2c1d".to_string();
+            let root = app.session(&s).unwrap().project_root.clone();
+            app.layouts = Layouts::default();
+            app.layouts.new_tab(&root, View::Conversation { session: s.clone() });
+            app.select(RowRef::Session(s.clone()));
+            app.focus = Focus::Main;
+            let views = |app: &mut App| -> Vec<View> {
+                app.layouts.space(&root).tab().unwrap().leaves().into_iter().map(|(_, v)| v.clone()).collect()
+            };
+            app.set_tab(Tab::Changes);
+            assert_eq!(views(app), [View::Conversation { session: s.clone() }, View::Changes { filter: None }]);
+            app.set_tab(Tab::Files);
+            assert_eq!(views(app), [View::Conversation { session: s.clone() }, View::Files], "one panel, switched");
+            app.set_tab(Tab::Files);
+            assert_eq!(views(app), [View::Conversation { session: s.clone() }], "pressed again, it closes");
+        });
+    }
+
+    #[test]
     fn the_menu_lists_actions_for_the_row() {
         let out = frame(Some("a41c07"), &|app| {
             let items = app.menu_for(&RowRef::Pane("a41c07".into()));
