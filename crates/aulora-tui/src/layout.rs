@@ -392,12 +392,19 @@ impl Layouts {
                     .map(|(id, _)| id)
                     .collect();
                 let mut empty = false;
-                for leaf in dead {
+                for leaf in &dead {
                     changed = true;
-                    if !space.tabs[i].close(leaf) {
+                    if !space.tabs[i].close(*leaf) {
                         empty = true;
                         break;
                     }
+                }
+                // A tab whose last pane went away goes with it, rather
+                // than leaving its panel (or overview) to fill the tab.
+                if !dead.is_empty()
+                    && !space.tabs[i].leaves().iter().any(|(_, v)| !v.is_panel() && !matches!(v, View::Overview))
+                {
+                    empty = true;
                 }
                 if empty {
                     space.tabs.remove(i);
@@ -491,5 +498,23 @@ mod tests {
         let json = serde_json::to_string(&l).unwrap();
         let back: Layouts = serde_json::from_str(&json).unwrap();
         assert_eq!(back.find_pane("b").map(|x| x.2), Some(b));
+    }
+
+    #[test]
+    fn a_tab_left_with_only_its_panel_goes_away() {
+        let mut l = Layouts::default();
+        l.new_tab("/p", pane("a"));
+        let (leaf, split) = (l.id(), l.id());
+        l.space("/p").tab_mut().unwrap().add_panel(View::Files, leaf, split);
+        l.new_tab("/p", pane("b"));
+        assert!(l.prune(|id| id == "b"));
+        let space = l.space("/p");
+        assert_eq!(space.tabs.len(), 1, "no tab with only the Files panel in it");
+        assert_eq!(space.active, 0);
+        // A tab that only ever showed the overview isn't touched.
+        let mut l = Layouts::default();
+        l.new_tab("/q", View::Overview);
+        assert!(!l.prune(|_| false));
+        assert_eq!(l.space("/q").tabs.len(), 1);
     }
 }
