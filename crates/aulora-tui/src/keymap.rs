@@ -17,6 +17,8 @@ pub enum Scope {
     Overview,
     /// The main area has focus, showing changes.
     Changes,
+    /// The main area has focus, showing files.
+    Files,
 }
 
 impl Scope {
@@ -28,6 +30,7 @@ impl Scope {
             Scope::Pane => "terminal pane",
             Scope::Overview => "project",
             Scope::Changes => "changes",
+            Scope::Files => "files",
         }
     }
 }
@@ -64,6 +67,8 @@ pub enum Action {
     Resume,
     Menu,
     Stage,
+    Edit,
+    Finder,
     Commit,
     Push,
     Pull,
@@ -215,6 +220,33 @@ pub static BINDINGS: &[Binding] = &[
     b!(Changes, "g", [k('g'), code(KeyCode::Home)], Top, "first file"),
     b!(Changes, "G", [k('G'), code(KeyCode::End)], Bottom, "last file"),
     b!(Changes, "esc", [code(KeyCode::Esc)], Back, "back to the files, then the sidebar", "back"),
+    // Files.
+    b!(
+        Files,
+        "↑↓ j k",
+        [code(KeyCode::Up), code(KeyCode::Down), k('k'), k('j')],
+        Up,
+        "move through files, or scroll the file",
+        "move"
+    ),
+    b!(
+        Files,
+        "⏎ l",
+        [code(KeyCode::Enter), code(KeyCode::Right), k('l')],
+        Open,
+        "open a folder, or read the file",
+        "open"
+    ),
+    b!(Files, "h", [code(KeyCode::Left), k('h')], Left, "back to the tree, close a folder, or up a level"),
+    b!(Files, "/", [k('/')], Search, "search every file's contents", "search"),
+    b!(Files, "e", [k('e')], Edit, "edit in your terminal editor ($EDITOR), at this line", "edit"),
+    b!(Files, "o", [k('o')], OpenEditor, "open in your editor (VS Code) at this line"),
+    b!(Files, "[ ]", [k('['), k(']')], PrevHunk, "previous / next change in the file"),
+    b!(Files, "y", [k('y')], Copy, "copy the file's path"),
+    b!(Files, "PgUp PgDn", [code(KeyCode::PageUp), code(KeyCode::PageDown)], PageUp, "scroll the file a page"),
+    b!(Files, "g", [k('g'), code(KeyCode::Home)], Top, "top"),
+    b!(Files, "G", [k('G'), code(KeyCode::End)], Bottom, "bottom"),
+    b!(Files, "esc", [code(KeyCode::Esc)], Back, "back to the tree, then the sidebar", "back"),
     // Project overview.
     b!(Overview, "esc", [code(KeyCode::Esc), code(KeyCode::Left), k('h')], Back, "back to the sidebar", "back"),
     // Everywhere.
@@ -222,6 +254,7 @@ pub static BINDINGS: &[Binding] = &[
     b!(Global, "⇧⇥", [code(KeyCode::BackTab)], FocusPrev, "switch focus back"),
     b!(Global, "1-4", [k('1'), k('2'), k('3'), k('4')], Tab(0), "switch tabs", "tabs"),
     b!(Global, "{ }", [k('{'), k('}')], PrevTab, "previous / next tab"),
+    b!(Global, "ctrl-p", [ctrl('p')], Finder, "find a file in this project by name (path:line works)", "find file"),
     b!(Global, "n", [k('n')], NextAlert, "jump to the next agent that needs you", "next alert"),
     b!(Global, "z", [k('z')], Zoom, "zoom the main area to the whole screen"),
     b!(Global, "o", [k('o')], OpenEditor, "open the project in your editor"),
@@ -286,8 +319,15 @@ mod tests {
 
     #[test]
     fn no_key_is_bound_twice_in_one_scope() {
-        for scope in [Scope::Global, Scope::Sidebar, Scope::Conversation, Scope::Pane, Scope::Overview, Scope::Changes]
-        {
+        for scope in [
+            Scope::Global,
+            Scope::Sidebar,
+            Scope::Conversation,
+            Scope::Pane,
+            Scope::Overview,
+            Scope::Changes,
+            Scope::Files,
+        ] {
             let mut seen = HashSet::new();
             for b in BINDINGS.iter().filter(|b| b.scope == scope) {
                 for key in b.keys {

@@ -40,13 +40,66 @@ impl FileChange {
 pub type Sessions = Vec<(String, String)>;
 
 pub enum Job {
-    Status { root: String, sessions: Sessions },
-    Diff { root: String, file: FileChange, sessions: Sessions },
-    Stage { root: String, paths: Vec<String>, unstage: bool },
-    Op { root: String, op: git::Op },
+    Status {
+        root: String,
+        sessions: Sessions,
+    },
+    Diff {
+        root: String,
+        file: FileChange,
+        sessions: Sessions,
+    },
+    Stage {
+        root: String,
+        paths: Vec<String>,
+        unstage: bool,
+    },
+    Op {
+        root: String,
+        op: git::Op,
+    },
+    /// List a folder for the Files tab.
+    Dir {
+        root: String,
+        rel: String,
+    },
+    /// Every file, for Ctrl-P.
+    Index {
+        root: String,
+    },
+    /// A file to show; skipped when unchanged since `known`.
+    Read {
+        root: String,
+        rel: String,
+        known: Option<std::time::SystemTime>,
+    },
+    Search {
+        root: String,
+        query: String,
+    },
 }
 
 pub enum Done {
+    Dir {
+        root: String,
+        rel: String,
+        result: Result<Vec<crate::files::DirEntry>, String>,
+    },
+    Index {
+        root: String,
+        files: Arc<Vec<String>>,
+    },
+    Read {
+        root: String,
+        rel: String,
+        /// None when the file hasn't changed.
+        result: Option<Result<crate::files::Text, String>>,
+    },
+    Search {
+        root: String,
+        query: String,
+        result: Result<(Vec<crate::files::Match>, bool), String>,
+    },
     Op {
         root: String,
         op: git::Op,
@@ -112,8 +165,14 @@ fn work(jobs: Receiver<Job>, done: Sender<Done>) {
         let mut keep = vec![true; batch.len()];
         let mut seen_status = HashSet::new();
         let mut seen_diff = false;
+        let mut seen_once = HashSet::new();
         for (i, job) in batch.iter().enumerate().rev() {
             match job {
+                // The newest of each kind wins; folders and indexes once each.
+                Job::Read { .. } => keep[i] = seen_once.insert("read".to_string()),
+                Job::Search { .. } => keep[i] = seen_once.insert("search".to_string()),
+                Job::Dir { root, rel } => keep[i] = seen_once.insert(format!("dir\n{root}\n{rel}")),
+                Job::Index { root } => keep[i] = seen_once.insert(format!("index\n{root}")),
                 Job::Status { root, .. } => keep[i] = seen_status.insert(root.clone()),
                 Job::Diff { .. } => {
                     keep[i] = !seen_diff;
@@ -127,6 +186,24 @@ fn work(jobs: Receiver<Job>, done: Sender<Done>) {
                 Done::Skipped
             } else {
                 match job {
+                    Job::Dir { root, rel } => {
+                        let result = crate::files::list_dir(&root, &rel);
+                        Done::Dir { root, rel, result }
+                    }
+                    Job::Index { root } => {
+                        let files = Arc::new(crate::files::index(&root));
+                        Done::Index { root, files }
+                    }
+                    Job::Read { root, rel, known } => {
+                        let now =
+                            std::fs::metadata(std::path::Path::new(&root).join(&rel)).and_then(|m| m.modified()).ok();
+                        let result = (known.is_none() || now != known).then(|| crate::files::read(&root, &rel));
+                        Done::Read { root, rel, result }
+                    }
+                    Job::Search { root, query } => {
+                        let result = crate::files::search(&root, &query);
+                        Done::Search { root, query, result }
+                    }
                     Job::Op { root, op } => {
                         let result = git::perform(&root, &op);
                         Done::Op { root, op, result }
@@ -539,6 +616,10 @@ impl App {
                         }
                     }
                 }
+                Done::Dir { root, rel, result } => self.on_dir(root, rel, result),
+                Done::Index { root, files } => self.on_index(root, files),
+                Done::Read { root, rel, result } => self.on_read(root, rel, result),
+                Done::Search { root, query, result } => self.on_search(root, query, result),
                 Done::Skipped => {}
             }
         }

@@ -202,6 +202,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         dim_behind(f.buffer_mut());
         confirm(f, area, app);
     }
+    if app.finder.is_some() {
+        crate::view_files::finder(f, area, app);
+    }
     menu(f, area, app);
     toast(f, rows[0], app);
 }
@@ -587,6 +590,16 @@ fn main(f: &mut Frame, area: Rect, app: &mut App) {
             }
         }
         (Tab::Overview, RowRef::Project(root)) => project_overview(f, content, app, &root.clone()),
+        (Tab::Files, _) => {
+            if let Some(root) = app.selected_root() {
+                crate::view_files::draw(
+                    f,
+                    Rect { y: content.y + 1, height: content.height.saturating_sub(1), ..content },
+                    app,
+                    &root,
+                );
+            }
+        }
         (Tab::Changes, _) => {
             if let Some(root) = app.selected_root() {
                 crate::view_changes::draw(
@@ -1165,7 +1178,15 @@ fn button(label: &str, primary: bool, danger: bool) -> Span<'static> {
 /// Help built from the keymap: filter by typing, ⏎ runs the binding (lazygit).
 pub fn help_rows(query: &str) -> Vec<(Scope, &'static str, &'static str, keymap::Action)> {
     let q = query.to_lowercase();
-    let order = [Scope::Sidebar, Scope::Pane, Scope::Changes, Scope::Conversation, Scope::Overview, Scope::Global];
+    let order = [
+        Scope::Sidebar,
+        Scope::Pane,
+        Scope::Changes,
+        Scope::Files,
+        Scope::Conversation,
+        Scope::Overview,
+        Scope::Global,
+    ];
     order
         .iter()
         .flat_map(|s| BINDINGS.iter().filter(move |b| b.scope == *s))

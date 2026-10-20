@@ -88,6 +88,18 @@ pub fn on_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx, input: &m
         menu_key(app, key, opts, ctx);
         return false;
     }
+    if app.finder.is_some() {
+        app.finder_key(key);
+        return false;
+    }
+    if let Some(root) = app.selected_root()
+        && app.current_tab() == Tab::Files
+        && app.focus == Focus::Main
+        && app.files_view(&root).search.as_ref().is_some_and(|s| s.editing)
+    {
+        files_search_key(app, &root, key);
+        return false;
+    }
     if let Some(c) = app.commit_edit.as_mut() {
         match c.key(key) {
             Some(crate::compose::Action::Send) => app.commit(),
@@ -152,6 +164,9 @@ pub fn on_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx, input: &m
 pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool {
     let scope = app.scope();
     if scope == keymap::Scope::Changes && changes_action(app, action) {
+        return false;
+    }
+    if scope == keymap::Scope::Files && files_action(app, action, opts, ctx) {
         return false;
     }
     let h = conv_height(app);
@@ -302,6 +317,8 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
             }
             _ => {}
         },
+        Action::Finder => app.open_finder(),
+        Action::Edit => {}
         Action::Commit
         | Action::Push
         | Action::Pull
@@ -380,6 +397,9 @@ fn open(app: &mut App, opts: &Options, ctx: &Ctx) {
             }
             Tab::Changes => {
                 changes_action(app, Action::Open);
+            }
+            Tab::Files => {
+                files_action(app, Action::Open, opts, ctx);
             }
         },
     }
@@ -655,6 +675,20 @@ pub fn resume(app: &mut App, opts: &Options, ctx: &Ctx, id: &str) {
 }
 
 fn spawn(app: &mut App, opts: &Options, ctx: &Ctx, kind: PaneKind, cwd: String, args: Vec<String>, label: &str) {
+    spawn_named(app, opts, ctx, kind, cwd, args, label, None);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_named(
+    app: &mut App,
+    opts: &Options,
+    ctx: &Ctx,
+    kind: PaneKind,
+    cwd: String,
+    args: Vec<String>,
+    label: &str,
+    name: Option<String>,
+) {
     if app.conn == Conn::Demo {
         app.toast(format!("Would start {label} in {} (demo)", aulora_core::util::basename(&cwd)));
         return;
@@ -665,7 +699,7 @@ fn spawn(app: &mut App, opts: &Options, ctx: &Ctx, kind: PaneKind, cwd: String, 
             .map(|(w, h)| (w.saturating_sub(if w >= 90 { 40 } else { 2 }), h.saturating_sub(4)))
             .unwrap_or((100, 30)),
     };
-    let req = NewPane { cwd, kind, args, name: None, cols: cols.max(20), rows: rows.max(5) };
+    let req = NewPane { cwd, kind, args, name, cols: cols.max(20), rows: rows.max(5) };
     match client::command(&opts.socket, &ClientMsg::NewPane(req)) {
         Some(ServerMsg::PaneCreated { pane_id }) => {
             app.pending_select = Some((pane_id, true));
@@ -890,6 +924,260 @@ fn open_file_in_editor(app: &mut App, root: &str, rel: &str, line: Option<u32>) 
 }
 
 // ---------------------------------------------------------------------------
+// Files
+
+/// Handle an action in the Files tab. Returns false to fall through.
+fn files_action(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool {
+    let Some(root) = app.selected_root() else { return false };
+    let in_results = app.files_view(&root).search.as_ref().is_some_and(|s| s.results.is_some() && !s.editing);
+    let focus_file = app.files_view(&root).focus_file;
+    let rows = if in_results { vec![] } else { app.file_rows(&root) };
+    let sel = app.files_view(&root).selected.clone();
+    let idx = sel.as_ref().and_then(|s| rows.iter().position(|r| &r.rel == s));
+    let row = idx.map(|i| rows[i].clone());
+    let select = |app: &mut App, i: usize| {
+        if let Some(r) = rows.get(i) {
+            let v = app.files_view(&root);
+            if v.selected.as_ref() != Some(&r.rel) {
+                v.selected = Some(r.rel.clone());
+                v.file_scroll = 0;
+                v.mark_line = None;
+            }
+        }
+    };
+    let scroll_file = |app: &mut App, d: isize| {
+        let v = app.files_view(&root);
+        v.file_scroll = (v.file_scroll as isize + d).max(0) as usize;
+    };
+    match action {
+        Action::Up | Action::Down => {
+            let d: isize = if action == Action::Up { -1 } else { 1 };
+            if focus_file {
+                scroll_file(app, d);
+            } else if in_results {
+                let n = match app.files_view(&root).search.as_ref().and_then(|s| s.results.as_ref()) {
+                    Some(Ok((m, _))) => m.len(),
+                    _ => 0,
+                };
+                if let Some(s) = app.files_view(&root).search.as_mut() {
+                    s.selected = (s.selected as isize + d).clamp(0, n.saturating_sub(1) as isize) as usize;
+                }
+            } else if let Some(i) = idx {
+                select(app, (i as isize + d).clamp(0, rows.len() as isize - 1) as usize);
+            } else if !rows.is_empty() {
+                select(app, 0);
+            }
+        }
+        Action::PageUp | Action::PageDown => {
+            let page = app.files_view(&root).file_height.saturating_sub(2).max(1) as isize;
+            scroll_file(app, if action == Action::PageUp { -page } else { page });
+        }
+        Action::Top | Action::Bottom => {
+            let top = action == Action::Top;
+            if focus_file {
+                app.files_view(&root).file_scroll = if top { 0 } else { usize::MAX / 2 };
+            } else if !rows.is_empty() {
+                select(app, if top { 0 } else { rows.len() - 1 });
+            }
+        }
+        Action::Open => {
+            if in_results {
+                open_result(app, &root);
+            } else if let Some(r) = &row {
+                if r.is_dir {
+                    toggle_dir(app, &root, &r.rel);
+                } else {
+                    app.files_view(&root).focus_file = true;
+                }
+            }
+        }
+        Action::Left => {
+            if focus_file {
+                app.files_view(&root).focus_file = false;
+            } else if let Some(r) = &row {
+                if r.is_dir && r.expanded {
+                    toggle_dir(app, &root, &r.rel);
+                } else if r.depth == 0 {
+                    app.focus = Focus::Sidebar;
+                } else if let Some(i) = idx
+                    && let Some(p) = rows[..i].iter().rposition(|p| p.depth < r.depth)
+                {
+                    select(app, p);
+                }
+            }
+        }
+        Action::Back => {
+            let v = app.files_view(&root);
+            if v.focus_file {
+                v.focus_file = false;
+            } else if v.search.is_some() {
+                v.search = None;
+            } else {
+                app.focus = Focus::Sidebar;
+            }
+        }
+        Action::Search => {
+            let v = app.files_view(&root);
+            let query = v.search.as_ref().map(|s| s.searched.clone()).unwrap_or_default();
+            v.focus_file = false;
+            v.search = Some(crate::files::Search {
+                query,
+                editing: true,
+                searched: String::new(),
+                results: None,
+                selected: 0,
+                scroll: 0,
+            });
+        }
+        Action::PrevHunk | Action::NextHunk => {
+            let Some(rel) = sel.filter(|_| row.as_ref().is_none_or(|r| !r.is_dir)) else { return true };
+            let marks: Vec<u32> = match app.file_text(&root, &rel) {
+                Some(crate::files::Loaded::Ready(t, _)) => {
+                    let mut m: Vec<u32> = t.marks.keys().copied().collect();
+                    m.sort_unstable();
+                    // The first line of each run of marks.
+                    m.iter().enumerate().filter(|(i, n)| *i == 0 || m[i - 1] + 1 != **n).map(|(_, n)| *n).collect()
+                }
+                _ => vec![],
+            };
+            let v = app.files_view(&root);
+            let cur = v.mark_line.unwrap_or(v.file_scroll as u32 + v.file_height as u32 / 3);
+            let next = if action == Action::NextHunk {
+                marks.iter().find(|&&n| n > cur).copied()
+            } else {
+                marks.iter().rev().find(|&&n| n < cur).copied()
+            };
+            match next {
+                Some(n) => {
+                    v.mark_line = Some(n);
+                    v.file_scroll = (n as usize).saturating_sub(v.file_height / 3);
+                }
+                None if marks.is_empty() => app.toast("No changes in this file"),
+                None => app.toast(if action == Action::NextHunk { "Last change" } else { "First change" }),
+            }
+        }
+        Action::Edit | Action::OpenEditor | Action::Copy => {
+            let Some(rel) = sel.filter(|_| row.as_ref().is_none_or(|r| !r.is_dir)) else {
+                app.toast("Pick a file first");
+                return true;
+            };
+            let v = app.files_view(&root);
+            let line = v.mark_line.or(Some(v.file_scroll as u32 + 1));
+            match action {
+                Action::Edit => edit_in_pane(app, opts, ctx, &root, &rel, line),
+                Action::OpenEditor => open_file_in_editor(app, &root, &rel, line),
+                _ => {
+                    copy_to_clipboard(&rel);
+                    app.toast(format!("Copied {rel}"));
+                }
+            }
+        }
+        _ => return false,
+    }
+    true
+}
+
+fn toggle_dir(app: &mut App, root: &str, rel: &str) {
+    let v = app.files_view(root);
+    if !v.expanded.remove(rel) {
+        v.expanded.insert(rel.to_string());
+    }
+}
+
+fn click_file(app: &mut App, i: usize, double: bool, opts: &Options, ctx: &Ctx) {
+    let Some(root) = app.selected_root() else { return };
+    let rows = app.file_rows(&root);
+    let Some(r) = rows.get(i) else { return };
+    let v = app.files_view(&root);
+    if v.selected.as_ref() != Some(&r.rel) {
+        v.selected = Some(r.rel.clone());
+        v.file_scroll = 0;
+        v.mark_line = None;
+    }
+    v.focus_file = false;
+    if r.is_dir {
+        toggle_dir(app, &root, &r.rel);
+    } else if double {
+        edit_in_pane(app, opts, ctx, &root, &r.rel, Some(1));
+    }
+}
+
+fn open_result(app: &mut App, root: &str) {
+    let pick = app.files_view(root).search.as_ref().and_then(|s| match &s.results {
+        Some(Ok((m, _))) => m.get(s.selected).cloned(),
+        _ => None,
+    });
+    if let Some(m) = pick {
+        // The results stay on the left; the file opens beside them.
+        app.reveal_file(root, &m.path, Some(m.line));
+    }
+}
+
+fn files_search_key(app: &mut App, root: &str, key: KeyEvent) {
+    let Some(s) = app.files_view(root).search.as_mut() else { return };
+    match key.code {
+        KeyCode::Esc => {
+            if s.results.is_some() {
+                s.editing = false;
+            } else {
+                app.files_view(root).search = None;
+            }
+        }
+        KeyCode::Enter => {
+            let q = s.query.clone();
+            if q.trim().is_empty() {
+                return;
+            }
+            s.editing = false;
+            app.start_search(root, q);
+        }
+        KeyCode::Backspace => {
+            s.query.pop();
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => s.query.clear(),
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => s.query.push(c),
+        _ => {}
+    }
+}
+
+/// The user's terminal editor: $VISUAL, $EDITOR, else the first of nvim,
+/// vim and nano that exists, else vi.
+fn terminal_editor() -> String {
+    for var in ["VISUAL", "EDITOR"] {
+        if let Ok(v) = std::env::var(var)
+            && !v.trim().is_empty()
+        {
+            return v;
+        }
+    }
+    for e in ["nvim", "vim", "nano"] {
+        if crate::which(e) {
+            return e.into();
+        }
+    }
+    "vi".into()
+}
+
+/// Edit a file in a new pane with the user's terminal editor, at a line.
+/// aulora has no editor of its own; yours is better.
+fn edit_in_pane(app: &mut App, opts: &Options, ctx: &Ctx, root: &str, rel: &str, line: Option<u32>) {
+    let editor = terminal_editor();
+    let exe = editor.split_whitespace().next().unwrap_or(&editor).rsplit('/').next().unwrap_or("").to_string();
+    if matches!(exe.as_str(), "code" | "cursor" | "zed" | "subl" | "windsurf") {
+        // A GUI editor in $EDITOR: open the file there instead.
+        open_file_in_editor(app, root, rel, line);
+        return;
+    }
+    let mut args: Vec<String> = editor.split_whitespace().map(String::from).collect();
+    if let Some(l) = line {
+        args.push(format!("+{l}"));
+    }
+    args.push(rel.to_string());
+    let name = rel.rsplit('/').next().unwrap_or(rel).to_string();
+    spawn_named(app, opts, ctx, PaneKind::Command, root.to_string(), args, &format!("{exe} {name}"), Some(name));
+}
+
+// ---------------------------------------------------------------------------
 // Menu
 
 fn open_menu(app: &mut App, x: u16, y: u16, items: Vec<MenuItem>) {
@@ -995,6 +1283,11 @@ pub fn on_hover(app: &mut App, ev: MouseEvent) -> bool {
 pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input: &mut Input) {
     let Some((rect, hit)) = app.hit(ev.column, ev.row) else { return };
     let (col, row) = (ev.column, ev.row);
+    // Ctrl-P is open: a click outside it closes it.
+    if app.finder.is_some() && matches!(ev.kind, MouseEventKind::Down(_)) && !matches!(hit, Hit::FinderItem(_)) {
+        app.finder = None;
+        return;
+    }
     // An open menu takes the next click: on an item runs it, anywhere else closes it.
     if app.menu.is_some() && !matches!(ev.kind, MouseEventKind::Up(_) | MouseEventKind::Moved) {
         let item = match (&hit, ev.kind) {
@@ -1047,6 +1340,22 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                     }
                 }
                 Hit::Terminal(id) => wheel_pane(app, &id, lines, col - rect.x, row - rect.y, ctx),
+                Hit::FileTree | Hit::FileRow(_) | Hit::FileResult(_) => {
+                    if let Some(root) = app.selected_root() {
+                        let v = app.files_view(&root);
+                        if let Some(s) = v.search.as_mut().filter(|s| s.results.is_some() && !s.editing) {
+                            s.scroll = (s.scroll as isize + lines).max(0) as usize;
+                        } else {
+                            v.scroll = (v.scroll as isize + lines).max(0) as usize;
+                        }
+                    }
+                }
+                Hit::FileView => {
+                    if let Some(root) = app.selected_root() {
+                        let v = app.files_view(&root);
+                        v.file_scroll = (v.file_scroll as isize + lines).max(0) as usize;
+                    }
+                }
                 Hit::ChangeTree | Hit::ChangeRow(_) => {
                     if let Some(root) = app.selected_root() {
                         let v = app.view_mut(&root);
@@ -1089,6 +1398,39 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                     open_menu(app, col.saturating_sub(16), row + 1, items);
                 }
                 Hit::Resume(id) => resume(app, opts, ctx, &id),
+                Hit::FinderItem(i) => {
+                    if let Some(f) = app.finder.as_mut() {
+                        f.selected = i;
+                    }
+                    app.finder_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                }
+                Hit::FileRow(i) => {
+                    app.focus = Focus::Main;
+                    app.typing = false;
+                    click_file(app, i, double, opts, ctx);
+                }
+                Hit::FileResult(i) => {
+                    app.focus = Focus::Main;
+                    if let Some(root) = app.selected_root() {
+                        if let Some(s) = app.files_view(&root).search.as_mut() {
+                            s.selected = i;
+                        }
+                        open_result(app, &root);
+                    }
+                }
+                Hit::FileTree => {
+                    app.focus = Focus::Main;
+                    if let Some(root) = app.selected_root() {
+                        app.files_view(&root).focus_file = false;
+                    }
+                }
+                Hit::FileView => {
+                    app.focus = Focus::Main;
+                    app.typing = false;
+                    if let Some(root) = app.selected_root() {
+                        app.files_view(&root).focus_file = true;
+                    }
+                }
                 Hit::Action(a) => {
                     app.focus = Focus::Main;
                     app.typing = false;

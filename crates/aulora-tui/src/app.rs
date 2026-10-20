@@ -33,6 +33,7 @@ pub enum Tab {
     Conversation,
     Overview,
     Changes,
+    Files,
 }
 
 impl Tab {
@@ -42,6 +43,7 @@ impl Tab {
             Tab::Conversation => "Conversation",
             Tab::Overview => "Overview",
             Tab::Changes => "Changes",
+            Tab::Files => "Files",
         }
     }
 }
@@ -89,6 +91,11 @@ pub enum Hit {
     /// The + on a project row.
     Add(String),
     MenuItem(usize),
+    FileTree,
+    FileRow(usize),
+    FileResult(usize),
+    FileView,
+    FinderItem(usize),
     /// A row of the Changes tree, by index.
     ChangeRow(usize),
     ChangeTree,
@@ -217,6 +224,12 @@ pub struct App {
     pub sent_rx: std::sync::mpsc::Receiver<crate::compose::Sent>,
     pub changes: HashMap<String, crate::changes::Project>,
     pub changes_view: HashMap<String, crate::changes::View>,
+    pub files: HashMap<String, crate::files::Tree>,
+    pub files_view: HashMap<String, crate::files::View>,
+    /// `--select` and `--tab`, applied when the first snapshot arrives.
+    pub preselect: Option<(Option<String>, Option<String>)>,
+    /// Ctrl-P.
+    pub finder: Option<crate::finder::Finder>,
     /// Styled diffs by root and file, with the change they were made from.
     pub diffs: HashMap<String, (u64, crate::changes::DiffState)>,
     pub conversations: HashMap<String, (Conversation, Ms)>,
@@ -283,6 +296,10 @@ impl App {
             worker: None,
             changes: HashMap::new(),
             changes_view: HashMap::new(),
+            files: HashMap::new(),
+            files_view: HashMap::new(),
+            finder: None,
+            preselect: None,
             diffs: HashMap::new(),
             conversations: HashMap::new(),
             theme_picker: None,
@@ -652,6 +669,9 @@ impl App {
         if self.root_of(sel).and_then(|r| self.project(&r)).is_some_and(|p| p.git.is_some()) {
             tabs.push(Tab::Changes);
         }
+        if self.root_of(sel).is_some() {
+            tabs.push(Tab::Files);
+        }
         tabs
     }
 
@@ -690,6 +710,7 @@ impl App {
                 Tab::Conversation => Scope::Conversation,
                 Tab::Overview => Scope::Overview,
                 Tab::Changes => Scope::Changes,
+                Tab::Files => Scope::Files,
             },
         }
     }

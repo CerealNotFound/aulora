@@ -32,6 +32,10 @@ pub fn session_color(id: &str) -> Color {
     palette[h as usize % palette.len()]
 }
 
+pub fn role_style(r: Role) -> Style {
+    fg(role_color(r))
+}
+
 fn role_color(r: Role) -> Color {
     let t = theme::get();
     match r {

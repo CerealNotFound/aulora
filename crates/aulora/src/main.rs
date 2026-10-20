@@ -41,7 +41,7 @@ enum Cmd {
         /// Theme to use (press t in the dashboard to browse them).
         #[arg(long)]
         theme: Option<String>,
-        /// Tab to start on: terminal, conversation, overview or changes.
+        /// Tab to start on: terminal, conversation, overview, changes or files.
         #[arg(long)]
         tab: Option<String>,
         /// With --snapshot: print cells with colors as JSON lines.

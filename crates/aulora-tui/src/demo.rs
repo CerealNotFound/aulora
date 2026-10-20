@@ -921,3 +921,130 @@ pub fn diff(f: &crate::changes::FileChange) -> crate::highlight::Styled {
     let first = f.sessions.first().cloned();
     crate::highlight::style(&d, |_| first.clone())
 }
+
+// ---------------------------------------------------------------------------
+// Files for the demo's projects: the changed files above plus a few more,
+// so the Files tab and Ctrl-P have something to show.
+
+const DEMO_FILES: &[(&str, &str)] = &[
+    ("multibrain", "package.json"),
+    ("multibrain", "api/main.py"),
+    ("multibrain", "api/billing/__init__.py"),
+    ("multibrain", "api/billing/models.py"),
+    ("multibrain", "web/app/layout.tsx"),
+    ("multibrain", "web/app/page.tsx"),
+    ("multibrain", "web/lib/api.ts"),
+    ("multibrain", "web/components/chat/column.tsx"),
+    ("adarshji", "package.json"),
+    ("adarshji", "components/hero.tsx"),
+    ("aulora", "Cargo.toml"),
+    ("aulora", "crates/aulora-daemon/src/lib.rs"),
+];
+
+fn demo_paths(root_path: &str) -> Vec<String> {
+    let project = root_path.rsplit('/').next().unwrap_or("");
+    let mut v: Vec<String> = DEMO_CHANGES
+        .iter()
+        .filter(|c| c.0 == project && c.2 != Kind::Deleted)
+        .map(|c| c.3.to_string())
+        .chain(DEMO_FILES.iter().filter(|f| f.0 == project).map(|f| f.1.to_string()))
+        .collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
+pub fn index(root_path: &str) -> Vec<String> {
+    demo_paths(root_path)
+}
+
+pub fn dirs(root_path: &str) -> Vec<(String, Vec<crate::files::DirEntry>)> {
+    use std::collections::BTreeMap;
+    let mut dirs: BTreeMap<String, Vec<crate::files::DirEntry>> = BTreeMap::new();
+    dirs.entry(String::new()).or_default();
+    for p in demo_paths(root_path) {
+        let parts: Vec<&str> = p.split('/').collect();
+        let mut dir = String::new();
+        for (i, part) in parts.iter().enumerate() {
+            let is_dir = i + 1 < parts.len();
+            let list = dirs.entry(dir.clone()).or_default();
+            if !list.iter().any(|e| e.name == *part) {
+                list.push(crate::files::DirEntry { name: part.to_string(), is_dir });
+            }
+            dir = if dir.is_empty() { part.to_string() } else { format!("{dir}/{part}") };
+            if is_dir {
+                dirs.entry(dir.clone()).or_default();
+            }
+        }
+    }
+    dirs.into_iter()
+        .map(|(d, mut v)| {
+            v.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+            (d, v)
+        })
+        .collect()
+}
+
+/// A demo file's text: the new side of its demo diff, marked, or a stub.
+pub fn file_text(root_path: &str, rel: &str) -> crate::files::Text {
+    let project = root_path.rsplit('/').next().unwrap_or("");
+    let change = DEMO_CHANGES.iter().find(|c| c.0 == project && c.3 == rel);
+    let (content, marks) = match change {
+        Some((_, _, kind, path, _, body)) if !body.is_empty() => {
+            let d = demo_diff(path, *kind, body);
+            let mut lines = Vec::new();
+            let mut marks = std::collections::HashMap::new();
+            for l in d.hunks.iter().flat_map(|h| &h.lines) {
+                if l.kind == crate::git::LineKind::Removed {
+                    continue;
+                }
+                lines.push(l.text.clone());
+                if l.kind == crate::git::LineKind::Added {
+                    marks.insert(lines.len() as u32, crate::files::Mark::Added);
+                }
+            }
+            (lines.join("\n"), marks)
+        }
+        _ => (format!("// {rel}\n// (demo file)\n"), Default::default()),
+    };
+    let lines: Vec<crate::git::DiffLine> = content
+        .lines()
+        .enumerate()
+        .map(|(i, l)| crate::git::DiffLine {
+            kind: crate::git::LineKind::Context,
+            old: None,
+            new: Some(i as u32 + 1),
+            text: l.into(),
+        })
+        .collect();
+    let n = lines.len();
+    let diff = crate::git::FileDiff {
+        path: rel.into(),
+        hunks: vec![crate::git::Hunk { old_start: 0, new_start: 1, context: String::new(), lines }],
+        binary: false,
+    };
+    crate::files::Text {
+        styled: Some(std::sync::Arc::new(crate::highlight::style(&diff, |_| None))),
+        binary: false,
+        lines: n,
+        marks,
+        modified: None,
+        truncated: false,
+    }
+}
+
+pub fn search(root_path: &str, query: &str) -> Vec<crate::files::Match> {
+    let q = query.to_lowercase();
+    let mut out = Vec::new();
+    for p in demo_paths(root_path) {
+        let t = file_text(root_path, &p);
+        let Some(s) = t.styled else { continue };
+        for l in s.hunks.iter().flat_map(|h| &h.lines) {
+            let text: String = l.segs.iter().map(|g| g.text.as_str()).collect();
+            if text.to_lowercase().contains(&q) {
+                out.push(crate::files::Match { path: p.clone(), line: l.new.unwrap_or(0), text });
+            }
+        }
+    }
+    out
+}

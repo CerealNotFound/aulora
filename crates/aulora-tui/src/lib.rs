@@ -8,6 +8,8 @@ mod client;
 mod compose;
 mod conv;
 mod demo;
+mod files;
+mod finder;
 mod git;
 mod highlight;
 mod input;
@@ -17,6 +19,7 @@ mod term;
 mod theme;
 mod ui;
 mod view_changes;
+mod view_files;
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -74,6 +77,7 @@ fn parse_tab(name: &str) -> Option<Tab> {
         "conversation" | "conv" | "chat" => Some(Tab::Conversation),
         "overview" => Some(Tab::Overview),
         "changes" | "git" | "diff" => Some(Tab::Changes),
+        "files" | "file" => Some(Tab::Files),
         _ => None,
     }
 }
@@ -98,6 +102,11 @@ fn preselect(app: &mut App, select: Option<&str>, tab: Option<&str>) {
         app.set_tab(tab);
         app.focus = Focus::Main;
     }
+}
+
+/// Whether a program is on PATH.
+pub(crate) fn which(name: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(name).is_file()))
 }
 
 fn config_path() -> PathBuf {
@@ -176,7 +185,12 @@ pub fn run(mut opts: Options) -> Result<()> {
     if let Some(id) = opts.select.clone() {
         app.pending_select = Some((id, false));
     }
-    preselect(&mut app, opts.select.as_deref(), opts.tab.as_deref());
+    // Live data arrives later; select once the first snapshot is in.
+    if opts.demo {
+        preselect(&mut app, opts.select.as_deref(), opts.tab.as_deref());
+    } else {
+        app.preselect = Some((opts.select.clone(), opts.tab.clone()));
+    }
 
     let mut term = ratatui::init();
     choose_theme(opts.theme.as_deref(), true);
@@ -310,6 +324,9 @@ fn on_incoming(app: &mut App, msg: Incoming) {
             let before = blocked_ids(app);
             app.conn = Conn::Live;
             app.set_snapshot(*s);
+            if let Some((select, tab)) = app.preselect.take() {
+                preselect(app, select.as_deref(), tab.as_deref());
+            }
             // Tell the user when something starts needing them, unless
             // they're looking at it already (Herdr's attention toasts).
             if !first {
