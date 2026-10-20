@@ -237,6 +237,10 @@ impl Hub {
         self.sessions.values().filter(|s| s.state.is_live()).filter_map(|s| Some((s.id.clone(), s.pid?))).collect()
     }
 
+    pub fn session(&self, id: &str) -> Option<Session> {
+        self.sessions.get(id).cloned()
+    }
+
     pub fn session_state(&self, id: &str) -> Option<aulora_core::model::SessionState> {
         self.sessions.get(id).map(|s| s.state.clone())
     }

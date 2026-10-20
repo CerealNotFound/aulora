@@ -5,6 +5,7 @@ pub mod discover;
 pub mod editors;
 pub mod git;
 pub mod hub;
+pub mod notify;
 pub mod procs;
 pub mod pty;
 pub mod store;
@@ -18,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use aulora_core::model::{Pane, PaneKind, Snapshot, now_ms};
+use aulora_core::model::{Pane, PaneKind, SessionState, Snapshot, now_ms};
 use aulora_core::paths;
 use aulora_core::proto::{self, ClientMsg, HookEnvelope, NewPane, PROTOCOL_VERSION, ServerMsg};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -43,6 +44,7 @@ struct Shared {
     reach_kick: Notify,
     /// The single-instance lock, kept open across an upgrade.
     lock: Mutex<Option<std::fs::File>>,
+    notifier: notify::Notifier,
 }
 
 /// What a daemon hands the one replacing it: every pane, with its
@@ -148,7 +150,20 @@ impl Shared {
             .or_else(|| env.payload.get("cwd").and_then(|v| v.as_str()).map(str::to_string));
         let Some(dir) = dir else { return };
         let root = self.root_for(&dir).await;
+        let id = env.payload.get("session_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let was_blocked = matches!(self.hub.lock().unwrap().session_state(&id), Some(SessionState::NeedsYou { .. }));
         let new_project = self.hub.lock().unwrap().ingest(&env, &root);
+        // Tell the desktop when it starts needing you.
+        if !was_blocked {
+            let now = self.hub.lock().unwrap().session(&id);
+            if let Some(s) = now
+                && let SessionState::NeedsYou { reason, detail } = &s.state
+            {
+                let project = aulora_core::util::basename(&s.project_root);
+                let title = format!("{project} › {}", s.display_title());
+                self.notifier.needs_you(&id, &title, &format!("{}: {detail}", reason.label()));
+            }
+        }
         if new_project {
             self.git_kick.notify_one();
         }
@@ -528,6 +543,7 @@ pub async fn run(handover: bool) -> Result<()> {
         editors: editors::Editors::default(),
         reach_kick: Notify::new(),
         lock: Mutex::new(Some(lock)),
+        notifier: notify::Notifier::default(),
     });
     let fresh_start = handed.is_none();
     if let Some(h) = handed {
