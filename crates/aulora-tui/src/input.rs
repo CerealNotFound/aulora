@@ -833,8 +833,10 @@ fn run_confirmed(app: &mut App, opts: &Options, ctx: &Ctx) {
         ConfirmAction::Discard(root, entry) => app.discard(&root, entry),
         ConfirmAction::CommitAll(root, message) => app.start_op(&root, crate::git::Op::Commit { message, all: true }),
         ConfirmAction::Fork(id) => {
-            let Some(cwd) = app.session(&id).map(session_dir) else { return };
-            let args = vec!["--resume".into(), id, "--fork-session".into()];
+            let Some(s) = app.session(&id).cloned() else { return };
+            let cwd = session_dir(&s);
+            let mut args = vec!["--resume".into(), id, "--fork-session".into()];
+            args.extend(permission_args(&s));
             spawn(app, opts, ctx, PaneKind::Claude, cwd, args, "a fork of the session");
         }
     }
@@ -964,8 +966,47 @@ pub fn resume(app: &mut App, opts: &Options, ctx: &Ctx, id: &str) {
         });
         return;
     }
-    let args = vec!["--resume".into(), id.to_string()];
+    let mut args = vec!["--resume".into(), id.to_string()];
+    args.extend(permission_args(&s));
     spawn(app, opts, ctx, PaneKind::Claude, session_dir(&s), args, "the session");
+}
+
+/// Claude's flags for coming back with the permissions a session had. One
+/// that ever ran with --dangerously-skip-permissions comes back with it
+/// (its last mode may be another one Shift-Tab cycled to); otherwise a
+/// mode it was left in that isn't the default.
+fn permission_args(s: &aulora_core::model::Session) -> Vec<String> {
+    let last = s.permission_mode.clone();
+    let bypass = last.as_deref() == Some("bypassPermissions")
+        || s.transcript_path.as_deref().is_some_and(|p| transcript_has(p, "\"permissionMode\":\"bypassPermissions\""));
+    if bypass {
+        return vec!["--dangerously-skip-permissions".into()];
+    }
+    match last.as_deref() {
+        Some(m @ ("acceptEdits" | "plan")) => vec!["--permission-mode".into(), m.to_string()],
+        _ => vec![],
+    }
+}
+
+/// Whether a transcript mentions `needle`, read in pieces (they get big).
+fn transcript_has(path: &str, needle: &str) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let needle = needle.as_bytes();
+    let mut buf = vec![0u8; 1 << 20];
+    let mut carry: Vec<u8> = Vec::new();
+    loop {
+        let Ok(n) = f.read(&mut buf) else { return false };
+        if n == 0 {
+            return false;
+        }
+        carry.extend_from_slice(&buf[..n]);
+        if carry.windows(needle.len()).any(|w| w == needle) {
+            return true;
+        }
+        let keep = carry.len().saturating_sub(needle.len());
+        carry.drain(..keep);
+    }
 }
 
 fn spawn(app: &mut App, opts: &Options, ctx: &Ctx, kind: PaneKind, cwd: String, args: Vec<String>, label: &str) {
@@ -2250,6 +2291,25 @@ fn wheel_pane(app: &mut App, id: &str, lines: isize, col: u16, row: u16, ctx: &C
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resuming_keeps_the_permission_mode() {
+        let dir = std::env::temp_dir().join(format!("aulora-perm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let t = dir.join("t.jsonl");
+        // Started with --dangerously-skip-permissions, then Shift-Tab to auto.
+        std::fs::write(&t, "{\"permissionMode\":\"bypassPermissions\"}\n{\"permissionMode\":\"auto\"}\n").unwrap();
+        let mut s = aulora_core::model::Session::new("s", "/p", "/p", 0);
+        s.permission_mode = Some("auto".into());
+        s.transcript_path = Some(t.to_string_lossy().into());
+        assert_eq!(permission_args(&s), ["--dangerously-skip-permissions"]);
+        std::fs::write(&t, "{\"permissionMode\":\"default\"}\n").unwrap();
+        s.permission_mode = Some("plan".into());
+        assert_eq!(permission_args(&s), ["--permission-mode", "plan"]);
+        s.permission_mode = Some("auto".into());
+        assert!(permission_args(&s).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_lone_notch_scrolls_three_lines() {
