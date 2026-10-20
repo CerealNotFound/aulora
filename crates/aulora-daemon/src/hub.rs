@@ -373,6 +373,42 @@ impl Hub {
         self.projects.retain(|root, _| roots.contains(root));
     }
 
+    /// Running panes with a process: (id, pid, cwd).
+    pub fn pane_dirs(&self) -> Vec<(String, u32, String)> {
+        self.panes
+            .values()
+            .filter(|p| p.is_running())
+            .filter_map(|p| Some((p.id.clone(), p.pid?, p.cwd.clone())))
+            .collect()
+    }
+
+    pub fn project_roots(&self) -> Vec<String> {
+        self.projects.keys().cloned().collect()
+    }
+
+    /// A pane's shell changed directory: remember it, and move the pane to
+    /// `root` when that's another workspace. Returns (changed, new project).
+    pub fn pane_moved(&mut self, id: &str, cwd: &str, root: Option<&str>) -> (bool, bool) {
+        let Some(p) = self.panes.get(id) else { return (false, false) };
+        let root = root.filter(|r| *r != p.project_root).map(str::to_string);
+        if p.cwd == cwd && root.is_none() {
+            return (false, false);
+        }
+        let Some(root) = root else {
+            self.panes.get_mut(id).unwrap().cwd = cwd.to_string();
+            return (true, false);
+        };
+        let mut pane = self.panes.remove(id).unwrap();
+        // Keep its name unless the other workspace already has one like it.
+        pane.name = self.pane_name(&root, &pane.name);
+        pane.cwd = cwd.to_string();
+        pane.project_root = root.clone();
+        let new_project = self.ensure_project(&root, now_ms());
+        self.panes.insert(id.to_string(), pane);
+        self.drop_empty_projects();
+        (true, new_project)
+    }
+
     /// Register a new pane. Returns true when this created a new project.
     pub fn add_pane(&mut self, pane: Pane) -> bool {
         let new_project = self.ensure_project(&pane.project_root, pane.created_at);
@@ -429,5 +465,83 @@ impl Hub {
             feed: self.feed.iter().cloned().collect(),
             panes,
         }
+    }
+}
+
+/// The workspace a pane in `cwd` belongs to: its repository when it's in
+/// one (as for a Claude session started there), else the deepest open
+/// workspace containing it. None leaves the pane where it is, so a shell
+/// passing through ~/Documents doesn't make a workspace of it.
+pub fn workspace_for(cwd: &str, repo: Option<&str>, roots: &[String]) -> Option<String> {
+    if let Some(r) = repo {
+        return Some(r.to_string());
+    }
+    let inside = |r: &str| cwd == r || r == "/" || cwd.strip_prefix(r).is_some_and(|rest| rest.starts_with('/'));
+    roots.iter().filter(|r| inside(r)).max_by_key(|r| r.len()).cloned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_directory_finds_its_workspace() {
+        let roots = vec!["/u/projects".to_string(), "/u/thnkrr".to_string(), "/u/projects/site".to_string()];
+        // The screenshot: cd .. then cd projects.
+        assert_eq!(workspace_for("/u", None, &roots), None, "passing through stays put");
+        assert_eq!(workspace_for("/u/projects", None, &roots).as_deref(), Some("/u/projects"));
+        assert_eq!(workspace_for("/u/projects/notes", None, &roots).as_deref(), Some("/u/projects"));
+        assert_eq!(workspace_for("/u/projects/site/src", None, &roots).as_deref(), Some("/u/projects/site"));
+        assert_eq!(workspace_for("/u/projectsX", None, &roots), None, "a prefix isn't a parent");
+        // A repository is its own workspace, open or not.
+        assert_eq!(
+            workspace_for("/u/projects/app/src", Some("/u/projects/app"), &roots).as_deref(),
+            Some("/u/projects/app")
+        );
+    }
+
+    fn pane(id: &str, root: &str) -> Pane {
+        Pane {
+            id: id.into(),
+            project_root: root.into(),
+            cwd: root.into(),
+            name: "shell".into(),
+            kind: PaneKind::Shell,
+            args: vec![],
+            pid: Some(1),
+            cols: 80,
+            rows: 24,
+            created_at: 1,
+            last_output_at: 1,
+            bytes_out: 0,
+            title: None,
+            bell_at: None,
+            exit: None,
+            generation: 0,
+        }
+    }
+
+    #[test]
+    fn a_pane_moves_to_its_new_workspace() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut hub = Hub::new(tx, vec![], vec![]);
+        hub.add_pane(pane("a", "/u/thnkrr"));
+        hub.add_pane(pane("b", "/u/projects"));
+        // A cd inside the workspace only remembers the directory.
+        assert_eq!(hub.pane_moved("a", "/u/thnkrr/src", Some("/u/thnkrr")), (true, false));
+        assert_eq!(hub.pane_moved("a", "/u/thnkrr/src", Some("/u/thnkrr")), (false, false));
+        assert_eq!(hub.pane_moved("a", "/u", None), (true, false));
+        assert_eq!(hub.panes["a"].project_root, "/u/thnkrr");
+        // Into another: it moves, takes a free name, and the emptied
+        // workspace goes.
+        assert_eq!(hub.pane_moved("a", "/u/projects", Some("/u/projects")), (true, false));
+        let a = &hub.panes["a"];
+        assert_eq!(
+            (a.project_root.as_str(), a.name.as_str(), a.cwd.as_str()),
+            ("/u/projects", "shell 2", "/u/projects")
+        );
+        assert_eq!(hub.project_roots(), vec!["/u/projects".to_string()]);
+        // Into a repository nobody opened: a new workspace.
+        assert_eq!(hub.pane_moved("a", "/u/app", Some("/u/app")), (true, true));
     }
 }

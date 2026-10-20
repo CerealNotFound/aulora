@@ -17,10 +17,12 @@ fn git(dir: &str, args: &[&str]) -> Option<String> {
 
 /// The repository root containing `dir`, or `dir` itself outside git.
 pub fn project_root(dir: &str) -> String {
-    git(dir, &["rev-parse", "--show-toplevel"])
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| dir.trim_end_matches('/').to_string())
+    repo_root(dir).unwrap_or_else(|| dir.trim_end_matches('/').to_string())
+}
+
+/// The repository root containing `dir`, if it's inside one.
+pub fn repo_root(dir: &str) -> Option<String> {
+    git(dir, &["rev-parse", "--show-toplevel"]).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
 pub fn info(root: &str) -> Option<GitInfo> {

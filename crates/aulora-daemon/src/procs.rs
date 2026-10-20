@@ -43,6 +43,30 @@ impl Liveness {
     }
 }
 
+/// Reads the working directory of processes, to see a shell `cd`.
+#[derive(Default)]
+pub struct Cwds {
+    sys: System,
+}
+
+impl Cwds {
+    pub fn of(&mut self, pids: &[u32]) -> HashMap<u32, String> {
+        if pids.is_empty() {
+            return HashMap::new();
+        }
+        let list: Vec<Pid> = pids.iter().map(|p| Pid::from_u32(*p)).collect();
+        let kind = ProcessRefreshKind::nothing().with_cwd(sysinfo::UpdateKind::Always);
+        self.sys.refresh_processes_specifics(ProcessesToUpdate::Some(&list), true, kind);
+        pids.iter()
+            .filter_map(|pid| {
+                let cwd = self.sys.process(Pid::from_u32(*pid))?.cwd()?;
+                Some((*pid, cwd.to_string_lossy().trim_end_matches('/').to_string()))
+            })
+            .filter(|(_, c)| !c.is_empty())
+            .collect()
+    }
+}
+
 /// End a Claude Code process (SIGTERM, as closing its terminal would),
 /// after checking the PID still belongs to Claude Code.
 pub fn end_claude(pid: u32) -> Result<(), String> {
@@ -64,6 +88,16 @@ pub fn end_claude(pid: u32) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_a_process_directory() {
+        let dir = std::env::temp_dir().canonicalize().unwrap();
+        let mut child = std::process::Command::new("sleep").arg("30").current_dir(&dir).spawn().unwrap();
+        let cwds = Cwds::default().of(&[child.id()]);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(cwds.get(&child.id()).map(String::as_str), Some(dir.to_string_lossy().trim_end_matches('/')));
+    }
 
     #[test]
     fn ends_only_claude() {

@@ -556,6 +556,7 @@ pub async fn run(handover: bool) -> Result<()> {
     ingest_spool(&shared).await;
     tokio::spawn(git_loop(shared.clone()));
     tokio::spawn(liveness_loop(shared.clone()));
+    tokio::spawn(cwd_loop(shared.clone()));
     tokio::spawn(transcript_loop(shared.clone()));
     tokio::spawn(discover_loop(shared.clone()));
     tokio::spawn(reach_loop(shared.clone()));
@@ -987,6 +988,33 @@ async fn liveness_loop(shared: Arc<Shared>) {
         drop(hub);
         if changed {
             shared.changed();
+        }
+    }
+}
+
+/// Follow each shell's `cd`: a pane whose directory moves into another
+/// workspace moves there too. Reading a process's directory is a cheap
+/// system call; git only runs when a directory changed.
+async fn cwd_loop(shared: Arc<Shared>) {
+    let mut cwds = procs::Cwds::default();
+    loop {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let panes = shared.hub.lock().unwrap().pane_dirs();
+        let pids: Vec<u32> = panes.iter().map(|(_, pid, _)| *pid).collect();
+        let now = cwds.of(&pids);
+        for (id, pid, was) in panes {
+            let Some(cwd) = now.get(&pid).filter(|c| **c != was).cloned() else { continue };
+            let dir = cwd.clone();
+            let repo = tokio::task::spawn_blocking(move || git::repo_root(&dir)).await.ok().flatten();
+            let roots = shared.hub.lock().unwrap().project_roots();
+            let root = hub::workspace_for(&cwd, repo.as_deref(), &roots);
+            let (changed, new_project) = shared.hub.lock().unwrap().pane_moved(&id, &cwd, root.as_deref());
+            if new_project {
+                shared.git_kick.notify_one();
+            }
+            if changed {
+                shared.changed();
+            }
         }
     }
 }

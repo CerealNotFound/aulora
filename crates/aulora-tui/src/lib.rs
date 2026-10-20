@@ -720,6 +720,37 @@ mod tests {
     }
 
     #[test]
+    fn a_pane_follows_its_shell_into_another_workspace() {
+        use crate::layout::View;
+        frame(None, &|app| {
+            let id = "a41c07".to_string();
+            app.select(RowRef::Pane(id.clone()));
+            app.typing = true;
+            let from = app.pane(&id).unwrap().project_root.clone();
+            let to = app.snap.as_ref().unwrap().projects.iter().find(|p| p.root != from).unwrap().root.clone();
+            let mut snap = app.snap.clone().unwrap();
+            snap.panes.iter_mut().find(|p| p.id == id).unwrap().project_root = to.clone();
+            app.set_snapshot(snap);
+            assert_eq!(app.layouts.find_pane(&id).map(|(r, _, _)| r), Some(to.clone()), "its leaf moved");
+            assert_eq!(app.space_root(), Some(to.clone()), "the view went with it");
+            assert_eq!(app.focused_view(), Some(View::Pane { id: id.clone() }));
+            assert!(app.typing, "still typing into it");
+            assert!(app.toast.as_ref().is_some_and(|t| t.msg.contains("moved to")), "and says why");
+            // One you're not on moves quietly, without changing the view.
+            let other = app.snap.as_ref().unwrap().panes.iter().find(|p| p.project_root != to).map(|p| p.id.clone());
+            if let Some(other) = other {
+                let shown = app.layouts.spaces.get(&to).map(|s| s.active);
+                let mut snap = app.snap.clone().unwrap();
+                snap.panes.iter_mut().find(|p| p.id == other).unwrap().project_root = to.clone();
+                app.set_snapshot(snap);
+                assert_eq!(app.space_root(), Some(to.clone()));
+                assert_eq!(app.layouts.spaces.get(&to).map(|s| s.active), shown);
+                assert_eq!(app.layouts.find_pane(&other).map(|(r, _, _)| r), Some(to.clone()));
+            }
+        });
+    }
+
+    #[test]
     fn the_menu_lists_actions_for_the_row() {
         let out = frame(Some("a41c07"), &|app| {
             let items = app.menu_for(&RowRef::Pane("a41c07".into()));

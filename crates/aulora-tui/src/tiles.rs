@@ -77,6 +77,28 @@ impl App {
         }
         self.fresh_leaves.retain(|(_, at)| now - at < 5000);
         for (id, root) in panes {
+            // Its shell changed directory into another workspace: take its
+            // leaf there, and follow it when it's the one you're on.
+            if let Some((at, i, leaf)) = self.layouts.find_pane(&id)
+                && at != root
+            {
+                self.move_leaf(&at, i, leaf);
+                let followed = self.selected == Some(RowRef::Pane(id.clone()));
+                let active = self.layouts.spaces.get(&root).map(|s| s.active);
+                self.layouts.new_tab(&root, View::Pane { id: id.clone() });
+                if !followed && let (Some(a), Some(space)) = (active, self.layouts.spaces.get_mut(&root)) {
+                    space.active = a;
+                }
+                if followed {
+                    let name = self.pane(&id).map(|p| p.name.clone()).unwrap_or_default();
+                    self.toast(format!(
+                        "{name} moved to {}, where its shell is now",
+                        aulora_core::util::basename(&root)
+                    ));
+                }
+                self.layouts_dirty = true;
+                continue;
+            }
             if self.layouts.find_pane(&id).is_none() {
                 let active = self.layouts.spaces.get(&root).map(|s| s.active);
                 self.layouts.new_tab(&root, View::Pane { id });
@@ -86,6 +108,23 @@ impl App {
                 }
                 self.layouts_dirty = true;
             }
+        }
+    }
+
+    /// Take a leaf out of a tab, dropping the tab when nothing but a panel
+    /// or overview would be left in it.
+    fn move_leaf(&mut self, root: &str, i: usize, leaf: u64) {
+        let Some(space) = self.layouts.spaces.get_mut(root) else { return };
+        let Some(tab) = space.tabs.get_mut(i) else { return };
+        let kept = tab.close(leaf) && tab.leaves().iter().any(|(_, v)| !v.is_panel() && !matches!(v, View::Overview));
+        if !kept {
+            space.tabs.remove(i);
+            if space.active > i || space.active >= space.tabs.len() {
+                space.active = space.active.saturating_sub(1);
+            }
+        }
+        if space.tabs.is_empty() {
+            self.layouts.spaces.remove(root);
         }
     }
 
