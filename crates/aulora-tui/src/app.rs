@@ -727,6 +727,7 @@ impl App {
         let c = &mut self.conversations.get_mut(session_id)?.0;
         let refs: Vec<&FeedEvent> = notes.iter().collect();
         c.add_notes(&refs);
+        c.working = matches!(s.state, SessionState::Working | SessionState::Compacting);
         Some(c)
     }
 

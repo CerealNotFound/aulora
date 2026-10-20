@@ -813,6 +813,80 @@ fn prompt_box(f: &mut Frame, area: Rect, app: &mut App, s: &Session) -> u16 {
     height
 }
 
+/// Tips under the working line: aulora's own keys, so waiting teaches
+/// something (Claude Code shows tips the same way).
+const TIPS: &[&str] = &[
+    "n jumps to the next agent that needs you",
+    "right-click any row for what you can do with it",
+    "2 opens Changes: what this agent wrote, ready to commit",
+    "[ and ] jump between the prompts you sent",
+    "z zooms this view to the whole screen",
+    "t picks one of twelve themes",
+    "r on an ended session resumes it in a terminal here",
+    "aulora send <session> \"…\" prompts a session from a script",
+    "F12 hands the mouse back so your terminal can select text",
+    "/ searches this conversation",
+    "C starts Claude in the selected project's folder",
+    "y copies the message at the cursor",
+];
+
+/// Claude Code's whimsical verbs, for when no tool says what's going on.
+const VERBS: &[&str] = &[
+    "Thinking",
+    "Pondering",
+    "Brewing",
+    "Cooking",
+    "Noodling",
+    "Percolating",
+    "Mulling",
+    "Tinkering",
+    "Crafting",
+    "Conjuring",
+    "Wrangling",
+    "Simmering",
+];
+
+/// The line Claude Code shows while it works: a spinner, a verb, the time
+/// so far and what it's doing, with a tip underneath.
+fn working_line(app: &App, s: &Session, width: usize) -> Vec<Line<'static>> {
+    let t = theme::get();
+    let now = app.now;
+    let frames = ["·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"];
+    let glyph = frames[((now / 120) as usize) % frames.len()];
+    let started = s.turn_started_at.unwrap_or(s.state_since);
+    let verb = match (&s.state, s.current_tool.as_ref().map(|c| c.name.as_str())) {
+        (SessionState::Compacting, _) => "Compacting".to_string(),
+        (_, Some("Bash")) => "Running".into(),
+        (_, Some("Edit" | "MultiEdit" | "Write" | "NotebookEdit")) => "Editing".into(),
+        (_, Some("Read")) => "Reading".into(),
+        (_, Some("Grep" | "Glob")) => "Searching".into(),
+        (_, Some("WebFetch" | "WebSearch")) => "Researching".into(),
+        (_, Some("Task" | "Agent")) => "Delegating".into(),
+        (_, Some("TodoWrite")) => "Planning".into(),
+        _ => VERBS[(started / 1000).unsigned_abs() as usize % VERBS.len()].to_string(),
+    };
+    let mut detail = vec![crate::conv::long_duration((now - started).max(0) / 1000)];
+    if let Some(c) = &s.current_tool
+        && !c.target.is_empty()
+    {
+        detail.push(c.target.clone());
+    }
+    if let Some(ctx) = s.context_tokens {
+        detail.push(format!("ctx {}", fmt_tokens(ctx)));
+    }
+    let head = vec![
+        sp(format!(" {glyph} "), fg(t.orange)),
+        sp(format!("{verb}… "), bold(t.orange)),
+        sp(format!("({})", detail.join(" · ")), faint()),
+    ];
+    let seed = s.id.bytes().fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize));
+    let tip = TIPS[(seed + (now / 12_000) as usize) % TIPS.len()];
+    vec![
+        Line::from(fit_spans(head, width)),
+        Line::from(vec![sp("   ⎿  ", faint()), sp(fit(&format!("Tip: {tip}"), width.saturating_sub(6)), faint())]),
+    ]
+}
+
 fn conversation(f: &mut Frame, area: Rect, app: &mut App, session_id: &str) {
     let t = theme::get();
     let Some(s) = app.session(session_id).cloned() else { return };
@@ -820,6 +894,12 @@ fn conversation(f: &mut Frame, area: Rect, app: &mut App, session_id: &str) {
     if app.can_compose(session_id) {
         let h = prompt_box(f, area, app, &s);
         area.height = area.height.saturating_sub(h);
+    }
+    // Room for the working line, drawn right under the last message.
+    let working = matches!(s.state, SessionState::Working | SessionState::Compacting) && area.height > 8;
+    let full = area;
+    if working {
+        area.height -= 3;
     }
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)]).split(area);
     f.render_widget(Paragraph::new(status_strip(app, &s, area.width as usize)), rows[0]);
@@ -851,6 +931,12 @@ fn conversation(f: &mut Frame, area: Rect, app: &mut App, session_id: &str) {
         buf.set_line(text_area.x, y, line, text_area.width);
     }
     scrollbar(f, Rect { x: view.x + view.width - 1, width: 1, ..view }, top, height, total, focused);
+    if working {
+        let shown = total.saturating_sub(top).min(height) as u16;
+        let y = (text_area.y + shown + 1).min(full.bottom().saturating_sub(2));
+        let lines = working_line(app, &s, text_area.width as usize);
+        f.render_widget(Paragraph::new(lines), Rect { y, height: 2, ..text_area });
+    }
     if unseen > 0 && !follow {
         let msg = format!(" ↓ {} · G latest ", plural(unseen, "new message"));
         let wd = (w(&msg) as u16).min(text_area.width);

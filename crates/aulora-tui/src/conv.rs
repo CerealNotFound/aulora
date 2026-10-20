@@ -95,7 +95,8 @@ pub struct Conversation {
 
     // Layout.
     width: u16,
-    wrapped: Vec<Option<(u32, Vec<Line<'static>>)>>,
+    /// Wrapped lines, keyed by the entry's rev and whether it ends a turn.
+    wrapped: Vec<Option<(u64, Vec<Line<'static>>)>>,
     /// prefix[i] = rows before entry i; len = entries + 1 when valid.
     prefix: Vec<usize>,
 
@@ -107,6 +108,8 @@ pub struct Conversation {
     /// Entries that arrived while scrolled up.
     pub unseen: usize,
     pub search: String,
+    /// Claude is mid-turn, so the last entry doesn't end a turn yet.
+    pub working: bool,
 }
 
 fn text_of(content: &Value) -> String {
@@ -404,11 +407,18 @@ impl Conversation {
         }
         let mut first_dirty = self.prefix.len().saturating_sub(1).min(self.entries.len());
         for i in 0..self.entries.len() {
-            let rev = self.entries[i].rev;
-            let stale = !matches!(&self.wrapped[i], Some((r, _)) if *r == rev);
+            let ends_turn = match self.entries.get(i + 1) {
+                Some(next) => next.is_prompt(),
+                None => !self.working,
+            };
+            let key = ((self.entries[i].rev as u64) << 1) | ends_turn as u64;
+            let stale = !matches!(&self.wrapped[i], Some((r, _)) if *r == key);
             if stale {
-                let lines = render_entry(&self.entries[i], i, &self.entries, width as usize);
-                self.wrapped[i] = Some((rev, lines));
+                let mut lines = render_entry(&self.entries[i], i, &self.entries, width as usize);
+                if ends_turn {
+                    lines.extend(recap(&self.entries[..=i]));
+                }
+                self.wrapped[i] = Some((key, lines));
                 first_dirty = first_dirty.min(i);
             }
         }
@@ -854,6 +864,66 @@ fn hm(ms: Option<Ms>) -> String {
     ms.and_then(chrono::DateTime::from_timestamp_millis)
         .map(|d| d.with_timezone(&chrono::Local).format("%H:%M").to_string())
         .unwrap_or_default()
+}
+
+/// "45s", "3m 12s", "1h 5m", as Claude Code writes them.
+pub fn long_duration(secs: i64) -> String {
+    match secs {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m {}s", s / 60, s % 60),
+        s => format!("{}h {}m", s / 3600, (s % 3600) / 60),
+    }
+}
+
+/// Claude Code's line after a finished turn ("✻ Worked for 3m 12s"),
+/// plus what the turn did: files edited and commands run.
+fn recap(entries: &[Entry]) -> Vec<Line<'static>> {
+    let t = theme::get();
+    let Some(start) = entries.iter().rposition(Entry::is_prompt) else { return vec![] };
+    let turn = &entries[start..];
+    let (Some(from), Some(to)) = (turn[0].at, turn.iter().rev().find_map(|e| e.at)) else { return vec![] };
+    let secs = (to - from) / 1000;
+    if secs < 1 || turn.len() < 2 {
+        return vec![];
+    }
+    let mut files: Vec<&str> = Vec::new();
+    let (mut added, mut removed, mut commands, mut failed) = (0usize, 0usize, 0, 0);
+    for e in turn {
+        let Body::Tool(tool) = &e.body else { continue };
+        match tool.name.as_str() {
+            "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => {
+                if !files.contains(&tool.target.as_str()) {
+                    files.push(&tool.target);
+                }
+                added += tool.new.lines().count();
+                removed += tool.old.lines().count();
+            }
+            "Bash" => {
+                commands += 1;
+                failed += tool.error as usize;
+            }
+            _ => {}
+        }
+    }
+    let mut parts =
+        vec![Span::styled(" ✻ ", fg(t.orange)), Span::styled(format!("Worked for {}", long_duration(secs)), dim())];
+    if !files.is_empty() {
+        let n = files.len();
+        parts.push(Span::styled(format!(" · edited {n} file{}", if n == 1 { "" } else { "s" }), faint()));
+        if added > 0 {
+            parts.push(Span::styled(format!(" +{added}"), fg(t.green)));
+        }
+        if removed > 0 {
+            parts.push(Span::styled(format!(" −{removed}"), fg(t.red)));
+        }
+    }
+    if commands > 0 {
+        parts.push(Span::styled(format!(" · ran {commands} command{}", if commands == 1 { "" } else { "s" }), faint()));
+        if failed > 0 {
+            parts.push(Span::styled(format!(", {failed} failed"), fg(t.red)));
+        }
+    }
+    vec![Line::raw(""), Line::from(parts)]
 }
 
 fn render_entry(e: &Entry, i: usize, all: &[Entry], width: usize) -> Vec<Line<'static>> {
