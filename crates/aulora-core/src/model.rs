@@ -297,7 +297,7 @@ impl Session {
     /// Best label for lists: title, else last prompt, else short id.
     pub fn display_title(&self) -> String {
         if let Some(t) = self.title.as_deref().filter(|t| !t.trim().is_empty()) {
-            return t.trim().to_string();
+            return crate::util::squash(t);
         }
         if let Some(p) = self.last_prompt.as_deref().filter(|p| !p.trim().is_empty()) {
             return crate::util::first_line(p).to_string();
