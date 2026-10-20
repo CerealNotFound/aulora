@@ -1016,16 +1016,28 @@ fn render_entry(e: &Entry, i: usize, all: &[Entry], width: usize) -> Vec<Line<'s
             out.extend(tool_lines(tool, width));
         }
         Body::Note(kind, body) => {
+            // Wrapped, not cut: an agent's summary is worth reading whole.
             let (glyph, style) = note_style(*kind);
-            out.push(Line::from(vec![
-                Span::styled(format!("   {glyph} "), style),
-                Span::styled(truncate(body, width.saturating_sub(12)), style),
-                Span::styled(format!("  {}", hm(e.at)), faint()),
-            ]));
+            let time = hm(e.at);
+            let lines = wrap(body, width.saturating_sub(8 + time.len()).max(20));
+            let n = lines.len();
+            for (j, l) in lines.into_iter().take(NOTE_LINES).enumerate() {
+                let more = j + 1 == NOTE_LINES && n > NOTE_LINES;
+                let text = if more { format!("{l} …") } else { l };
+                let lead = if j == 0 { format!("   {glyph} ") } else { "     ".to_string() };
+                let mut spans = vec![Span::styled(lead, style), Span::styled(text, style)];
+                if j == 0 {
+                    spans.push(Span::styled(format!("  {time}"), faint()));
+                }
+                out.push(Line::from(spans));
+            }
         }
     }
     out
 }
+
+/// Lines a note may take before it's cut.
+const NOTE_LINES: usize = 6;
 
 /// Hook events about one session, for `add_notes`.
 pub fn feed_for<'a>(feed: &'a [FeedEvent], session_id: &str) -> Vec<&'a FeedEvent> {
@@ -1036,6 +1048,16 @@ pub fn feed_for<'a>(feed: &'a [FeedEvent], session_id: &str) -> Vec<&'a FeedEven
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn long_notes_wrap_instead_of_being_cut() {
+        let text = "agent done · You're getting Thnkrr ready to go live on AWS, and four checks stand before A2: email showing green, setup loose ends, and two CTO sign-offs.";
+        let e = Entry::new(Some(0), Body::Note(FeedKind::Agent, text.into()));
+        let lines = render_entry(&e, 0, std::slice::from_ref(&e), 60);
+        let all: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.to_string())).collect();
+        assert!(lines.len() >= 3, "{} lines", lines.len());
+        assert!(all.contains("sign-offs."), "nothing is cut: {all}");
+    }
 
     fn transcript(tag: &str, lines: &[&str]) -> (std::path::PathBuf, Conversation) {
         let dir = std::env::temp_dir().join(format!("aulora-conv-{}-{tag}", std::process::id()));
