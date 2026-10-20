@@ -60,6 +60,13 @@ impl Compose {
             // Shift-Enter, Alt-Enter or Ctrl-J for a new line (Claude Code).
             KeyCode::Enter if shift || alt => self.insert("\n"),
             KeyCode::Char('j') if ctrl => self.insert("\n"),
+            // "\" then Enter: a new line (Claude Code's escape, for
+            // terminals where Shift-Enter looks like Enter).
+            KeyCode::Enter if self.text[..self.cursor].ends_with('\\') => {
+                self.cursor -= 1;
+                self.text.remove(self.cursor);
+                self.insert("\n");
+            }
             KeyCode::Enter => return Some(Action::Send),
             KeyCode::Backspace if alt || ctrl => self.delete_word(),
             KeyCode::Backspace => {
@@ -290,6 +297,9 @@ mod tests {
         assert_eq!(c.text, "fix test");
         c.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
         assert_eq!(c.text, "fix te\nst");
+        let mut b = Compose::new("s".into(), "one\\".into());
+        assert!(b.key(k(KeyCode::Enter)).is_none(), "backslash-Enter doesn't send");
+        assert_eq!(b.text, "one\n");
         c.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
         assert_eq!(c.text, "fix te\nst", "nothing before the cursor on this line");
         c.key(k(KeyCode::End));

@@ -536,6 +536,17 @@ fn terminal_key(app: &mut App, key: KeyEvent, ctx: &Ctx, input: &mut Input) {
 }
 
 pub fn paste(app: &mut App, text: &str, ctx: &Ctx) {
+    // A paste onto a focused pane or conversation goes into it, without
+    // needing to start typing first (Cmd-V just works).
+    if !app.typing && app.compose.is_none() && app.commit_edit.is_none() && app.focus == Focus::Main {
+        if app.focused_pane().is_some_and(|id| app.pane(&id).is_some_and(|p| p.is_running())) {
+            app.typing = true;
+        } else if let Some(crate::layout::View::Conversation { session }) = app.focused_view()
+            && app.can_compose(&session)
+        {
+            app.start_compose(&session);
+        }
+    }
     // Cmd-V with only an image on the clipboard pastes nothing: terminals
     // can't paste images as text. Hand it to whatever can take the image.
     if text.is_empty() {

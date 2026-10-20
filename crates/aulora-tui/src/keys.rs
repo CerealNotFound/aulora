@@ -110,11 +110,16 @@ pub fn describe(bytes: &[u8]) -> &'static str {
         b"\x1bb" | b"\x1b[1;3D" => "Option-Left: back a word",
         b"\x1bf" | b"\x1b[1;3C" => "Option-Right: forward a word",
         b"\x1b\r" => "Option-Enter or Shift-Enter as Claude Code sets it up: a new line",
-        b"\r" => "Enter",
+        b"\r" => {
+            "Enter. If you pressed Shift-Enter, this terminal sends it as Enter: use Option-Enter (with Option as Meta; Claude's /terminal-setup), Ctrl-J, or \\ then Enter for a new line"
+        }
         b"\x1b" => "Escape",
         b"\x16" => "Ctrl-V: Claude Code pastes the clipboard's image",
         b"\x11" => "Ctrl-Q: leaves a pane in aulora",
-        _ if bytes.starts_with(b"\x1b[200~") => "a paste (bracketed)",
+        b"\x1b[200~\x1b[201~" => {
+            "an empty paste: the clipboard held only an image. aulora hands it to Claude as Ctrl-V, which takes the image"
+        }
+        _ if bytes.starts_with(b"\x1b[200~") => "a paste (bracketed): text from Cmd-V",
         _ if bytes.len() == 1 && bytes[0] >= 0x20 && bytes[0] < 0x7f => "",
         _ => "",
     }

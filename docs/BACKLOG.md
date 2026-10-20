@@ -20,8 +20,10 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 | 🟡 | Voice mode: hold Space for Claude | Repeated spaces reach Claude in a pane as in Terminal.app. Microphone permission for a pane under the daemon is untested. |
 | ✅ | Claude's / commands in aulora | Native in panes. In the prompt box for VS Code sessions: a `/` menu with built-in, your, the project's commands and skills; Tab completes. |
 | ✅ | Paste images | Ctrl-V in a Claude pane (Claude reads the clipboard); an image-only Cmd-V is passed on as Ctrl-V; Ctrl-V in the prompt box attaches the image by path. |
+| 🟡 | Cmd-V pastes text and images | Text: works, and a paste onto a focused pane or conversation now goes straight into it. Images: if the terminal sends an empty paste, aulora passes it to Claude as Ctrl-V; if Terminal.app sends nothing at all (Cmd never reaches programs), Ctrl-V is the image paste, as in Claude Code. You want Cmd-V only (no Ctrl-V on Mac). Waiting on `aulora keys` with a screenshot copied: if nothing arrives, find another way (a terminal that passes it, or a clipboard watcher). |
 | ✅ | Multi-line prompts must not break the screen | Line breaks and tabs are drawn as spaces everywhere; CRLF files too. |
 | ✅ | After sending a prompt, the cursor stays in the input | The prompt box stays open and empty, ready for the next one. |
+| 🟡 | Shift-Enter for a new line | Works in panes and the prompt box where the terminal sends Shift-Enter distinctly. Terminal.app sends it as plain Enter, so there: Option-Enter (Option as Meta, or Claude's /terminal-setup), Ctrl-J, or `\` then Enter, all of which work in panes and the prompt box. `aulora keys` says which case you're in. |
 
 ## Mouse and links
 
