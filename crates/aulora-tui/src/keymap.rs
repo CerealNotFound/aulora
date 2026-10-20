@@ -178,6 +178,7 @@ pub static BINDINGS: &[Binding] = &[
     b!(Sidebar, "⏎", [code(KeyCode::Enter), code(KeyCode::Right), k('l')], Open, "open the selection", "open"),
     b!(Sidebar, "c", [k('c')], NewShell, "new shell in this workspace", "shell"),
     b!(Sidebar, "C", [k('C')], NewClaude, "new Claude Code pane in this workspace", "claude"),
+    b!(Sidebar, "i", [k('i')], Compose, "write a prompt to the selected session; it's typed into its editor terminal"),
     b!(
         Sidebar,
         "x",
@@ -400,6 +401,8 @@ mod tests {
         assert_eq!(lookup(Scope::Sidebar, &ev(KeyCode::Char('j'))), Some(Down));
         assert_eq!(lookup(Scope::Conversation, &ev(KeyCode::Char(']'))), Some(NextPrompt));
         assert_eq!(lookup(Scope::Sidebar, &ev(KeyCode::Char('3'))), Some(Tab(2)));
+        // The prompt box says "i" while the sidebar has the focus, too.
+        assert_eq!(lookup(Scope::Sidebar, &ev(KeyCode::Char('i'))), Some(Compose));
         assert_eq!(lookup(Scope::Pane, &ev(KeyCode::Char('?'))), Some(Help));
         assert_eq!(lookup(Scope::Sidebar, &KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT)), Some(NewClaude));
         assert_eq!(lookup(Scope::Sidebar, &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)), Some(Quit));
