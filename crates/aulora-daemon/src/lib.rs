@@ -796,6 +796,23 @@ async fn handle_conn(shared: Arc<Shared>, stream: UnixStream) -> Result<()> {
                             _ => err(anyhow::anyhow!("no program to upgrade to")),
                         }
                     }
+                    ClientMsg::Answer { session_id, keys } => {
+                        let waiting = matches!(
+                            shared.hub.lock().unwrap().session_state(&session_id),
+                            Some(SessionState::NeedsYou { .. })
+                        );
+                        if shared.editors.target(&session_id).is_none() {
+                            shared.recompute_reach().await;
+                        }
+                        match (waiting, shared.editors.target(&session_id)) {
+                            (false, _) => err(anyhow::anyhow!("it isn't waiting on an answer anymore")),
+                            (true, None) => err(anyhow::anyhow!("no editor with the aulora extension has this session's terminal")),
+                            (true, Some(t)) => match shared.editors.send_keys(&t, keys, false).await {
+                                Ok(()) => Some(ServerMsg::Ok),
+                                Err(e) => err(anyhow::anyhow!(e)),
+                            },
+                        }
+                    }
                     ClientMsg::ShowSession { session_id } => {
                         if shared.editors.target(&session_id).is_none() {
                             shared.recompute_reach().await;

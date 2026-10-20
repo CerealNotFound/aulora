@@ -94,6 +94,12 @@ pub enum ClientMsg {
     Upgrade {
         exe: Option<String>,
     },
+    /// Answer what a session is waiting on (a question, a permission
+    /// prompt) by pressing keys in its terminal, without Enter.
+    Answer {
+        session_id: String,
+        keys: String,
+    },
     /// Bring a session's editor terminal into view.
     ShowSession {
         session_id: String,
@@ -167,7 +173,14 @@ pub enum ServerMsg {
         request_id: u64,
         terminal_id: u32,
         text: String,
+        /// Press Enter after (a prompt); false for keys that answer a dialog.
+        #[serde(default = "yes")]
+        enter: bool,
     },
+}
+
+fn yes() -> bool {
+    true
 }
 
 pub fn encode(bytes: &[u8]) -> String {

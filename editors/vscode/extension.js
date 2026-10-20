@@ -91,6 +91,12 @@ function create(vscode, opts = {}) {
       return;
     }
     try {
+      if (msg.enter === false) {
+        // Keys that answer a dialog, as they are.
+        t.sendText(msg.text, false);
+        send({ type: "typed", request_id: msg.request_id, error: null });
+        return;
+      }
       t.sendText(keystrokes(msg.text), false);
       // Let the program take in the text before Enter submits it.
       await sleep(msg.text.includes("\n") ? 150 : 50);

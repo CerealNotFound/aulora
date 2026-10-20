@@ -75,6 +75,11 @@ async function main() {
   assert.deepStrictEqual(vscode.terminals[1].sent, ["fix the tests", "\r"]);
   assert.deepStrictEqual(got.find((m) => m.type === "typed"), { type: "typed", request_id: 9, error: null });
 
+  // Answer keys go as they are, without Enter.
+  client.write(JSON.stringify({ type: "type", request_id: 11, terminal_id: id, text: "2", enter: false }) + "\n");
+  await until(() => got.some((m) => m.request_id === 11));
+  assert.deepStrictEqual(vscode.terminals[1].sent.slice(-1), ["2"]);
+
   // Showing a terminal brings it into view.
   client.write(JSON.stringify({ type: "show", terminal_id: id }) + "\n");
   await until(() => vscode.terminals[1].shown);

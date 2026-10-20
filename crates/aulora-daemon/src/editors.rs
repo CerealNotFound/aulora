@@ -100,12 +100,17 @@ impl Editors {
     /// Ask the editor to type `text` into the session's terminal, and wait
     /// for it to say it did.
     pub async fn type_into(&self, target: &Target, text: String) -> Result<(), String> {
+        self.send_keys(target, text, true).await
+    }
+
+    /// Type `text` and, when `enter`, press Enter; wait for the editor.
+    pub async fn send_keys(&self, target: &Target, text: String, enter: bool) -> Result<(), String> {
         let out = self.editors.lock().unwrap().get(&target.conn).map(|e| e.out.clone());
         let Some(out) = out else { return Err(format!("{} closed", target.app)) };
         let request_id = self.next_request.fetch_add(1, Ordering::Relaxed) + 1;
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(request_id, tx);
-        let msg = ServerMsg::Type { request_id, terminal_id: target.terminal, text };
+        let msg = ServerMsg::Type { request_id, terminal_id: target.terminal, text, enter };
         if out.send(msg).await.is_err() {
             self.pending.lock().unwrap().remove(&request_id);
             return Err(format!("{} closed", target.app));
