@@ -43,9 +43,15 @@ pub enum Job {
     Status { root: String, sessions: Sessions },
     Diff { root: String, file: FileChange, sessions: Sessions },
     Stage { root: String, paths: Vec<String>, unstage: bool },
+    Op { root: String, op: git::Op },
 }
 
 pub enum Done {
+    Op {
+        root: String,
+        op: git::Op,
+        result: Result<String, String>,
+    },
     Status {
         root: String,
         result: Result<Vec<FileChange>, String>,
@@ -113,7 +119,7 @@ fn work(jobs: Receiver<Job>, done: Sender<Done>) {
                     keep[i] = !seen_diff;
                     seen_diff = true;
                 }
-                Job::Stage { .. } => {}
+                Job::Stage { .. } | Job::Op { .. } => {}
             }
         }
         for (job, keep) in batch.into_iter().zip(keep) {
@@ -121,6 +127,10 @@ fn work(jobs: Receiver<Job>, done: Sender<Done>) {
                 Done::Skipped
             } else {
                 match job {
+                    Job::Op { root, op } => {
+                        let result = git::perform(&root, &op);
+                        Done::Op { root, op, result }
+                    }
                     Job::Stage { root, paths, unstage } => {
                         let result = git::stage(&root, &paths, unstage);
                         Done::Staged { root, unstage, result }
@@ -379,6 +389,10 @@ pub struct Project {
     pub requested_at: Ms,
     /// What the daemon's last git poll said, when we last asked.
     pub git_sig: u64,
+    /// A commit, push or pull under way.
+    pub running: Option<git::Op>,
+    /// What went wrong with the last one: (what, git's output).
+    pub op_error: Option<(String, String)>,
 }
 
 #[derive(Default)]
@@ -503,6 +517,28 @@ impl App {
                         p.requested_at = 0;
                     }
                 }
+                Done::Op { root, op, result } => {
+                    let p = self.changes.entry(root.clone()).or_default();
+                    p.running = None;
+                    p.requested_at = 0;
+                    match result {
+                        Ok(summary) => {
+                            p.op_error = None;
+                            if matches!(op, git::Op::Commit { .. }) {
+                                self.commit_drafts.remove(&root);
+                            }
+                            self.toast(summary);
+                        }
+                        Err(out) => {
+                            if let git::Op::Commit { message, .. } = &op {
+                                // Keep the message to fix and try again.
+                                self.commit_drafts.insert(root.clone(), message.clone());
+                            }
+                            let p = self.changes.entry(root).or_default();
+                            p.op_error = Some((format!("{} failed", op.doing()), out));
+                        }
+                    }
+                }
                 Done::Skipped => {}
             }
         }
@@ -601,6 +637,74 @@ impl App {
         let unstage = group == Group::Staged;
         if let Some(w) = self.worker() {
             w.send(Job::Stage { root: root.to_string(), paths, unstage });
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Commit, push, pull
+
+impl App {
+    /// Start a commit, push or pull in the background.
+    pub fn start_op(&mut self, root: &str, op: git::Op) {
+        if self.conn == Conn::Demo {
+            self.toast(format!("Would be {} (demo)", op.doing()));
+            return;
+        }
+        let p = self.changes.entry(root.to_string()).or_default();
+        if let Some(r) = &p.running {
+            let doing = r.doing();
+            self.toast(format!("Still {doing}…"));
+            return;
+        }
+        p.running = Some(op.clone());
+        p.op_error = None;
+        if let Some(w) = self.worker() {
+            w.send(Job::Op { root: root.to_string(), op });
+        }
+    }
+
+    pub fn start_commit_message(&mut self, root: &str) {
+        let draft = self.commit_drafts.remove(root).unwrap_or_default();
+        self.commit_edit = Some(crate::compose::Compose::new(root.to_string(), draft));
+    }
+
+    pub fn close_commit_message(&mut self) {
+        if let Some(c) = self.commit_edit.take()
+            && !c.text.trim().is_empty()
+        {
+            self.commit_drafts.insert(c.session, c.text);
+        }
+    }
+
+    /// Commit with the message being written: what's staged, or after a
+    /// yes, everything (VS Code's smart commit).
+    pub fn commit(&mut self) {
+        let Some(c) = self.commit_edit.take() else { return };
+        let (root, message) = (c.session.clone(), c.text.trim().to_string());
+        if message.is_empty() {
+            self.commit_edit = Some(c);
+            self.toast("Write a message first");
+            return;
+        }
+        let files = self.changes.get(&root).map(|p| p.files.clone()).unwrap_or_default();
+        let staged = files.iter().filter(|f| f.entry.group == Group::Staged).count();
+        if staged > 0 {
+            self.start_op(&root, git::Op::Commit { message, all: false });
+        } else if files.is_empty() {
+            self.commit_drafts.insert(root, message);
+            self.toast("Nothing to commit");
+        } else {
+            self.commit_drafts.insert(root.clone(), message.clone());
+            self.confirm = Some(crate::app::Confirm {
+                title: "commit everything?".into(),
+                body: format!(
+                    "Nothing is staged. Stage all {} and commit them?",
+                    crate::ui::plural(files.len(), "changed file")
+                ),
+                action: crate::ConfirmAction::CommitAll(root, message),
+                on_action: true,
+            });
         }
     }
 }

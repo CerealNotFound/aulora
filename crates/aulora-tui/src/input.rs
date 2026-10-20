@@ -16,6 +16,8 @@ pub enum ConfirmAction {
     KillPane(String),
     /// Resume a session that is still running somewhere else, as a fork.
     Fork(String),
+    /// Stage everything in a project and commit it with this message.
+    CommitAll(String, String),
 }
 
 impl ConfirmAction {
@@ -23,6 +25,7 @@ impl ConfirmAction {
         match self {
             ConfirmAction::KillPane(_) => "kill",
             ConfirmAction::Fork(_) => "fork",
+            ConfirmAction::CommitAll(..) => "commit all",
         }
     }
 }
@@ -83,6 +86,14 @@ pub fn on_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx, input: &m
     }
     if app.menu.is_some() {
         menu_key(app, key, opts, ctx);
+        return false;
+    }
+    if let Some(c) = app.commit_edit.as_mut() {
+        match c.key(key) {
+            Some(crate::compose::Action::Send) => app.commit(),
+            Some(crate::compose::Action::Close) => app.close_commit_message(),
+            None => {}
+        }
         return false;
     }
     if let Some(c) = app.compose.as_mut() {
@@ -291,7 +302,14 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
             }
             _ => {}
         },
-        Action::Stage | Action::ToggleAll | Action::PrevHunk | Action::NextHunk | Action::Left => {}
+        Action::Commit
+        | Action::Push
+        | Action::Pull
+        | Action::Stage
+        | Action::ToggleAll
+        | Action::PrevHunk
+        | Action::NextHunk
+        | Action::Left => {}
         Action::ToggleMouse => {
             app.mouse = !app.mouse;
             set_mouse(app.mouse);
@@ -412,7 +430,7 @@ fn terminal_key(app: &mut App, key: KeyEvent, ctx: &Ctx, input: &mut Input) {
 }
 
 pub fn paste(app: &mut App, text: &str, ctx: &Ctx) {
-    if let Some(c) = app.compose.as_mut() {
+    if let Some(c) = app.commit_edit.as_mut().or(app.compose.as_mut()) {
         c.insert(text);
         return;
     }
@@ -529,6 +547,7 @@ fn run_confirmed(app: &mut App, opts: &Options, ctx: &Ctx) {
     let Some(c) = app.confirm.take() else { return };
     match c.action {
         ConfirmAction::KillPane(id) => pane_action(app, opts, ClientMsg::KillPane { pane_id: id }, "Stopped"),
+        ConfirmAction::CommitAll(root, message) => app.start_op(&root, crate::git::Op::Commit { message, all: true }),
         ConfirmAction::Fork(id) => {
             let Some(cwd) = app.session(&id).map(session_dir) else { return };
             let args = vec!["--resume".into(), id, "--fork-session".into()];
@@ -744,13 +763,18 @@ fn changes_action(app: &mut App, action: Action) -> bool {
             }
         }
         Action::Back => {
-            if diff_focused {
+            if let Some(p) = app.changes.get_mut(&root).filter(|p| p.op_error.is_some()) {
+                p.op_error = None;
+            } else if diff_focused {
                 app.view_mut(&root).focus_diff = false;
             } else {
                 app.focus = Focus::Sidebar;
             }
         }
         Action::Stage => app.stage_selected(&root),
+        Action::Commit => app.start_commit_message(&root),
+        Action::Push => app.start_op(&root, crate::git::Op::Push),
+        Action::Pull => app.start_op(&root, crate::git::Op::Pull),
         Action::ToggleAll => {
             let v = app.view_mut(&root);
             v.all = !v.all;
@@ -1065,6 +1089,11 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                     open_menu(app, col.saturating_sub(16), row + 1, items);
                 }
                 Hit::Resume(id) => resume(app, opts, ctx, &id),
+                Hit::Action(a) => {
+                    app.focus = Focus::Main;
+                    app.typing = false;
+                    perform(app, a, opts, ctx);
+                }
                 Hit::Compose(id) => {
                     app.focus = Focus::Main;
                     if app.compose.as_ref().is_none_or(|c| c.session != id) {

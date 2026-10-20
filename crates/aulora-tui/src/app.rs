@@ -93,6 +93,8 @@ pub enum Hit {
     ChangeRow(usize),
     ChangeTree,
     Diff,
+    /// A button that runs an action.
+    Action(crate::keymap::Action),
     /// The prompt box under a session's conversation.
     Compose(String),
     /// The resume button above a session.
@@ -206,6 +208,9 @@ pub struct App {
     pub worker: Option<crate::changes::Worker>,
     /// A prompt being written for a session in an editor.
     pub compose: Option<crate::compose::Compose>,
+    /// A commit message being written, for the project in `session`.
+    pub commit_edit: Option<crate::compose::Compose>,
+    pub commit_drafts: HashMap<String, String>,
     /// Unsent prompts, by session.
     pub drafts: HashMap<String, String>,
     pub sent_tx: std::sync::mpsc::Sender<crate::compose::Sent>,
@@ -271,6 +276,8 @@ impl App {
             tab_pref: Tab::Terminal,
             compose: None,
             drafts: HashMap::new(),
+            commit_edit: None,
+            commit_drafts: HashMap::new(),
             sent_tx,
             sent_rx,
             worker: None,

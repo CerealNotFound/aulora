@@ -415,6 +415,107 @@ pub fn read_text(path: &std::path::Path) -> Result<Option<String>, String> {
     Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
 }
 
+/// What the Changes tab can do to a repository besides staging.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Op {
+    /// Commit what's staged, or everything when `all`.
+    Commit {
+        message: String,
+        all: bool,
+    },
+    Push,
+    Pull,
+}
+
+impl Op {
+    pub fn doing(&self) -> &'static str {
+        match self {
+            Op::Commit { .. } => "committing",
+            Op::Push => "pushing",
+            Op::Pull => "pulling",
+        }
+    }
+}
+
+/// Run git for an op, in a new session with no controlling terminal: a
+/// password or passphrase prompt then fails with a message instead of
+/// writing over the dashboard and waiting for keys it will never get.
+fn run_detached(root: &str, args: &[&str], input: Option<&str>) -> Result<String, String> {
+    use std::io::Write;
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    let mut cmd = Command::new("git");
+    cmd.args(["-C", root])
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // SAFETY: setsid is async-signal-safe and touches no shared state.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("couldn't run git: {e}"))?;
+    if let (Some(text), Some(mut stdin)) = (input, child.stdin.take()) {
+        let _ = stdin.write_all(text.as_bytes());
+    }
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    let text =
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)).trim().to_string();
+    if out.status.success() { Ok(text) } else { Err(text) }
+}
+
+/// Carry out an op. Returns a one-line summary of what happened.
+pub fn perform(root: &str, op: &Op) -> Result<String, String> {
+    match op {
+        Op::Commit { message, all } => {
+            if *all {
+                run(root, &["add", "-A"])?;
+            }
+            let out = run_detached(root, &["commit", "-F", "-"], Some(message))?;
+            // "[main 1a2b3c4] Subject" → "1a2b3c4 Subject"
+            let first = out.lines().find(|l| l.starts_with('[')).unwrap_or("committed");
+            Ok(first
+                .split_once("] ")
+                .map(|(head, subject)| {
+                    let hash = head.rsplit(' ').next().unwrap_or("");
+                    format!("Committed {hash} {subject}")
+                })
+                .unwrap_or_else(|| first.to_string()))
+        }
+        Op::Push => {
+            let upstream = run(root, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
+            match upstream {
+                Ok(u) => {
+                    run_detached(root, &["push"], None)?;
+                    Ok(format!("Pushed to {}", String::from_utf8_lossy(&u).trim()))
+                }
+                Err(_) => {
+                    // A new branch: publish it, as VS Code's "Publish Branch".
+                    let branch =
+                        String::from_utf8_lossy(&run(root, &["rev-parse", "--abbrev-ref", "HEAD"])?).trim().to_string();
+                    let remotes = String::from_utf8_lossy(&run(root, &["remote"])?).to_string();
+                    let remote = remotes
+                        .lines()
+                        .find(|r| *r == "origin")
+                        .or_else(|| remotes.lines().next())
+                        .ok_or("this repository has no remote to push to")?
+                        .to_string();
+                    run_detached(root, &["push", "-u", &remote, &branch], None)?;
+                    Ok(format!("Published {branch} to {remote}"))
+                }
+            }
+        }
+        Op::Pull => {
+            let out = run_detached(root, &["pull", "--ff-only"], None)?;
+            Ok(if out.contains("Already up to date") { "Already up to date".into() } else { "Pulled".into() })
+        }
+    }
+}
+
 /// Stage or unstage paths (files or folders).
 pub fn stage(root: &str, paths: &[String], unstage: bool) -> Result<(), String> {
     let mut args: Vec<&str> = if unstage { vec!["reset", "-q", "--"] } else { vec!["add", "-A", "--"] };
@@ -458,6 +559,50 @@ mod tests {
         assert_eq!(files[1].path, "gone.txt");
         assert_eq!(files[1].counts(), (0, 1));
         assert!(files[2].binary);
+    }
+
+    #[test]
+    fn commits_publishes_pushes_and_pulls() {
+        let base = std::env::temp_dir().join(format!("aulora-ops-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (remote, a, b) = (base.join("remote.git"), base.join("a"), base.join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&base, &["init", "-q", "--bare", "remote.git"]);
+        git(&a, &["init", "-q", "-b", "main"]);
+        git(&a, &["config", "user.email", "t@t"]);
+        git(&a, &["config", "user.name", "t"]);
+        git(&a, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        let root = a.to_str().unwrap();
+        std::fs::write(a.join("x.txt"), "one\n").unwrap();
+
+        // Nothing staged: a staged-only commit fails with git's reason.
+        assert!(perform(root, &Op::Commit { message: "first".into(), all: false }).is_err());
+        let done = perform(root, &Op::Commit { message: "Add x.\n\nWhy it matters.".into(), all: true }).unwrap();
+        assert!(done.starts_with("Committed ") && done.ends_with("Add x."), "{done}");
+        // No upstream yet: published.
+        assert_eq!(perform(root, &Op::Push).unwrap(), "Published main to origin");
+
+        // Another clone pushes; pulling here fast-forwards.
+        git(&base, &["clone", "-q", remote.to_str().unwrap(), "b"]);
+        git(&b, &["config", "user.email", "t@t"]);
+        git(&b, &["config", "user.name", "t"]);
+        std::fs::write(b.join("y.txt"), "two\n").unwrap();
+        git(&b, &["add", "."]);
+        git(&b, &["commit", "-q", "-m", "Add y."]);
+        git(&b, &["push", "-q"]);
+        assert_eq!(perform(root, &Op::Pull).unwrap(), "Pulled");
+        assert!(a.join("y.txt").exists());
+        assert_eq!(perform(root, &Op::Pull).unwrap(), "Already up to date");
+
+        std::fs::write(a.join("x.txt"), "one more\n").unwrap();
+        git(&a, &["add", "."]);
+        perform(root, &Op::Commit { message: "Change x.".into(), all: false }).unwrap();
+        assert_eq!(perform(root, &Op::Push).unwrap(), "Pushed to origin/main");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

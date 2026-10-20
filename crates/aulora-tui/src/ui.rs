@@ -729,7 +729,7 @@ fn status_strip(app: &App, s: &Session, width: usize) -> Line<'static> {
 }
 
 /// Lines of a prompt wrapped to `width`, and where the cursor lands.
-fn wrap_prompt(text: &str, cursor: usize, width: usize) -> (Vec<String>, (usize, usize)) {
+pub(crate) fn wrap_prompt(text: &str, cursor: usize, width: usize) -> (Vec<String>, (usize, usize)) {
     let width = width.max(1);
     let mut lines = vec![String::new()];
     let mut col = 0;
@@ -968,6 +968,16 @@ fn mode_bar(f: &mut Frame, area: Rect, app: &App) {
     if app.typing {
         let name = app.selected_pane().map(|p| p.name.clone()).unwrap_or_default();
         left.extend([pill("TERMINAL", t.accent), lbl(&format!("keys go to {name}")), key("ctrl-q"), lbl("navigate")]);
+    } else if app.commit_edit.is_some() {
+        left.extend([
+            pill("COMMIT", t.accent),
+            key("⏎"),
+            lbl("commit"),
+            key("⇧⏎"),
+            lbl("new line"),
+            key("esc"),
+            lbl("keep as draft"),
+        ]);
     } else if let Some(c) = &app.compose {
         let editor = app.session(&c.session).and_then(|s| s.terminal.editor.clone()).unwrap_or_default();
         left.extend([

@@ -98,8 +98,10 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App, root: &str) {
         return;
     }
 
+    let used = repo_bar(f, area, app, root);
+    let mut area = Rect { y: area.y + used, height: area.height.saturating_sub(used), ..area };
+
     // Whose changes: an agent's own, or everything in the project.
-    let mut area = area;
     let filter = app.changes_filter(root);
     let agent = !matches!(app.selected, Some(RowRef::Project(_)) | None) && app.selected_session_id().is_some();
     if agent {
@@ -456,4 +458,97 @@ pub fn line_at(d: &Styled, row: usize) -> Option<u32> {
         r += h.lines.len() + 1;
     }
     None
+}
+
+/// The branch, commit / push / pull buttons, the commit message box while
+/// one is being written, and what git said when something failed.
+fn repo_bar(f: &mut Frame, area: Rect, app: &mut App, root: &str) -> u16 {
+    use crate::keymap::Action;
+    let t = theme::get();
+    let width = area.width as usize;
+    let git = app.project(root).and_then(|p| p.git.clone()).unwrap_or_default();
+    let (running, op_error, staged) = app
+        .changes
+        .get(root)
+        .map(|p| {
+            let staged = p.files.iter().filter(|f| f.entry.group == crate::git::Group::Staged).count();
+            (p.running.clone(), p.op_error.clone(), staged)
+        })
+        .unwrap_or((None, None, 0));
+
+    let mut left = vec![sp(" ⎇ ", faint()), sp(git.branch.clone().unwrap_or_else(|| "detached".into()), fg(t.magenta))];
+    if git.ahead > 0 {
+        left.push(sp(format!("  ↑{} to push", git.ahead), fg(t.green)));
+    }
+    if git.behind > 0 {
+        left.push(sp(format!("  ↓{} to pull", git.behind), fg(t.yellow)));
+    }
+    if let Some(op) = &running {
+        left.push(sp(format!("   {} {}…", spinner(app.now), op.doing()), fg(t.accent)));
+    }
+    let buttons: [(&str, Action); 3] = [
+        (if staged > 0 { "c commit" } else { "c commit all" }, Action::Commit),
+        ("P push", Action::Push),
+        ("p pull", Action::Pull),
+    ];
+    let mut right = Vec::new();
+    let mut x = area.right();
+    let mut hits = Vec::new();
+    for (label, action) in buttons.iter().rev() {
+        let wd = w(label) as u16 + 2;
+        x = x.saturating_sub(wd + 1);
+        hits.push((Rect { x, y: area.y, width: wd, height: 1 }, Hit::Action(*action)));
+    }
+    for (label, _) in &buttons {
+        let (k, rest) = label.split_once(' ').unwrap_or((label, ""));
+        right.push(sp(" ", text()));
+        right.push(sp(format!(" {k}"), bold(t.accent).bg(t.panel)));
+        right.push(sp(format!(" {rest} "), dim().bg(t.panel)));
+    }
+    right.push(sp(" ", text()));
+    f.render_widget(Paragraph::new(lr(left, right, width)), Rect { height: 1, ..area });
+    app.hits.extend(hits);
+    let mut used = 2u16;
+
+    // The message box (VS Code's Source Control input).
+    if let Some(c) = app.commit_edit.as_ref().filter(|c| c.session == root) {
+        let inner_w = area.width.saturating_sub(6) as usize;
+        let (lines, cursor) = crate::ui::wrap_prompt(&c.text, c.cursor, inner_w);
+        let shown = lines.len().clamp(1, 6);
+        let top = cursor.0.saturating_sub(shown - 1);
+        let r = Rect { y: area.y + used, height: shown as u16 + 2, ..area };
+        let block = ratatui::widgets::Block::bordered()
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .border_style(fg(t.accent))
+            .title(sp(
+                format!(
+                    " commit {} ",
+                    if staged > 0 { crate::ui::plural(staged, "staged file") } else { "everything".into() }
+                ),
+                faint(),
+            ));
+        let inner = block.inner(r);
+        f.render_widget(block, r);
+        let body: Vec<Line> = if c.text.is_empty() {
+            vec![Line::from(sp(" message: summary line, a blank line, then why", faint()))]
+        } else {
+            lines.iter().skip(top).take(shown).map(|l| Line::from(sp(format!(" {l}"), text()))).collect()
+        };
+        f.render_widget(Paragraph::new(body), inner);
+        f.set_cursor_position((inner.x + 1 + cursor.1 as u16, inner.y + (cursor.0 - top) as u16));
+        used += r.height + 1;
+    }
+
+    if let Some((what, out)) = op_error {
+        let mut lines = vec![Line::from(vec![sp(format!(" ✗ {what}"), bold(t.red)), sp("   esc dismiss", faint())])];
+        let body: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+        let skip = body.len().saturating_sub(8);
+        for l in &body[skip..] {
+            lines.push(Line::from(sp(format!("   {}", fit(l, width.saturating_sub(4))), fg(t.red))));
+        }
+        let h = lines.len() as u16;
+        f.render_widget(Paragraph::new(lines), Rect { y: area.y + used, height: h, ..area });
+        used += h + 1;
+    }
+    used.min(area.height)
 }
