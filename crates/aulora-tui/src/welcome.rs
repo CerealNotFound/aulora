@@ -16,6 +16,28 @@ use crate::ui::sp;
 pub struct Welcome {
     /// Whether the editor extension is installed; None while checking.
     pub extension: std::sync::Arc<std::sync::Mutex<Option<bool>>>,
+    /// In Terminal.app, whether Option is sent as Meta; checked again
+    /// every two seconds, so ticking the box shows at once.
+    pub meta: std::sync::Arc<std::sync::Mutex<Option<bool>>>,
+}
+
+/// In Terminal.app, whether the default profile sends Option as Meta,
+/// which Option-Delete (delete a word) and Option-Enter (new line) need.
+/// Without it Terminal.app sends Option-Delete as a plain Delete, and no
+/// program can tell the two apart. None in other terminals.
+pub fn option_as_meta() -> Option<bool> {
+    if std::env::var("TERM_PROGRAM").ok()? != "Apple_Terminal" {
+        return None;
+    }
+    let out = std::process::Command::new("defaults")
+        .args(["read", "com.apple.Terminal", "Default Window Settings"])
+        .output()
+        .ok()?;
+    let profile = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let script =
+        r#"defaults export com.apple.Terminal - | plutil -extract "Window Settings.$1.useOptionAsMetaKey" raw -o - -"#;
+    let out = std::process::Command::new("sh").args(["-c", script, "sh", &profile]).output().ok()?;
+    Some(matches!(String::from_utf8_lossy(&out.stdout).trim(), "true" | "1"))
 }
 
 fn config() -> serde_json::Value {
@@ -62,7 +84,23 @@ impl App {
         } else {
             *extension.lock().unwrap() = Some(true);
         }
-        self.welcome = Some(Welcome { extension });
+        let meta = std::sync::Arc::new(std::sync::Mutex::new(None));
+        if self.conn != Conn::Demo {
+            let weak = std::sync::Arc::downgrade(&meta);
+            std::thread::spawn(move || {
+                // Until the checklist closes.
+                while let Some(m) = weak.upgrade() {
+                    let now = option_as_meta();
+                    *m.lock().unwrap() = now;
+                    drop(m);
+                    if now.is_none() {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                }
+            });
+        }
+        self.welcome = Some(Welcome { extension, meta });
     }
 
     /// A key while the checklist is open. Returns an action to run.
@@ -107,6 +145,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
     let t = theme::get();
     let Some(w) = &app.welcome else { return };
     let ext = *w.extension.lock().unwrap();
+    let meta = *w.meta.lock().unwrap();
     let width = area.width.saturating_sub(4).min(76);
     let height = 25.min(area.height.saturating_sub(2));
     let r = Rect {
@@ -174,17 +213,26 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
         ("⇥", "move between the sidebar and each pane"),
         ("⏎", "type into a pane; ctrl-q gives the keys back to aulora"),
         ("| -  C", "split with a shell, or put Claude beside this pane"),
-        ("d f", "show Changes or Files beside it"),
+        ("d f", "Changes or Files in the panel on the right"),
         ("ctrl-p", "find anything: files, # workspaces, @ agents, > actions"),
         ("?", "every key, searchable"),
     ] {
         lines.push(Line::from(vec![sp(format!("   {k:<8}"), bold(t.accent)), sp(what, dim())]));
     }
-    lines.push(Line::raw(""));
-    lines.push(Line::from(sp(
-        " In Terminal.app, turn on Settings → Profiles → Keyboard → \"Use Option as Meta key\" for Option-Delete and Option-Enter.",
-        faint(),
-    )));
+    if let Some(on) = meta {
+        lines.push(Line::raw(""));
+        lines.push(Line::from(vec![
+            check(Some(on)),
+            sp("Option as Meta in Terminal.app", text()),
+            sp("  so Option-Delete deletes a word, Option-Enter a new line", faint()),
+        ]));
+        if !on {
+            lines.push(Line::from(sp(
+                "     Terminal → Settings → Profiles → Keyboard → tick \"Use Option as Meta key\"",
+                faint(),
+            )));
+        }
+    }
     lines.push(Line::raw(""));
     lines.push(Line::from(vec![key("⏎"), sp("start", faint())]));
     f.render_widget(Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }), inner);

@@ -11,7 +11,7 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 
 | | Request | Where it stands |
 |---|---|---|
-| ⬜ | Option-Delete deletes a whole word | Reported 2026-10-20: it doesn't. aulora handles ESC DEL (and Ctrl-W, Ctrl-U) in its text fields and passes it to panes, but Terminal.app sends a plain Delete for Option-Delete unless "Use Option as Meta key" is on, so nothing can tell it apart. Fix in progress. |
+| 🟡 | Option-Delete deletes a whole word | Reported 2026-10-20 that it doesn't. Cause: none of your Terminal.app profiles has "Use Option as Meta key" on, so Option-Delete arrives as a plain Delete and no program can tell them apart. aulora handles ESC DEL (and Ctrl-W, Ctrl-U) in its text fields and passes it to panes. Fix: tick Terminal → Settings → Profiles → Keyboard → "Use Option as Meta key" (takes effect at once). The welcome checklist (menu → Getting started) now checks this live in Terminal.app. |
 | ✅ | Option-arrows keep jumping words while typing in a pane | They go to the program; pane focus moves with Tab, clicks, or Option-arrows only when not typing. |
 | ✅ | Ctrl-Delete deletes a word in panes | Sends Ctrl-W. |
 | ✅ | Scroll a conversation reliably with the keyboard | ↑↓ / j k a line, Ctrl-U / Ctrl-D half a page, PgUp / PgDn, g / G; J / K move the cursor. |
@@ -82,6 +82,7 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 | 🟡 | aulora's panes inside VS Code | Extension 0.2.0: "aulora: Open a pane…" and "aulora: Open this workspace's panes" open daemon panes as VS Code terminals (screen, typing, resizing; closing leaves the pane running). Tested against a real daemon; check in your VS Code after reloading. |
 | ✅ | Side-by-side diffs | `s` in Changes: old left, new right, removals beside their additions, words marked (from 100 columns). |
 | 🟡 | Files and Changes in a panel | `d` / `f` open one panel down the right edge of the tab, full height, beside every pane and conversation; it never replaces them. `d` or `f` again closes it; the other key switches it. Layouts saved earlier keep their Changes leaf where it was. |
+| ⬜ | Files as a side panel by default, with changes visible in it | Asked 2026-10-20 ("similar to how you have in this photo"): a Files panel on one side, open by default, showing which files changed; easy to toggle and close. |
 | 🟡 | Changes showed nothing for aulora and adarshji (both git repos) | Cause: `d` with an agent selected showed only that agent's edits, so changes made by another agent or by hand were hidden ("Nothing this agent wrote is uncommitted"). Changes now always opens on every change; `a` narrows to one agent. (Both repos are clean right now, so there's nothing to show until something changes.) |
 
 ## Reliability
