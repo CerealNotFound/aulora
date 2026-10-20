@@ -124,6 +124,19 @@ impl Tab {
         self.view(self.focus)
     }
 
+    /// Where a new pane goes: beside the focused leaf, unless that's the
+    /// Files or Changes panel, whose narrow strip it would halve; then
+    /// beside the main view next to it.
+    pub fn split_target(&self) -> u64 {
+        let leaves = self.leaves();
+        match leaves.iter().find(|(id, _)| *id == self.focus) {
+            Some((_, v)) if v.is_panel() => {
+                leaves.iter().rev().find(|(_, v)| !v.is_panel()).map_or(self.focus, |(id, _)| *id)
+            }
+            _ => self.focus,
+        }
+    }
+
     pub fn find(&self, pred: impl Fn(&View) -> bool) -> Option<u64> {
         self.leaves().into_iter().find(|(_, v)| pred(v)).map(|(id, _)| id)
     }
@@ -396,6 +409,19 @@ mod tests {
 
     fn pane(id: &str) -> View {
         View::Pane { id: id.into() }
+    }
+
+    #[test]
+    fn a_new_pane_never_halves_the_panel() {
+        let mut l = Layouts::default();
+        let a = l.new_tab("/p", View::Conversation { session: "s".into() });
+        let (p, s1) = (l.id(), l.id());
+        let tab = l.space("/p").tab_mut().unwrap();
+        tab.add_panel(View::Files, p, s1);
+        tab.focus = p;
+        assert_eq!(tab.split_target(), a, "beside the main view instead");
+        tab.focus = a;
+        assert_eq!(tab.split_target(), a);
     }
 
     #[test]

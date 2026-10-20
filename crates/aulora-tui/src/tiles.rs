@@ -347,8 +347,8 @@ impl App {
         let space = self.layouts.space(root);
         match (dir, space.tab_mut()) {
             (Some(dir), Some(tab)) => {
-                let f = tab.focus;
-                tab.split(f, dir, view, leaf_id, split_id);
+                let target = tab.split_target();
+                tab.split(target, dir, view, leaf_id, split_id);
             }
             _ => {
                 self.layouts.new_tab(root, view);
@@ -449,7 +449,8 @@ impl App {
     /// starting a new pane at roughly the right size.
     pub fn new_pane_size(&self, dir: Option<Dir>) -> Option<(u16, u16)> {
         let tab = self.tab()?;
-        let (_, r): &(u64, Rect) = self.leaf_rects.iter().find(|(id, _)| *id == tab.focus)?;
+        let target = tab.split_target();
+        let (_, r): &(u64, Rect) = self.leaf_rects.iter().find(|(id, _)| *id == target)?;
         let (w, h) = (r.width.saturating_sub(2), r.height.saturating_sub(2));
         Some(match dir {
             Some(Dir::Right) => (w / 2, h),
