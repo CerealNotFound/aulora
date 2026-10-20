@@ -270,6 +270,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         body(f, rows[0], app);
     }
     mode_bar(f, rows[1], app);
+    app.frame = Some(f.buffer_mut().clone());
 
     if app.help.is_some() {
         dim_behind(f.buffer_mut());
@@ -298,6 +299,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     } else {
         None
     };
+    if let Some(s) = &app.selection {
+        s.paint(f.buffer_mut());
+    }
 }
 
 fn body(f: &mut Frame, area: Rect, app: &mut App) {
@@ -1079,13 +1083,19 @@ fn prompt_box(f: &mut Frame, area: Rect, app: &mut App, s: &Session) -> u16 {
     f.render_widget(block, boxed);
     app.hits.push((boxed, Hit::Compose(s.id.clone())));
     let body: Vec<Line> = match composing {
-        Some(_) => lines
-            .iter()
-            .enumerate()
-            .skip(top_line)
-            .take(shown)
-            .map(|(i, l)| Line::from(vec![sp(if i == 0 { " > " } else { "   " }, fg(t.accent)), sp(l.clone(), text())]))
-            .collect(),
+        Some(c) => {
+            // Everything selected (Cmd-A, Ctrl-A twice) shows highlighted.
+            let style = if c.all { text().add_modifier(ratatui::style::Modifier::REVERSED) } else { text() };
+            lines
+                .iter()
+                .enumerate()
+                .skip(top_line)
+                .take(shown)
+                .map(|(i, l)| {
+                    Line::from(vec![sp(if i == 0 { " > " } else { "   " }, fg(t.accent)), sp(l.clone(), style)])
+                })
+                .collect()
+        }
         None if blocked => {
             vec![Line::from(sp(format!(" Claude is waiting for an answer in {editor}; answer it there"), faint()))]
         }

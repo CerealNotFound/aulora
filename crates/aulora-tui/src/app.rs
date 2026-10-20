@@ -293,6 +293,10 @@ pub struct App {
     pub hits: Vec<(Rect, Hit)>,
     /// A destructive action waiting for confirmation.
     pub confirm: Option<Confirm>,
+    /// Text selected with the mouse.
+    pub selection: Option<crate::select::Selection>,
+    /// The last frame as drawn, before the selection was painted, to copy from.
+    pub frame: Option<ratatui::buffer::Buffer>,
 }
 
 /// The id an agent row is saved under.
@@ -409,6 +413,8 @@ impl App {
             seen_dirty: false,
             hits: Vec::new(),
             confirm: None,
+            selection: None,
+            frame: None,
         }
     }
 

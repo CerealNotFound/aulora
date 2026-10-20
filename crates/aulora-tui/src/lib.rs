@@ -19,6 +19,7 @@ mod keymap;
 mod keys;
 mod layout;
 mod links;
+mod select;
 mod slash;
 mod term;
 mod theme;

@@ -14,6 +14,9 @@ pub struct Compose {
     pub menu: usize,
     /// Byte offset into `text`, always on a char boundary.
     pub cursor: usize,
+    /// Everything is selected (Cmd-A, or Ctrl-A twice): Delete clears it,
+    /// typing replaces it, a movement key lets it go.
+    pub all: bool,
 }
 
 /// What came back from a send running in the background.
@@ -25,10 +28,15 @@ pub enum Sent {
 impl Compose {
     pub fn new(session: String, draft: String) -> Compose {
         let cursor = draft.len();
-        Compose { session, text: draft, cursor, menu: 0 }
+        Compose { session, text: draft, cursor, menu: 0, all: false }
     }
 
     pub fn insert(&mut self, s: &str) {
+        // A paste over a full selection replaces it.
+        if std::mem::take(&mut self.all) {
+            self.text.clear();
+            self.cursor = 0;
+        }
         let s = s.replace("\r\n", "\n").replace('\r', "\n");
         self.text.insert_str(self.cursor, &s);
         self.cursor += s.len();
@@ -55,6 +63,32 @@ impl Compose {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let cmd = key.modifiers.contains(KeyModifiers::SUPER);
+        // Select everything: Cmd-A where the terminal sends it (Terminal.app
+        // keeps Cmd-A for itself), or Ctrl-A at the start of the text.
+        if key.code == KeyCode::Char('a') && (cmd || (ctrl && self.cursor == 0 && !self.text.is_empty())) {
+            self.all = !self.text.is_empty();
+            self.cursor = self.text.len();
+            return self.all.then(|| Action::Copy(self.text.clone()));
+        }
+        if std::mem::take(&mut self.all) {
+            match key.code {
+                KeyCode::Backspace | KeyCode::Delete => {
+                    self.text.clear();
+                    self.cursor = 0;
+                    return None;
+                }
+                KeyCode::Char(_) if !ctrl && !cmd => {
+                    self.text.clear();
+                    self.cursor = 0;
+                }
+                KeyCode::Left | KeyCode::Home | KeyCode::Up => {
+                    self.cursor = 0;
+                    return None;
+                }
+                _ => {}
+            }
+        }
         match key.code {
             KeyCode::Esc => return Some(Action::Close),
             // Shift-Enter, Alt-Enter or Ctrl-J for a new line (Claude Code).
@@ -143,6 +177,8 @@ fn delete_word(s: &mut String) -> bool {
 pub enum Action {
     Send,
     Close,
+    /// Everything was selected: copy it, as any selection is copied.
+    Copy(String),
 }
 
 impl App {
@@ -270,6 +306,30 @@ mod tests {
 
     fn k(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn select_all_then_delete_or_type() {
+        let ctrl_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        let cmd_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::SUPER);
+        // Cmd-A selects everything (and copies it); Delete clears it.
+        let mut c = Compose::new("s".into(), "fix the\nbilling page".into());
+        assert!(matches!(c.key(cmd_a), Some(Action::Copy(t)) if t == "fix the\nbilling page"));
+        assert!(c.all);
+        c.key(k(KeyCode::Backspace));
+        assert_eq!((c.text.as_str(), c.cursor, c.all), ("", 0, false));
+        // Ctrl-A twice: to the start of the line, then everything; typing replaces it.
+        let mut c = Compose::new("s".into(), "old prompt".into());
+        assert!(c.key(ctrl_a).is_none());
+        assert_eq!(c.cursor, 0);
+        assert!(matches!(c.key(ctrl_a), Some(Action::Copy(_))));
+        c.key(k(KeyCode::Char('n')));
+        assert_eq!(c.text, "n");
+        // A movement key lets the selection go and keeps the text.
+        let mut c = Compose::new("s".into(), "keep".into());
+        c.key(cmd_a);
+        c.key(k(KeyCode::Left));
+        assert_eq!((c.text.as_str(), c.cursor, c.all), ("keep", 0, false));
     }
 
     #[test]

@@ -70,6 +70,8 @@ impl Wheel {
 pub struct Input {
     pub wheel: Wheel,
     last_click: Option<(Instant, u16, u16)>,
+    /// Where the left button went down on selectable text.
+    press: Option<(ratatui::layout::Rect, Option<String>, (u16, u16))>,
     last_ctrl_q: Option<Instant>,
 }
 
@@ -79,6 +81,7 @@ fn conv_height(app: &App) -> usize {
 
 /// Returns true to quit.
 pub fn on_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx, input: &mut Input) -> bool {
+    app.selection = None;
     if app.toast.as_ref().is_some_and(|t| t.error) {
         app.toast = None;
     }
@@ -122,6 +125,7 @@ pub fn on_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx, input: &m
         match c.key(key) {
             Some(crate::compose::Action::Send) => app.commit(),
             Some(crate::compose::Action::Close) => app.close_commit_message(),
+            Some(crate::compose::Action::Copy(text)) => copy_selected_text(app, &text),
             None => {}
         }
         return false;
@@ -160,6 +164,7 @@ pub fn on_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx, input: &m
         match c.key(key) {
             Some(crate::compose::Action::Send) => app.send_compose(&opts.socket),
             Some(crate::compose::Action::Close) => app.close_compose(),
+            Some(crate::compose::Action::Copy(text)) => copy_selected_text(app, &text),
             None => {}
         }
         return false;
@@ -1672,10 +1677,84 @@ fn run_menu_item(app: &mut App, opts: &Options, ctx: &Ctx, item: MenuItem) {
 
 /// Copy through the terminal (OSC 52), which works over SSH too.
 fn copy_to_clipboard(text: &str) {
-    use std::io::Write;
-    let mut out = std::io::stdout();
-    let _ = write!(out, "\x1b]52;c;{}\x07", proto::encode(text.as_bytes()));
-    let _ = out.flush();
+    let _ = crate::clipboard::copy(text);
+}
+
+/// Copy text that was just selected and say so.
+fn copy_selected_text(app: &mut App, text: &str) {
+    if app.conn == Conn::Demo {
+        app.toast(format!("Would copy {} characters (demo)", text.chars().count()));
+        return;
+    }
+    match crate::clipboard::copy(text) {
+        Ok(()) => {
+            let lines = text.lines().count();
+            app.toast(if lines > 1 {
+                format!("Copied {lines} lines")
+            } else {
+                format!("Copied \"{}\"", crate::ui::fit(text, 40))
+            });
+        }
+        Err(e) => app.error(format!("Couldn't copy: {e}")),
+    }
+}
+
+/// Copy what's selected and say how much.
+fn copy_selection(app: &mut App) {
+    let Some(s) = app.selection.clone() else { return };
+    let text = match s.pane.as_ref().and_then(|p| app.terms.get(p)) {
+        Some(t) => s.text_from_screen(t.parser.screen()),
+        None => app.frame.as_ref().map(|b| s.text_from(b)).unwrap_or_default(),
+    };
+    if text.trim().is_empty() {
+        app.selection = None;
+        return;
+    }
+    copy_selected_text(app, &text);
+}
+
+/// Where a drag starting here may select: a pane's screen (unless the
+/// program in it takes the mouse), a view's inside, or the sidebar.
+fn selectable(
+    app: &App,
+    hit: &Hit,
+    rect: ratatui::layout::Rect,
+    col: u16,
+    row: u16,
+) -> Option<(ratatui::layout::Rect, Option<String>)> {
+    let inside = |r: &ratatui::layout::Rect| col >= r.x && col < r.right() && row >= r.y && row < r.bottom();
+    match hit {
+        Hit::Terminal(id) => {
+            let wants = app
+                .terms
+                .get(id)
+                .is_some_and(|t| t.parser.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None);
+            (!(app.typing && wants)).then(|| (rect, Some(id.clone())))
+        }
+        Hit::Row(_) | Hit::Sidebar | Hit::Add(_) => {
+            app.hits.iter().find(|(r, h)| matches!(h, Hit::Sidebar) && inside(r)).map(|(r, _)| (*r, None))
+        }
+        Hit::Split(_)
+        | Hit::Close(_)
+        | Hit::Action(_)
+        | Hit::MenuItem(_)
+        | Hit::Dismiss
+        | Hit::NewMenu
+        | Hit::AppMenu
+        | Hit::SpaceTab(_)
+        | Hit::NewTab
+        | Hit::FinderItem(_)
+        | Hit::Resume(_) => None,
+        _ => app.leaf_rects.iter().find(|(_, r)| inside(r)).map(|(_, r)| {
+            let inner = ratatui::layout::Rect {
+                x: r.x + 1,
+                y: r.y + 1,
+                width: r.width.saturating_sub(2),
+                height: r.height.saturating_sub(2),
+            };
+            (inner, None)
+        }),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1724,8 +1803,29 @@ pub fn on_hover(app: &mut App, ev: MouseEvent) -> bool {
 }
 
 pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input: &mut Input) {
-    let Some((rect, hit)) = app.hit(ev.column, ev.row) else { return };
     let (col, row) = (ev.column, ev.row);
+    // A drag that started on text selects it; letting go copies it.
+    if app.dragging.is_none()
+        && let Some((region, pane, at)) = input.press.clone()
+    {
+        match ev.kind {
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let s = app.selection.get_or_insert_with(|| crate::select::Selection::new(region, at, pane));
+                s.extend((col, row));
+                return;
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                input.press = None;
+                if app.selection.as_ref().is_some_and(|s| !s.is_empty()) {
+                    copy_selection(app);
+                    return;
+                }
+                app.selection = None;
+            }
+            _ => {}
+        }
+    }
+    let Some((rect, hit)) = app.hit(ev.column, ev.row) else { return };
     if app.away.is_some() && matches!(ev.kind, MouseEventKind::Down(_)) {
         app.away = None;
         return;
@@ -1826,6 +1926,19 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                 .last_click
                 .is_some_and(|(t, c, r)| t.elapsed() < Duration::from_millis(350) && c == col && r == row);
             input.last_click = Some((Instant::now(), col, row));
+            app.selection = None;
+            input.press = selectable(app, &hit, rect, col, row).map(|(r, p)| (r, p, (col, row)));
+            // Double-click selects a word in a pane, a file or a diff.
+            if double
+                && matches!(hit, Hit::Terminal(_) | Hit::FileView | Hit::Diff)
+                && let Some((region, pane, _)) = input.press.clone()
+                && let Some(s) = app.frame.as_ref().and_then(|b| crate::select::word_at(b, region, (col, row), pane))
+            {
+                input.press = None;
+                app.selection = Some(crate::select::Selection { pane: None, ..s });
+                copy_selection(app);
+                return;
+            }
             // A click on an underlined link opens it, unless a program in
             // the pane asked for the mouse and you're typing into it.
             let program_wants_mouse = matches!(&hit, Hit::Terminal(id) if app.typing

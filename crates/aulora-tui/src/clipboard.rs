@@ -46,3 +46,44 @@ pub fn save_image() -> Result<Option<PathBuf>, String> {
         }
     }
 }
+
+/// Put text on the clipboard. Locally through the system's clipboard tool
+/// (Terminal.app ignores OSC 52); OSC 52 as well, which reaches the local
+/// clipboard over SSH in terminals that support it.
+pub fn copy(text: &str) -> Result<(), String> {
+    use std::io::Write;
+    let mut out = std::io::stdout();
+    let _ = write!(out, "\x1b]52;c;{}\x07", aulora_core::proto::encode(text.as_bytes()));
+    let _ = out.flush();
+    if std::env::var_os("SSH_CONNECTION").is_some() {
+        return Ok(());
+    }
+    let tools: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
+        &[("pbcopy", &[])]
+    } else {
+        &[("wl-copy", &[]), ("xclip", &["-selection", "clipboard"]), ("xsel", &["--clipboard", "--input"])]
+    };
+    let mut last = String::from("no clipboard tool found");
+    for (tool, args) in tools {
+        let child = Command::new(tool)
+            .args(*args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        match child {
+            Ok(mut child) => {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(text.as_bytes());
+                }
+                return match child.wait() {
+                    Ok(s) if s.success() => Ok(()),
+                    Ok(s) => Err(format!("{tool} failed ({s})")),
+                    Err(e) => Err(e.to_string()),
+                };
+            }
+            Err(e) => last = format!("{tool}: {e}"),
+        }
+    }
+    Err(last)
+}

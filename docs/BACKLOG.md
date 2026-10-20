@@ -23,6 +23,8 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 | 🟡 | Cmd-V pastes text and images | Reported again 2026-10-20. Cause for text: with the sidebar focused (where you are after launching or clicking a row) a paste was dropped silently. Now it goes to the selected pane (typing starts) or session (prompt box opens), into Ctrl-P, help and filter boxes, and when it can't go anywhere a message says why. Checked by driving aulora in a pty with the exact bracketed-paste bytes Cmd-V sends. Images: if Terminal.app sends nothing at all for an image-only Cmd-V, no terminal program can see it; Ctrl-V is then the image paste, as in Claude Code. `aulora keys` with a screenshot copied settles which. |
 | ✅ | Multi-line prompts must not break the screen | Line breaks and tabs are drawn as spaces everywhere; CRLF files too. |
 | ✅ | After sending a prompt, the cursor stays in the input | The prompt box stays open and empty, ready for the next one. |
+| 🟡 | Cmd-A selects everything in the input, then Delete clears it | In the prompt box: Cmd-A where the terminal sends it (Ghostty, kitty, WezTerm, iTerm2); Terminal.app keeps Cmd-A for its own Select All and never sends it, so there Ctrl-A twice does the same. The text highlights; Delete clears it, typing or pasting replaces it, an arrow lets it go. |
+| 🟡 | Selecting in the input copies too | A mouse selection in the prompt box copies like anywhere else, and select-all copies the whole prompt. |
 | 🟡 | Shift-Enter for a new line | Works in panes and the prompt box where the terminal sends Shift-Enter distinctly. Terminal.app sends it as plain Enter, so there: Option-Enter (Option as Meta, or Claude's /terminal-setup), Ctrl-J, or `\` then Enter, all of which work in panes and the prompt box. `aulora keys` says which case you're in. |
 
 ## Mouse and links
@@ -31,7 +33,7 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 |---|---|---|
 | ✅ | Scrolling and clicks that do something | Wheel under the pointer, click to focus or type, drag pane borders. |
 | 🟡 | Cmd-click a URL to open it | A URL under the pointer underlines; a click (Cmd-click arrives as a click) opens it. Untested in Terminal.app, which may also open it itself (twice). |
-| ⬜ | Select text with the mouse and copy it, as in Claude Code | Reported 2026-10-20: no text is copyable (aulora takes the mouse, so the terminal can't select). Open: drag selects anywhere aulora draws text, highlighted; letting go copies it and says so; double-click a word. |
+| 🟡 | Select text with the mouse and copy it, as in Claude Code | Drag over text anywhere (panes, conversations, files, diffs, the sidebar, the prompt box): it highlights, and letting go copies it and says what. Double-click copies a word in a pane, file or diff. A pane gives wrapped lines back whole. Copying now goes through pbcopy, because Terminal.app ignores the OSC 52 that `y` used, so `y` never copied there either. Checked by driving aulora in a pty with real mouse events. A program in a pane that takes the mouse (vim, htop) still gets the drag while you type into it. |
 | ✅ | Open in Finder | `O`, and "Open in Finder" in row menus. |
 
 ## Layout and look
