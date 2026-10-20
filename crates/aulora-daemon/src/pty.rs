@@ -20,9 +20,20 @@ const CHANNEL: usize = 1_024;
 
 /// Environment variables a pane must not inherit from whoever started the
 /// daemon (often a Claude Code hook running inside some other terminal).
+/// Claude Code gives its hooks and commands markers of its own session;
+/// a Claude that inherits CLAUDE_CODE_CHILD_SESSION thinks it's a child
+/// session and doesn't save its transcript.
 const STRIP_ENV: &[&str] = &[
     "CLAUDECODE",
     "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_PID",
+    "AI_AGENT",
     "CLAUDE_CODE_SSE_PORT",
     "CLAUDE_PROJECT_DIR",
     "CLAUDE_ENV_FILE",
@@ -503,6 +514,25 @@ mod tests {
         assert_eq!(p.size(), (100, 30));
         assert!(wait_for(&p, "30 100"), "screen was: {:?}", p.text());
         p.kill();
+    }
+
+    #[test]
+    fn claude_session_markers_are_not_inherited() {
+        // What Claude Code 2.1 sets for a hook, which may start the daemon.
+        for k in [
+            "AI_AGENT",
+            "CLAUDECODE",
+            "CLAUDE_CODE_CHILD_SESSION",
+            "CLAUDE_CODE_ENTRYPOINT",
+            "CLAUDE_CODE_MESSAGING_SOCKET",
+            "CLAUDE_CODE_MESSAGING_TOKEN",
+            "CLAUDE_CODE_SESSION_ATTENDED",
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_PID",
+            "CLAUDE_PROJECT_DIR",
+        ] {
+            assert!(STRIP_ENV.contains(&k), "{k} reaches panes");
+        }
     }
 
     #[test]
