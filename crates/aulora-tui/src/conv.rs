@@ -926,7 +926,13 @@ fn recap(entries: &[Entry]) -> Vec<Line<'static>> {
     let t = theme::get();
     let Some(start) = entries.iter().rposition(Entry::is_prompt) else { return vec![] };
     let turn = &entries[start..];
-    let (Some(from), Some(to)) = (turn[0].at, turn.iter().rev().find_map(|e| e.at)) else { return vec![] };
+    // Until Claude's last prompt, reply or tool call. Notes can come later
+    // (the session ending, a background agent finishing), and a session
+    // closed an hour after its last reply didn't work for an hour.
+    let worked = |e: &&Entry| !matches!(e.body, Body::Note(..));
+    let (Some(from), Some(to)) = (turn[0].at, turn.iter().rev().filter(worked).find_map(|e| e.at)) else {
+        return vec![];
+    };
     let secs = (to - from) / 1000;
     if secs < 1 || turn.len() < 2 {
         return vec![];
@@ -1082,6 +1088,25 @@ mod tests {
         r#"{"type":"attachment","timestamp":"2026-10-19T10:00:06Z","attachment":{"type":"queued_command","prompt":"also check the docs"}}"#,
         r#"{"type":"user","timestamp":"2026-10-19T10:00:09Z","message":{"role":"user","content":"also check the docs"}}"#,
     ];
+
+    #[test]
+    fn the_recap_stops_at_the_last_reply() {
+        let (dir, mut c) = transcript("recap", &LINES[..5]);
+        let end = FeedEvent {
+            at: parse_iso_ms("2026-10-19T10:05:00Z").unwrap(),
+            session_id: "s".into(),
+            project_root: "/p".into(),
+            kind: FeedKind::End,
+            text: "session ended".into(),
+        };
+        let agent =
+            FeedEvent { at: parse_iso_ms("2026-10-19T10:00:07Z").unwrap(), kind: FeedKind::Agent, ..end.clone() };
+        c.add_notes(&[&agent, &end]);
+        let text: String =
+            recap(&c.entries).iter().flat_map(|l| l.spans.iter().map(|s| s.content.to_string())).collect();
+        assert!(text.contains("Worked for 5s · ran 1 command"), "{text}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn reads_entries_and_pairs_results() {
