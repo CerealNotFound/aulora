@@ -72,7 +72,7 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 | ✅ | Edit in a terminal editor | `e` opens $EDITOR in a pane at the line. |
 | ✅ | Open a new project without VS Code | Ctrl-O (repos on disk, recent, any path), `aulora open [dir]`. |
 | ✅ | Find anything | Ctrl-P: files, `#` projects, `@` agents, `>` actions. |
-| ⬜ | Jump from aulora to a session's VS Code terminal | Extension can do it (terminal.show); not built. |
+| 🟡 | Jump from aulora to a session's VS Code terminal | `o` on a VS Code session, or its menu: `code <project>` raises the window, the extension shows the terminal. Needs the restarted daemon and reloaded VS Code to check live. |
 | ⬜ | aulora's panes inside VS Code | Roadmap step 3; not built. |
 | ⬜ | Side-by-side diffs | Not built. |
 

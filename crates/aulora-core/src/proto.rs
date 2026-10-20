@@ -94,6 +94,10 @@ pub enum ClientMsg {
     Upgrade {
         exe: Option<String>,
     },
+    /// Bring a session's editor terminal into view.
+    ShowSession {
+        session_id: String,
+    },
     /// Send a prompt to a Claude session running in an editor's terminal,
     /// as if typed there. Replies once the editor has typed it.
     SendPrompt {
@@ -152,6 +156,10 @@ pub enum ServerMsg {
     PaneExited {
         pane_id: String,
         code: u32,
+    },
+    /// To an editor extension: show this terminal and give it focus.
+    Show {
+        terminal_id: u32,
     },
     /// To an editor extension: type this into a terminal and press Enter.
     /// Answer with `Typed`.

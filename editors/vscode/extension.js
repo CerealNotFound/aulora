@@ -110,6 +110,10 @@ function create(vscode, opts = {}) {
       return;
     }
     if (msg.type === "type") onType(msg);
+    if (msg.type === "show") {
+      const t = terminalById(msg.terminal_id);
+      if (t) t.show(false);
+    }
   }
 
   function connect() {

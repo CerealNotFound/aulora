@@ -796,6 +796,18 @@ async fn handle_conn(shared: Arc<Shared>, stream: UnixStream) -> Result<()> {
                             _ => err(anyhow::anyhow!("no program to upgrade to")),
                         }
                     }
+                    ClientMsg::ShowSession { session_id } => {
+                        if shared.editors.target(&session_id).is_none() {
+                            shared.recompute_reach().await;
+                        }
+                        match shared.editors.target(&session_id) {
+                            Some(t) => match shared.editors.show(&t).await {
+                                Ok(()) => Some(ServerMsg::Ok),
+                                Err(e) => err(anyhow::anyhow!(e)),
+                            },
+                            None => err(anyhow::anyhow!("no editor with the aulora extension has this session's terminal")),
+                        }
+                    }
                     ClientMsg::SendPrompt { session_id, text } => match shared.send_prompt(&session_id, text).await {
                         Ok(()) => Some(ServerMsg::Ok),
                         Err(e) => err(e),

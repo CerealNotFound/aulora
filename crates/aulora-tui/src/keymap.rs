@@ -319,7 +319,7 @@ pub static BINDINGS: &[Binding] = &[
     b!(Global, "ctrl-o", [ctrl('o')], OpenProject, "open a project (a folder) in a new tab", "open"),
     b!(Global, "n", [k('n')], NextAlert, "jump to the next agent that needs you", "next alert"),
     b!(Global, "z", [k('z')], Zoom, "zoom this pane (again to unzoom)"),
-    b!(Global, "o", [k('o')], OpenEditor, "open the project in your editor"),
+    b!(Global, "o", [k('o')], OpenEditor, "open in your editor; a VS Code session: go to its terminal"),
     b!(Global, "O", [k('O')], Reveal, "show it in Finder"),
     b!(Global, "t", [k('t')], Themes, "choose a theme", "theme"),
     b!(Global, "F12", [code(KeyCode::F(12))], ToggleMouse, "turn mouse capture off so the terminal can select text"),

@@ -131,6 +131,8 @@ pub enum MenuItem {
     NewClaude(String),
     NewShell(String),
     NewTab(String),
+    /// Bring a session's VS Code terminal to the front.
+    Jump(String),
     /// Show a file or folder in Finder.
     Reveal(String),
     /// Run an action, with its label.
@@ -149,6 +151,7 @@ impl MenuItem {
             MenuItem::NewClaude(_) => "New Claude here",
             MenuItem::NewShell(_) => "New shell here",
             MenuItem::NewTab(_) => "New tab",
+            MenuItem::Jump(_) => "Go to its terminal in VS Code",
             MenuItem::Reveal(_) => "Open in Finder",
             MenuItem::Run(_, label) => label,
         }
@@ -630,6 +633,9 @@ impl App {
                 items.push(MenuItem::Close(r.clone()));
             }
             RowRef::Session(id) => {
+                if self.session(id).is_some_and(|s| s.state.is_live() && s.terminal.editor.is_some()) {
+                    items.push(MenuItem::Jump(id.clone()));
+                }
                 items.push(MenuItem::Resume(id.clone()));
                 if self.session(id).is_some_and(|s| !s.state.is_live()) {
                     items.push(MenuItem::Close(r.clone()));

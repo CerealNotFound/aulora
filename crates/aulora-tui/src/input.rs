@@ -298,8 +298,15 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
             }
         }
         Action::OpenEditor => {
-            if let Some(root) = app.selected_root() {
-                open_in_editor(app, &root);
+            // A session running in VS Code: go to its terminal there.
+            let jump = app.selected_session_id().filter(|id| {
+                app.session(id)
+                    .is_some_and(|s| s.state.is_live() && s.terminal.editor.is_some() && s.terminal.pane_id.is_none())
+            });
+            match (jump, app.selected_root()) {
+                (Some(id), _) => jump_to_session(app, opts, &id),
+                (None, Some(root)) => open_in_editor(app, &root),
+                _ => {}
             }
         }
         Action::Close => {
@@ -1112,6 +1119,30 @@ pub fn open_project(app: &mut App, opts: &Options, ctx: &Ctx, path: &str, claude
     spawn(app, opts, ctx, kind, path.to_string(), vec![], label);
 }
 
+/// Bring a session's editor window to the front (`code <project>` raises
+/// the window that has it open) and its terminal into view (through the
+/// extension).
+fn jump_to_session(app: &mut App, opts: &Options, id: &str) {
+    let Some(s) = app.session(id).cloned() else { return };
+    let editor = s.terminal.editor.clone().unwrap_or_else(|| "VS Code".into());
+    if app.conn == Conn::Demo {
+        app.toast(format!("Would go to its terminal in {editor} (demo)"));
+        return;
+    }
+    let cli = if editor.contains("Cursor") { "cursor".to_string() } else { app.editor.clone() };
+    let _ = std::process::Command::new(&cli)
+        .arg(&s.project_root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    match client::command(&opts.socket, &ClientMsg::ShowSession { session_id: id.to_string() }) {
+        Some(ServerMsg::Error { message }) => app.error(message),
+        Some(_) => app.toast(format!("Showing its terminal in {editor}")),
+        None => app.error("The daemon didn't answer"),
+    }
+}
+
 /// Show a file or folder in Finder (`open -R`), or the system's file
 /// manager elsewhere.
 pub fn reveal_in_finder(app: &mut App, path: &str) {
@@ -1479,6 +1510,7 @@ fn run_menu_item(app: &mut App, opts: &Options, ctx: &Ctx, item: MenuItem) {
             spawn(app, opts, ctx, PaneKind::Shell, root, vec![], "a shell");
         }
         MenuItem::Reveal(path) => reveal_in_finder(app, &path),
+        MenuItem::Jump(id) => jump_to_session(app, opts, &id),
         MenuItem::Run(action, _) => {
             perform(app, action, opts, ctx);
         }

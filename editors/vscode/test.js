@@ -10,7 +10,7 @@ const { create, socketPath, keystrokes } = require("./extension.js");
 
 function fakeVscode(pids) {
   const listeners = { open: [], close: [] };
-  const terminals = pids.map((pid, i) => ({ name: `zsh ${i}`, processId: Promise.resolve(pid), sent: [], sendText(t) { this.sent.push(t); } }));
+  const terminals = pids.map((pid, i) => ({ name: `zsh ${i}`, processId: Promise.resolve(pid), sent: [], shown: false, sendText(t) { this.sent.push(t); }, show() { this.shown = true; } }));
   return {
     terminals,
     window: {
@@ -74,6 +74,10 @@ async function main() {
   await until(() => got.some((m) => m.type === "typed"));
   assert.deepStrictEqual(vscode.terminals[1].sent, ["fix the tests", "\r"]);
   assert.deepStrictEqual(got.find((m) => m.type === "typed"), { type: "typed", request_id: 9, error: null });
+
+  // Showing a terminal brings it into view.
+  client.write(JSON.stringify({ type: "show", terminal_id: id }) + "\n");
+  await until(() => vscode.terminals[1].shown);
 
   // An unknown terminal is an error, not a crash.
   client.write(JSON.stringify({ type: "type", request_id: 10, terminal_id: 99, text: "x" }) + "\n");
