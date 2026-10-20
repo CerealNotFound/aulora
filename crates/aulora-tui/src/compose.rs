@@ -159,8 +159,11 @@ impl App {
         let Some(c) = self.compose.take() else { return };
         let text = c.text.trim_end().to_string();
         if text.trim().is_empty() {
+            self.compose = Some(c);
             return;
         }
+        // The box stays open and empty for the next prompt (Claude Code).
+        self.compose = Some(Compose::new(c.session.clone(), String::new()));
         let Some(s) = self.session(&c.session) else { return };
         let title = s.display_title();
         let editor = s.terminal.editor.clone().unwrap_or_else(|| "the editor".into());
@@ -193,8 +196,14 @@ impl App {
             match r {
                 Sent::Ok { title, editor } => self.toast(format!("Sent to {title} in {editor}")),
                 Sent::Failed { session, text, error } => {
-                    // Keep the words; nothing was lost.
-                    self.drafts.insert(session, text);
+                    // Keep the words; nothing was lost. Back in the box if
+                    // it's still open and empty, else as a draft.
+                    match self.compose.as_mut().filter(|c| c.session == session && c.text.is_empty()) {
+                        Some(c) => c.insert(&text),
+                        None => {
+                            self.drafts.insert(session, text);
+                        }
+                    }
                     self.error(format!("Not sent: {error}"));
                 }
             }
