@@ -8,7 +8,7 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/CerealNotFound/aulora"
 authors = ["Adarsh Pandey"]
-rust-version = "1.85"
+rust-version = "1.95"
 
 [workspace.dependencies]
 aulora-core = { path = "crates/aulora-core" }
