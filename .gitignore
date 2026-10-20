@@ -1,3 +1,4 @@
 /target
 *.aulora-tmp
 .DS_Store
+.*.swp
