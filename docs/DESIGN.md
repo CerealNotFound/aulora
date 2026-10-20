@@ -125,7 +125,9 @@ VS Code's Source Control panel, plus who did it.
 - With an agent selected, the tab shows that agent's changes; `a` switches to every change in the project. The tab you chose stays as you move between agents, so you can walk the sidebar reviewing each one.
 - Attribution reads the session transcripts Claude Code already keeps: every Edit and Write records its exact patch (`structuredPatch`) or the new file's content. A change belongs to the session whose recorded lines it contains. Transcripts are read incrementally, so this costs nothing after the first look, and it covers sessions from before aulora was installed.
 - git runs on a background thread: one `git status` and two `git diff -U0` calls give the whole tree, counts and attribution; the selected file's diff is read with context when you select it. The tab refreshes when the daemon's git poll sees something new, and every few seconds while it's shown.
-- Not yet: side-by-side diffs, discarding changes, committing.
+- Above the tree: the branch with what's waiting to push or pull, and `c commit`, `P push`, `p pull` (lazygit's keys, also clickable). `c` opens a message box, as in VS Code's Source Control: Enter commits what's staged, Shift-Enter adds a line, Esc keeps the message as a draft. With nothing staged it offers to commit everything (VS Code's smart commit). Push publishes a branch that has no upstream yet. Pull only fast-forwards, so it never makes a merge you didn't ask for.
+- These run in the background, with git's hooks and signing as usual, in their own session with no terminal: a password or passphrase prompt fails with git's message instead of taking over the screen. When something fails, git's own output shows above the tree until Esc.
+- Not yet: side-by-side diffs, discarding changes.
 
 ## Files
 

@@ -22,7 +22,7 @@ aulora watches every session through Claude Code's hooks and shows them all in o
 
 - **What needs you.** Permission prompts, questions (`AskUserQuestion`) and plans waiting for review show in amber at the top, with what Claude is asking for.
 - **What's happening where.** One tree: each project with its branch and git status, and under it every agent running there. Every agent is a terminal. Sessions that have ended open again with `claude --resume`, in the folder they ran in. Sessions running in another app (VS Code, Ghostty) show their whole conversation, scrollable and searchable, with every tool call.
-- **What changed, and who changed it.** The Changes tab is VS Code's Source Control view: staged and unstaged files in a tree, a syntax-highlighted diff with changed words marked, and a colored dot for the Claude session that wrote each change, read from its transcript. Select an agent to see only what it wrote. <kbd>space</kbd> stages, <kbd>o</kbd> opens the editor at the change.
+- **What changed, and who changed it.** The Changes tab is VS Code's Source Control view: staged and unstaged files in a tree, a syntax-highlighted diff with changed words marked, and a colored dot for the Claude session that wrote each change, read from its transcript. Select an agent to see only what it wrote. <kbd>space</kbd> stages, <kbd>c</kbd> commits, <kbd>P</kbd> pushes, <kbd>o</kbd> opens the editor at the change.
 - **Run Claude and your shells inside it.** <kbd>C</kbd> starts Claude Code in a pane and <kbd>c</kbd> starts a shell. The daemon owns these terminals, so they keep running when you close the dashboard, and `aulora attach` puts any of them in another terminal. A Claude session in a pane shows its live status right above its screen.
 - **Prompt sessions running in VS Code.** With the aulora extension (`aulora vscode install`), a session running in a VS Code or Cursor terminal gets a prompt box in aulora. What you write is typed into that terminal, so it shows up there as if you'd typed it, in the same session. aulora won't send while Claude is waiting on a permission prompt, where the keys would answer the dialog instead.
 - **Jump straight there.** <kbd>⏎</kbd> opens the project in your editor, and VS Code brings that project's window to the front. <kbd>n</kbd> cycles through the sessions that need you.
@@ -97,7 +97,7 @@ aulora follows Herdr: a sidebar with each **project** and the **agents** running
 | <kbd>F12</kbd> | Turn mouse capture off so your terminal can select text |
 | <kbd>?</kbd> | All keys: type to filter, <kbd>⏎</kbd> to run one |
 
-In Changes: <kbd>⏎</kbd> reads a file's diff or opens a folder, <kbd>space</kbd> stages or unstages, <kbd>[</kbd> <kbd>]</kbd> jump between hunks, <kbd>a</kbd> switches between the agent's changes and the whole project's, <kbd>o</kbd> opens the editor at the change.
+In Changes: <kbd>⏎</kbd> reads a file's diff or opens a folder, <kbd>space</kbd> stages or unstages, <kbd>c</kbd> commits, <kbd>P</kbd> pushes, <kbd>p</kbd> pulls (fast-forward only), <kbd>[</kbd> <kbd>]</kbd> jump between hunks, <kbd>a</kbd> switches between the agent's changes and the whole project's, <kbd>o</kbd> opens the editor at the change.
 
 In a conversation: <kbd>[</kbd> <kbd>]</kbd> jump between your prompts, <kbd>y</kbd> copies the message at the cursor, <kbd>G</kbd> goes to the latest and follows new messages, <kbd>Esc</kbd> goes back to the sidebar.
 
