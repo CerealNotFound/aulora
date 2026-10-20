@@ -245,10 +245,10 @@ impl App {
         let session = self.selected_session_id().filter(|_| !matches!(self.selected, Some(RowRef::Project(_))));
         // f shows or hides the panel everywhere; d switches it between
         // Changes and Files.
+        let shown =
+            self.layouts.space(&root).tab().and_then(|t| t.find(View::is_panel).and_then(|l| t.view(l).cloned()));
         if matches!(kind, Tab::Files | Tab::Changes) {
-            let shown =
-                self.layouts.space(&root).tab().and_then(|t| t.find(View::is_panel).and_then(|l| t.view(l).cloned()));
-            match (kind, shown) {
+            match (kind, &shown) {
                 (Tab::Files, Some(View::Files)) => {
                     self.hide_panel();
                     return;
@@ -260,6 +260,7 @@ impl App {
                 _ => self.set_panel_shown(true),
             }
         }
+        let new_panel = matches!(kind, Tab::Files | Tab::Changes) && shown.is_none();
         let view = match kind {
             // Every change; `a` narrows it to one agent's.
             Tab::Changes => View::Changes { filter: None },
@@ -284,6 +285,16 @@ impl App {
             }
         };
         self.open_view(&root, view, true);
+        // The same size it comes up at by itself.
+        let width = self.main_width;
+        if new_panel
+            && width > 0
+            && let Some(tab) = self.layouts.space(&root).tab_mut()
+            && let crate::layout::Node::Split { ratio, b, .. } = &mut tab.root
+            && matches!(&**b, crate::layout::Node::Leaf { view, .. } if view.is_panel())
+        {
+            *ratio = panel_ratio(width);
+        }
     }
 
     /// Hide the panel in every workspace, and remember that.
@@ -315,6 +326,7 @@ impl App {
     /// Give the shown tab its Files panel, unless hidden, too narrow, or
     /// the tab is nothing but a view. Focus stays where it was.
     pub fn ensure_panel(&mut self, width: u16) {
+        self.main_width = width;
         if !self.panel_shown || width < 110 {
             return;
         }
@@ -329,10 +341,8 @@ impl App {
         }
         let focus = tab.focus;
         tab.add_panel(View::Files, leaf_id, split_id);
-        // About 42 columns, more on wide screens.
-        let ratio = 1.0 - (42.0_f32.max(width as f32 * 0.26) / width as f32);
-        if let crate::layout::Node::Split { ratio: r, .. } = &mut tab.root {
-            *r = ratio.clamp(0.5, 0.8);
+        if let crate::layout::Node::Split { ratio, .. } = &mut tab.root {
+            *ratio = panel_ratio(width);
         }
         tab.focus = focus;
         self.layouts_dirty = true;
@@ -482,4 +492,10 @@ impl App {
             }
         }
     }
+}
+
+/// Where the panel's split goes: about 42 columns for the panel, more
+/// on wide screens.
+fn panel_ratio(width: u16) -> f32 {
+    (1.0 - (42.0_f32.max(width as f32 * 0.26) / width as f32)).clamp(0.5, 0.8)
 }

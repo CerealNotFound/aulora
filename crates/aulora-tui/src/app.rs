@@ -248,6 +248,8 @@ pub struct App {
     /// The Files panel down the right of each workspace (VS Code's
     /// explorer): shown unless you hid it with `f` or its ×.
     pub panel_shown: bool,
+    /// The main area's width in the last frame, to size the panel by.
+    pub main_width: u16,
     /// Where the mouse is, and the link under it in the last frame.
     pub mouse_pos: Option<(u16, u16)>,
     pub hover_url: Option<(u16, u16, u16, String)>,
@@ -381,6 +383,7 @@ impl App {
             mouse_pos: None,
             sidebar_compact: None,
             panel_shown: true,
+            main_width: 0,
             hover_url: None,
             compose: None,
             drafts: HashMap::new(),

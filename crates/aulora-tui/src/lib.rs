@@ -754,6 +754,11 @@ mod tests {
             assert_eq!(views(app), [View::Conversation { session: s.clone() }], "hidden stays hidden");
             app.set_tab(crate::app::Tab::Files);
             assert_eq!(views(app), [View::Conversation { session: s.clone() }, View::Files], "f brings it back");
+            let ratio = |app: &mut App| match &app.layouts.space(&root).tab().unwrap().root {
+                crate::layout::Node::Split { ratio, .. } => *ratio,
+                _ => 0.0,
+            };
+            assert!((ratio(app) - 0.7375).abs() < 0.001, "at the size it came up at: {}", ratio(app));
             let mut narrow = Layouts::default();
             narrow.new_tab(&root, View::Conversation { session: s.clone() });
             app.layouts = narrow;
