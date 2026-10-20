@@ -272,9 +272,6 @@ pub struct App {
     pub away: Option<crate::away::Card>,
     /// The sidebar's project order, kept across restarts.
     pub project_order: Vec<String>,
-    /// Agents moved with J and K, by pane or session id; a project's
-    /// agents follow this order, then the order they started.
-    pub agent_order: Vec<String>,
     /// The first-run checklist.
     pub welcome: Option<crate::welcome::Welcome>,
     /// Ctrl-P.
@@ -299,34 +296,22 @@ pub struct App {
     pub frame: Option<ratatui::buffer::Buffer>,
 }
 
-/// The id an agent row is saved under.
-fn row_id(r: &RowRef) -> Option<&str> {
-    match r {
-        RowRef::Pane(id) | RowRef::Session(id) => Some(id),
-        RowRef::Project(_) => None,
-    }
-}
-
 fn order_path() -> std::path::PathBuf {
     aulora_core::paths::home().join("order.json")
 }
 
-/// The sidebar's saved order: workspaces, and agents that were moved.
+/// The sidebar's saved order of workspaces.
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct Order {
     #[serde(default)]
     pub workspaces: Vec<String>,
-    #[serde(default)]
-    pub agents: Vec<String>,
 }
 
 pub fn load_order() -> Order {
     let Ok(bytes) = std::fs::read(order_path()) else { return Order::default() };
     // Older versions saved just the list of workspaces.
     serde_json::from_slice::<Order>(&bytes)
-        .or_else(|_| {
-            serde_json::from_slice::<Vec<String>>(&bytes).map(|workspaces| Order { workspaces, agents: vec![] })
-        })
+        .or_else(|_| serde_json::from_slice::<Vec<String>>(&bytes).map(|workspaces| Order { workspaces }))
         .unwrap_or_default()
 }
 
@@ -396,7 +381,6 @@ impl App {
             finder: None,
             welcome: None,
             project_order: Vec::new(),
-            agent_order: Vec::new(),
             visits: crate::away::load(),
             away: None,
             folders: None,
@@ -656,36 +640,27 @@ impl App {
         }
     }
 
-    /// A project's agents: the ones moved with J and K in that order,
-    /// then the rest in the order they started.
-    pub fn agents_sorted(&self, root: &str) -> Vec<RowRef> {
-        let mut a = self.agents_in(root);
-        a.sort_by_key(|x| {
-            let rank = row_id(x).and_then(|id| self.agent_order.iter().position(|o| o == id)).unwrap_or(usize::MAX);
-            (rank, self.started(x), self.title(x))
-        });
-        a
+    /// When an agent last became active: started, got a prompt, or
+    /// changed state (finished, needs you). Not every tool call, so two
+    /// busy agents don't keep swapping places.
+    pub fn active_at(&self, r: &RowRef) -> Ms {
+        let of = |s: &Session| s.started_at.max(s.last_prompt_at.unwrap_or(0)).max(s.state_since);
+        match r {
+            RowRef::Session(id) => self.session(id).map(of).unwrap_or(0),
+            RowRef::Pane(id) => {
+                let created = self.pane(id).map(|p| p.created_at).unwrap_or(0);
+                self.pane_session(id).map(of).unwrap_or(0).max(created)
+            }
+            RowRef::Project(_) => 0,
+        }
     }
 
-    /// Move an agent up or down within its workspace (J and K).
-    pub fn move_agent(&mut self, r: &RowRef, delta: isize) {
-        let Some(root) = self.root_of(r) else { return };
-        let shown = self.agents_sorted(&root);
-        let Some(i) = shown.iter().position(|x| x == r) else { return };
-        let j = (i as isize + delta).clamp(0, shown.len() as isize - 1) as usize;
-        if i == j {
-            return;
-        }
-        let mut ids: Vec<String> = shown.iter().filter_map(|x| row_id(x).map(str::to_string)).collect();
-        let item = ids.remove(i);
-        ids.insert(j, item);
-        // Forget agents that are gone, so the list doesn't grow forever.
-        let known = |id: &String| self.pane(id).is_some() || self.session(id).is_some();
-        let mut order: Vec<String> =
-            self.agent_order.iter().filter(|o| !ids.contains(o) && known(o)).cloned().collect();
-        order.extend(ids);
-        self.agent_order = order;
-        self.save_order();
+    /// A project's agents, the most recently active first. The projects
+    /// themselves only move when you move them (J and K).
+    pub fn agents_sorted(&self, root: &str) -> Vec<RowRef> {
+        let mut a = self.agents_in(root);
+        a.sort_by_key(|x| (std::cmp::Reverse(self.active_at(x)), self.started(x), self.title(x)));
+        a
     }
 
     /// Remember the order of projects as they appear, so it holds across
@@ -743,7 +718,7 @@ impl App {
             return;
         }
         let _ = aulora_core::paths::ensure_home();
-        let order = Order { workspaces: self.project_order.clone(), agents: self.agent_order.clone() };
+        let order = Order { workspaces: self.project_order.clone() };
         let _ = std::fs::write(order_path(), serde_json::to_vec(&order).unwrap_or_default());
     }
 
@@ -807,8 +782,10 @@ impl App {
             }
             RowRef::Project(_) => {}
         }
-        items.push(MenuItem::Run(crate::keymap::Action::MoveUp, "Move up  K"));
-        items.push(MenuItem::Run(crate::keymap::Action::MoveDown, "Move down  J"));
+        if r.is_project() {
+            items.push(MenuItem::Run(crate::keymap::Action::MoveUp, "Move up  K"));
+            items.push(MenuItem::Run(crate::keymap::Action::MoveDown, "Move down  J"));
+        }
         if let Some(root) = self.root_of(r) {
             items.push(MenuItem::NewClaude(root.clone()));
             items.push(MenuItem::NewShell(root.clone()));

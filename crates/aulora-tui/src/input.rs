@@ -443,10 +443,10 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
         Action::Welcome => app.open_welcome(),
         Action::MoveUp | Action::MoveDown => {
             let delta = if action == Action::MoveUp { -1 } else { 1 };
-            match app.selected.clone() {
-                Some(RowRef::Project(root)) => app.move_project(&root, delta),
-                Some(r) => app.move_agent(&r, delta),
-                None => {}
+            // On an agent, its workspace moves: agents keep themselves in
+            // order of activity.
+            if let Some(root) = app.selected_root() {
+                app.move_project(&root, delta);
             }
         }
         Action::Finder => app.open_finder(),

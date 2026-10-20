@@ -183,7 +183,7 @@ pub static BINDINGS: &[Binding] = &[
     ),
     b!(Sidebar, "r", [k('r')], Restart, "restart a pane, or resume a session in a new terminal"),
     b!(Sidebar, "m", [k('m')], Menu, "actions for the selection (or right-click)"),
-    b!(Sidebar, "K J", [k('K'), k('J')], MoveUp, "move this workspace or agent up / down"),
+    b!(Sidebar, "K J", [k('K'), k('J')], MoveUp, "move this workspace up / down (only you move workspaces)"),
     b!(Sidebar, "h", [k('h')], ToggleHistory, "show past sessions from the last 7 days"),
     b!(Sidebar, "e", [k('e')], ToggleEnded, "show or hide ended sessions"),
     b!(Sidebar, "X", [k('X')], DismissEnded, "dismiss every ended session"),

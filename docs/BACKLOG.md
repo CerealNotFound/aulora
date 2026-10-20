@@ -49,8 +49,9 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 | ✅ | The line under an agent must be true | Its last reply, your last prompt since, or what it's doing; "waiting for a first prompt" only with no history. |
 | ✅ | No truncation that hides what you came to read | Agent rows wrap to 2+2 lines; notes wrap to 6 lines. |
 | ✅ | Notes such as "agent done" readable in full | Whole summary kept (1,200 chars), wrapped. |
-| ✅ | The workspace list mustn't shuffle | Workspaces keep the order they first appeared in, saved across restarts; agents keep the order they started. `J` / `K` move a workspace. Dots and `n` show what needs you. |
-| 🟡 | Move agents up and down in the sidebar | `J` / `K` on an agent moves it within its workspace (on a workspace row, the workspace), and the row menu has Move up / Move down; kept across restarts in `~/.aulora/order.json`. New agents still join at the bottom. |
+| ✅ | The workspace list mustn't shuffle | Workspaces keep the order they first appeared in, saved across restarts; `J` / `K` move a workspace. Dots and `n` show what needs you. |
+| ✅ | Move agents up and down in the sidebar | Replaced by the next row at your request: agents order themselves by activity, so a hand-set order would be undone; `J` / `K` move workspaces (on an agent row, its workspace). |
+| 🟡 | Recently active agent on top; workspaces only move by hand | Within a workspace, the agent that most recently started, got a prompt, finished or started needing you is on top (not every tool call, so two busy agents don't keep swapping). Workspaces never move by themselves; `J` / `K` or the workspace menu move them. |
 | ✅ | A better name than "projects" | "workspaces", as VS Code calls the folder you open: the sidebar, palette (`#`), Ctrl-O, menus, help, welcome and docs. |
 | ✅ | Compact sidebar on narrow terminals | Below 100 columns, or `\` any time: a strip of status dots and workspace initials; click to select. |
 | ✅ | First-run onboarding | A welcome checklist on first launch: connect Claude Code (`H`), the VS Code extension (`V`), open a workspace (Ctrl-O), the keys that matter, the Terminal.app Option tip. "Getting started" in the menu brings it back. |

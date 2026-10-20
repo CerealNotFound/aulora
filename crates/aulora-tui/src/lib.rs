@@ -201,7 +201,6 @@ pub fn run(mut opts: Options) -> Result<()> {
         app.layouts = tiles::load();
         let order = app::load_order();
         app.project_order = order.workspaces;
-        app.agent_order = order.agents;
         if !welcome::seen() {
             app.open_welcome();
         }
@@ -588,15 +587,16 @@ mod tests {
         let out = frame(None, &|_| {});
         let lines: Vec<&str> = out.lines().collect();
         let project = lines.iter().position(|l| l.contains("● multibrain")).expect("project row");
-        // In the order they started: the dev server first, the newest last.
-        assert!(lines[project + 2].contains("├ ● dev server"), "{}", lines[project + 2]);
+        // The most recently active first; the dev server, untouched since
+        // it started, last.
+        assert!(lines[project + 2].contains("├ ● Fix streaming"), "{}", lines[project + 2]);
         let last = lines[project..].iter().position(|l| l.contains(" └ ")).map(|i| lines[project + i]).unwrap_or("");
-        assert!(last.contains("Fix streaming"), "the last agent closes the branch: {last}");
+        assert!(last.contains("dev server"), "the last agent closes the branch: {last}");
     }
 
     #[test]
-    fn agents_move_up_and_down() {
-        let out = frame(None, &|app| {
+    fn the_most_recently_active_agent_is_on_top() {
+        frame(None, &|app| {
             let root = app
                 .snap
                 .as_ref()
@@ -608,19 +608,20 @@ mod tests {
                 .root
                 .clone();
             let agents = app.agents_sorted(&root);
-            let first = agents[0].clone();
-            app.move_agent(&first, 1);
-            assert_eq!(app.agents_sorted(&root)[1], first, "moved down one");
-            app.move_agent(&first, -5);
-            assert_eq!(app.agents_sorted(&root)[0], first, "back to the top, clamped");
-            app.move_agent(&agents[1], 99);
-            assert_eq!(app.agents_sorted(&root).last(), Some(&agents[1]), "to the bottom, clamped");
+            let times: Vec<i64> = agents.iter().map(|a| app.active_at(a)).collect();
+            assert!(times.windows(2).all(|w| w[0] >= w[1]), "newest activity first: {times:?}");
+            // A prompt to the bottom agent brings it to the top; the
+            // workspaces stay where they were.
+            let order_before = app.projects();
+            let last = agents.last().unwrap().clone();
+            let RowRef::Session(id) = last.clone() else { return };
+            let now = app.now;
+            if let Some(s) = app.snap.as_mut().unwrap().sessions.iter_mut().find(|s| s.id == id) {
+                s.last_prompt_at = Some(now);
+            }
+            assert_eq!(app.agents_sorted(&root)[0], last);
+            assert_eq!(app.projects(), order_before);
         });
-        let lines: Vec<&str> = out.lines().collect();
-        let project = lines.iter().position(|l| l.contains("● multibrain")).expect("project row");
-        assert!(lines[project + 2].contains("├ ● dev server"), "{}", lines[project + 2]);
-        let last = lines[project..].iter().position(|l| l.contains(" └ ")).map(|i| lines[project + i]).unwrap_or("");
-        assert!(!last.contains("Fix streaming"), "the moved agent now sits last: {last}");
     }
 
     #[test]
@@ -673,9 +674,7 @@ mod tests {
             let items = app.menu_for(&RowRef::Pane("a41c07".into()));
             app.menu = Some(Menu { x: 10, y: 10, items, selected: 0 });
         });
-        for label in
-            ["Type here", "Close", "Move up", "Move down", "New Claude here", "New shell here", "Open in VS Code"]
-        {
+        for label in ["Type here", "Close", "New Claude here", "New shell here", "Open in VS Code"] {
             assert!(out.contains(label), "missing {label}:\n{out}");
         }
     }
