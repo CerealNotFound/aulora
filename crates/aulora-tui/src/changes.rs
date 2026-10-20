@@ -554,6 +554,13 @@ impl App {
         Some(g.staged + g.modified + g.untracked + g.conflicts)
     }
 
+    /// Whether Changes has anything to show: a repository, or a folder
+    /// whose repositories have changes (listed in its Files panel).
+    pub fn has_git(&self, root: &str) -> bool {
+        self.project(root).is_some_and(|p| p.git.is_some())
+            || self.changes.get(root).is_some_and(|p| p.loaded && !p.files.is_empty())
+    }
+
     /// Keep a project's changes current: on first look, when the daemon's
     /// git poll sees something new, and every few seconds while shown.
     pub fn refresh_changes(&mut self, root: &str) {
@@ -938,6 +945,16 @@ mod tests {
         // The file view finds each file's own repository for its marks.
         assert_eq!(git::locate(&root, "app/src/main.rs"), (format!("{root}/app"), "src/main.rs".to_string()));
         assert_eq!(git::locate(&root, "notes/a.md"), (root.clone(), "notes/a.md".to_string()));
+        // Changes (d) works there too: diffs, staging a file or a folder
+        // of repositories, each in its own; commits are refused, saying why.
+        let main = found.iter().find(|f| f.entry.path == "app/src/main.rs").unwrap();
+        let d = git::file_diff(&root, &main.entry).unwrap();
+        assert_eq!((d.path.as_str(), d.counts()), ("app/src/main.rs", (1, 1)));
+        git::stage(&root, &["app/src/main.rs".into(), "group".into()], false).unwrap();
+        let staged = status(&root, &vec![], &mut attrib::Index::default()).unwrap();
+        assert!(staged.iter().all(|f| f.entry.group == Group::Staged), "{staged:?}");
+        let op = git::Op::Commit { message: "x".into(), all: false };
+        assert!(git::perform(&root, &op).unwrap_err().contains("one at a time"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

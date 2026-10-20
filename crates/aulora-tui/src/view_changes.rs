@@ -543,6 +543,7 @@ fn repo_bar(f: &mut Frame, area: Rect, app: &mut App, root: &str) -> u16 {
     use crate::keymap::Action;
     let t = theme::get();
     let width = area.width as usize;
+    let folder = app.project(root).is_some_and(|p| p.git.is_none());
     let git = app.project(root).and_then(|p| p.git.clone()).unwrap_or_default();
     let (running, op_error, staged) = app
         .changes
@@ -553,7 +554,13 @@ fn repo_bar(f: &mut Frame, area: Rect, app: &mut App, root: &str) -> u16 {
         })
         .unwrap_or((None, None, 0));
 
-    let mut left = vec![sp(" ⎇ ", faint()), sp(git.branch.clone().unwrap_or_else(|| "detached".into()), fg(t.magenta))];
+    // A folder of repositories has no one branch.
+    let branch = match (&git.branch, folder) {
+        (_, true) => "repos".to_string(),
+        (Some(b), _) => b.clone(),
+        (None, _) => "detached".into(),
+    };
+    let mut left = vec![sp(" ⎇ ", faint()), sp(branch, fg(t.magenta))];
     if git.ahead > 0 {
         left.push(sp(format!("  ↑{} to push", git.ahead), fg(t.green)));
     }

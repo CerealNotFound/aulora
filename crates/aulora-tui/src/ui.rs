@@ -795,7 +795,7 @@ fn tab_strip(f: &mut Frame, area: Rect, app: &mut App, root: &str) {
     // Changes and Files, one click away (VS Code's activity bar).
     let mut buttons: Vec<(String, crate::keymap::Action, bool)> = Vec::new();
     let shown = |pred: &dyn Fn(&crate::layout::View) -> bool| space.tab().is_some_and(|tab| tab.find(pred).is_some());
-    if app.project(root).is_some_and(|p| p.git.is_some()) {
+    if app.has_git(root) {
         let n = app.change_count(root).filter(|n| *n > 0).map(|n| format!(" {n}")).unwrap_or_default();
         let on = shown(&|v| matches!(v, crate::layout::View::Changes { .. }));
         buttons.push((format!(" d changes{n} "), crate::keymap::Action::OpenChanges, on));

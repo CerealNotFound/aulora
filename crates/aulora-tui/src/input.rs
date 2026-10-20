@@ -303,10 +303,10 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
             new_pane(app, opts, ctx, PaneKind::Shell);
         }
         Action::OpenChanges => {
-            if app.selected_root().and_then(|r| app.project(&r)).is_some_and(|p| p.git.is_some()) {
+            if app.selected_root().is_some_and(|r| app.has_git(&r)) {
                 app.set_tab(Tab::Changes);
             } else {
-                app.toast("Not a git repository");
+                app.toast("No git changes here");
             }
         }
         Action::OpenFiles => app.set_tab(Tab::Files),

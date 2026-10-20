@@ -166,6 +166,9 @@ pub fn repos_in(root: &str) -> Vec<String> {
 /// The repository holding `rel` (a path under `root`), and the path
 /// inside it: the nearest folder above it with a `.git`, else `root`.
 pub fn locate(root: &str, rel: &str) -> (String, String) {
+    if !rel.is_empty() && std::path::Path::new(root).join(rel).join(".git").exists() {
+        return (format!("{root}/{rel}"), ".".into());
+    }
     let mut dir = rel;
     while let Some((parent, _)) = dir.rsplit_once('/') {
         if std::path::Path::new(root).join(parent).join(".git").exists() {
@@ -427,24 +430,29 @@ pub fn file_diff(root: &str, e: &Entry) -> Result<FileDiff, String> {
             None => FileDiff { path: e.path.clone(), binary: true, ..Default::default() },
         }),
         _ => {
+            // In a folder of repositories, asked of the file's own.
+            let (repo, path) = locate(root, &e.path);
+            let orig = e.orig.as_ref().map(|o| locate(root, o).1);
             let mut args = DIFF.to_vec();
             args.push("-U3");
             if e.group == Group::Staged {
                 args.push("--cached");
             }
             args.push("--");
-            if let Some(o) = &e.orig {
+            if let Some(o) = &orig {
                 args.push(o);
             }
-            args.push(&e.path);
-            let out = run(root, &args)?;
+            args.push(&path);
+            let out = run(&repo, &args)?;
             let mut files = parse_diff(&String::from_utf8_lossy(&out));
-            Ok(files
+            let mut d = files
                 .iter()
-                .position(|f| f.path == e.path)
+                .position(|f| f.path == path)
                 .map(|i| files.swap_remove(i))
                 .or_else(|| files.pop())
-                .unwrap_or_else(|| FileDiff { path: e.path.clone(), ..Default::default() }))
+                .unwrap_or_default();
+            d.path = e.path.clone();
+            Ok(d)
         }
     }
 }
@@ -517,6 +525,13 @@ fn run_detached(root: &str, args: &[&str], input: Option<&str>) -> Result<String
 
 /// Carry out an op. Returns a one-line summary of what happened.
 pub fn perform(root: &str, op: &Op) -> Result<String, String> {
+    if run(root, &["rev-parse", "--git-dir"]).is_err() {
+        return Err(format!(
+            "This folder holds several repositories, so {} works on one at a time: \
+             open that repository as its own workspace (ctrl-o).",
+            op.doing()
+        ));
+    }
     match op {
         Op::Commit { message, all } => {
             if *all {
@@ -584,14 +599,43 @@ fn discard_to(root: &str, e: &Entry, trash: &std::path::Path) -> Result<(), Stri
         }
         return std::fs::rename(&path, &target).map_err(|x| x.to_string());
     }
-    run(root, &["checkout", "--", &e.path]).map(|_| ())
+    let (repo, path) = locate(root, &e.path);
+    run(&repo, &["checkout", "--", &path]).map(|_| ())
 }
 
 /// Stage or unstage paths (files or folders).
 pub fn stage(root: &str, paths: &[String], unstage: bool) -> Result<(), String> {
-    let mut args: Vec<&str> = if unstage { vec!["reset", "-q", "--"] } else { vec!["add", "-A", "--"] };
-    args.extend(paths.iter().map(String::as_str));
-    run(root, &args).map(|_| ())
+    for (repo, paths) in by_repo(root, paths) {
+        let mut args: Vec<&str> = if unstage { vec!["reset", "-q", "--"] } else { vec!["add", "-A", "--"] };
+        args.extend(paths.iter().map(String::as_str));
+        run(&repo, &args)?;
+    }
+    Ok(())
+}
+
+/// Paths grouped by the repository holding them, as it sees them. In a
+/// folder of repositories, a folder above them stands for each of them.
+fn by_repo(root: &str, paths: &[String]) -> Vec<(String, Vec<String>)> {
+    if run(root, &["rev-parse", "--git-dir"]).is_ok() {
+        return vec![(root.to_string(), paths.to_vec())];
+    }
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    let mut add = |repo: String, path: String| match out.iter_mut().find(|(r, _)| *r == repo) {
+        Some((_, v)) => v.push(path),
+        None => out.push((repo, vec![path])),
+    };
+    let repos = repos_in(root);
+    for p in paths {
+        let (repo, path) = locate(root, p);
+        if repo != root {
+            add(repo, path);
+            continue;
+        }
+        for r in repos.iter().filter(|r| p.is_empty() || r.starts_with(&format!("{p}/"))) {
+            add(format!("{root}/{r}"), ".".into());
+        }
+    }
+    out
 }
 
 #[cfg(test)]
