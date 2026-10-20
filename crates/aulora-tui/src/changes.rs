@@ -255,48 +255,62 @@ fn among(sessions: &Sessions) -> HashSet<String> {
 /// Untracked files past this many are listed without reading them.
 const READ_UNTRACKED: usize = 400;
 
+/// What changed in a workspace. A workspace that's a folder of
+/// repositories shows the changes of each, under its folder.
 fn status(root: &str, sessions: &Sessions, index: &mut attrib::Index) -> Result<Vec<FileChange>, String> {
     index.update(sessions);
     let among = among(sessions);
-    let out = git::run(root, &["status", "--porcelain=v2", "-z", "--untracked-files=all"])?;
-    let entries = git::parse_status(&out);
-    let unstaged = git::diffs(root, false)?;
-    let staged = git::diffs(root, true)?;
+    let mut files = Vec::new();
     let mut untracked_read = 0;
-    let mut files = Vec::with_capacity(entries.len());
-    for entry in entries {
-        let abs = format!("{root}/{}", entry.path);
-        let mut f = FileChange { entry, added: 0, removed: 0, binary: false, sessions: vec![], sig: 0 };
-        match f.entry.kind {
-            Kind::Untracked => {
-                untracked_read += 1;
-                if untracked_read <= READ_UNTRACKED {
-                    match git::read_text(std::path::Path::new(&abs)) {
-                        Ok(Some(text)) => {
-                            f.added = text.lines().count() as u32;
-                            f.sessions = index.attribute(&abs, text.lines(), &among);
-                            f.sig = hash_of(&text);
+    for prefix in git::repos_in(root) {
+        let whole = prefix.is_empty();
+        let repo = if whole { root.to_string() } else { format!("{root}/{prefix}") };
+        let under = |p: &str| if whole { p.to_string() } else { format!("{prefix}/{p}") };
+        let args = ["status", "--porcelain=v2", "-z", "--untracked-files=all"];
+        let (out, unstaged, staged) = match (git::run(&repo, &args), git::diffs(&repo, false), git::diffs(&repo, true))
+        {
+            (Ok(o), Ok(u), Ok(s)) => (o, u, s),
+            (Err(e), ..) | (_, Err(e), _) | (.., Err(e)) if whole => return Err(e),
+            // One broken repository in a folder of them hides only itself.
+            _ => continue,
+        };
+        for mut entry in git::parse_status(&out) {
+            let key = std::mem::take(&mut entry.path);
+            entry.path = under(&key);
+            entry.orig = entry.orig.map(|o| under(&o));
+            let abs = format!("{root}/{}", entry.path);
+            let mut f = FileChange { entry, added: 0, removed: 0, binary: false, sessions: vec![], sig: 0 };
+            match f.entry.kind {
+                Kind::Untracked => {
+                    untracked_read += 1;
+                    if untracked_read <= READ_UNTRACKED {
+                        match git::read_text(std::path::Path::new(&abs)) {
+                            Ok(Some(text)) => {
+                                f.added = text.lines().count() as u32;
+                                f.sessions = index.attribute(&abs, text.lines(), &among);
+                                f.sig = hash_of(&text);
+                            }
+                            Ok(None) => f.binary = true,
+                            Err(_) => {}
                         }
-                        Ok(None) => f.binary = true,
-                        Err(_) => {}
+                    }
+                }
+                Kind::Conflict => {
+                    let meta = std::fs::metadata(&abs).ok();
+                    f.sig = hash_of((meta.as_ref().map(|m| m.len()), meta.and_then(|m| m.modified().ok())));
+                }
+                _ => {
+                    let diffs = if f.entry.group == Group::Staged { &staged } else { &unstaged };
+                    if let Some(d) = diffs.get(&key) {
+                        (f.added, f.removed) = d.counts();
+                        f.binary = d.binary;
+                        f.sessions = index.attribute(&abs, d.added_lines(), &among);
+                        f.sig = hash_of(&d.hunks);
                     }
                 }
             }
-            Kind::Conflict => {
-                let meta = std::fs::metadata(&abs).ok();
-                f.sig = hash_of((meta.as_ref().map(|m| m.len()), meta.and_then(|m| m.modified().ok())));
-            }
-            _ => {
-                let diffs = if f.entry.group == Group::Staged { &staged } else { &unstaged };
-                if let Some(d) = diffs.get(&f.entry.path) {
-                    (f.added, f.removed) = d.counts();
-                    f.binary = d.binary;
-                    f.sessions = index.attribute(&abs, d.added_lines(), &among);
-                    f.sig = hash_of(&d.hunks);
-                }
-            }
+            files.push(f);
         }
-        files.push(f);
     }
     Ok(files)
 }
@@ -885,6 +899,45 @@ mod tests {
         git::stage(&root, &["src/lib.rs".into()], false).unwrap();
         let files = status(&root, &sessions, &mut index).unwrap();
         assert!(files.iter().any(|f| f.entry.path == "src/lib.rs" && f.entry.group == Group::Staged));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_folder_of_repositories_shows_each_ones_changes() {
+        // ~/Documents/projects: not a repository, holding several.
+        let dir = std::env::temp_dir().join(format!("aulora-nested-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for repo in ["app", "group/lib"] {
+            let r = dir.join(repo);
+            std::fs::create_dir_all(r.join("src")).unwrap();
+            let sh = |args: &[&str]| {
+                let out = std::process::Command::new("git").arg("-C").arg(&r).args(args).output().unwrap();
+                assert!(out.status.success(), "git {args:?}");
+            };
+            sh(&["init", "-q"]);
+            std::fs::write(r.join(".gitignore"), "target\n").unwrap();
+            std::fs::write(r.join("src/main.rs"), "fn main() {}\n").unwrap();
+            sh(&["add", "."]);
+            sh(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init"]);
+        }
+        std::fs::write(dir.join("app/src/main.rs"), "fn main() { run(); }\n").unwrap();
+        std::fs::create_dir_all(dir.join("app/target/debug")).unwrap();
+        std::fs::write(dir.join("app/target/debug/bin"), "x").unwrap();
+        std::fs::write(dir.join("group/lib/new.rs"), "new\n").unwrap();
+        std::fs::create_dir_all(dir.join("notes")).unwrap();
+        let root = dir.canonicalize().unwrap().to_string_lossy().to_string();
+        assert_eq!(git::repos_in(&root), ["app", "group/lib"]);
+        let found = status(&root, &vec![], &mut attrib::Index::default()).unwrap();
+        let mut paths: Vec<(String, Kind)> = found.iter().map(|f| (f.entry.path.clone(), f.entry.kind)).collect();
+        paths.sort();
+        assert_eq!(
+            paths,
+            [("app/src/main.rs".to_string(), Kind::Modified), ("group/lib/new.rs".to_string(), Kind::Untracked)]
+        );
+        assert_eq!(found[0].added + found[1].added, 2, "with their line counts");
+        // The file view finds each file's own repository for its marks.
+        assert_eq!(git::locate(&root, "app/src/main.rs"), (format!("{root}/app"), "src/main.rs".to_string()));
+        assert_eq!(git::locate(&root, "notes/a.md"), (root.clone(), "notes/a.md".to_string()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

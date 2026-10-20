@@ -14,9 +14,15 @@ use crate::highlight::{self, Styled};
 pub struct DirEntry {
     pub name: String,
     pub is_dir: bool,
+    /// Git ignores it (shown faded).
+    pub ignored: bool,
 }
 
-/// A folder's children that aren't ignored, folders first, by name.
+/// Never listed, as in VS Code's default `files.exclude`.
+const EXCLUDED: &[&str] = &[".git", ".DS_Store", "Thumbs.db", ".svn", ".hg"];
+
+/// A folder's children, folders first, by name. What git ignores is
+/// listed too but marked, so it can be shown faded (VS Code's explorer).
 pub fn list_dir(root: &str, rel: &str) -> Result<Vec<DirEntry>, String> {
     let dir = if rel.is_empty() { Path::new(root).to_path_buf() } else { Path::new(root).join(rel) };
     let walker = ignore::WalkBuilder::new(&dir)
@@ -26,13 +32,17 @@ pub fn list_dir(root: &str, rel: &str) -> Result<Vec<DirEntry>, String> {
         .require_git(false)
         .filter_entry(|e| e.file_name() != ".git")
         .build();
+    let kept: std::collections::HashSet<std::ffi::OsString> =
+        walker.flatten().filter(|e| e.depth() == 1).map(|e| e.file_name().to_os_string()).collect();
     let mut out = Vec::new();
-    for entry in walker.flatten() {
-        if entry.depth() == 0 {
+    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
+        let name = entry.file_name();
+        if EXCLUDED.iter().any(|x| name == *x) {
             continue;
         }
-        let is_dir = entry.file_type().is_some_and(|t| t.is_dir());
-        out.push(DirEntry { name: entry.file_name().to_string_lossy().into_owned(), is_dir });
+        // Follow links, so a linked folder opens like a folder.
+        let is_dir = std::fs::metadata(entry.path()).is_ok_and(|m| m.is_dir());
+        out.push(DirEntry { ignored: !kept.contains(&name), name: name.to_string_lossy().into_owned(), is_dir });
     }
     out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
     Ok(out)
@@ -117,7 +127,9 @@ pub fn read(root: &str, rel: &str) -> Result<Text, String> {
 /// Lines changed since HEAD, from `git diff -U0 HEAD`.
 fn marks(root: &str, rel: &str) -> HashMap<u32, Mark> {
     let mut out = HashMap::new();
-    let Ok(text) = git::run(root, &["diff", "--no-color", "--no-ext-diff", "-U0", "HEAD", "--", rel]) else {
+    // In a folder of repositories, the file's own repository.
+    let (repo, rel) = git::locate(root, rel);
+    let Ok(text) = git::run(&repo, &["diff", "--no-color", "--no-ext-diff", "-U0", "HEAD", "--", &rel]) else {
         return out;
     };
     for d in git::parse_diff(&String::from_utf8_lossy(&text)) {
@@ -210,8 +222,19 @@ mod tests {
         git(&["commit", "-q", "-m", "init"]);
         std::fs::write(dir.join("src/main.rs"), "fn main() {\n    println!(\"hello\");\n    run();\n}\n").unwrap();
 
-        let top: Vec<(String, bool)> = list_dir(&root, "").unwrap().into_iter().map(|e| (e.name, e.is_dir)).collect();
-        assert_eq!(top, [("src".into(), true), (".gitignore".into(), false), ("README.md".into(), false)]);
+        let top: Vec<(String, bool, bool)> =
+            list_dir(&root, "").unwrap().into_iter().map(|e| (e.name, e.is_dir, e.ignored)).collect();
+        // Ignored folders are listed, marked, as VS Code shows them faded;
+        // .git never is.
+        assert_eq!(
+            top,
+            [
+                ("src".into(), true, false),
+                ("target".into(), true, true),
+                (".gitignore".into(), false, false),
+                ("README.md".into(), false, false)
+            ]
+        );
         assert_eq!(index(&root), [".gitignore", "README.md", "src/main.rs"]);
 
         let t = read(&root, "src/main.rs").unwrap();
@@ -300,6 +323,8 @@ pub struct Row {
     pub is_dir: bool,
     pub expanded: bool,
     pub loading: bool,
+    /// Git ignores it, or a folder it's in.
+    pub ignored: bool,
 }
 
 /// How long a folder listing or a file's text is trusted before checking.
@@ -342,7 +367,8 @@ impl App {
             tree: &Tree,
             expanded: &HashSet<String>,
             dir: &str,
-            depth: usize,
+            // How deep, and whether a folder above is ignored.
+            (depth, ignored): (usize, bool),
             rows: &mut Vec<Row>,
             wanted: &mut Vec<String>,
             now: Ms,
@@ -356,6 +382,7 @@ impl App {
                         let rel = join(dir, &e.name);
                         let open = e.is_dir && expanded.contains(&rel);
                         let loading = open && !matches!(tree.dirs.get(&rel), Some(Loaded::Ready(..)));
+                        let ignored = ignored || e.ignored;
                         rows.push(Row {
                             rel: rel.clone(),
                             name: e.name.clone(),
@@ -363,9 +390,10 @@ impl App {
                             is_dir: e.is_dir,
                             expanded: open,
                             loading,
+                            ignored,
                         });
                         if open {
-                            walk(tree, expanded, &rel, depth + 1, rows, wanted, now);
+                            walk(tree, expanded, &rel, (depth + 1, ignored), rows, wanted, now);
                         }
                     }
                 }
@@ -373,7 +401,7 @@ impl App {
                 _ => wanted.push(dir.to_string()),
             }
         }
-        walk(tree, &expanded, "", 0, &mut rows, &mut wanted, now);
+        walk(tree, &expanded, "", (0, false), &mut rows, &mut wanted, now);
         if self.conn != Conn::Demo {
             for rel in wanted {
                 let tree = self.files.entry(root.to_string()).or_default();

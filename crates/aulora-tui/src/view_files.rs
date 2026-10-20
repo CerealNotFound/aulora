@@ -20,12 +20,51 @@ use crate::view_changes::{kind_color, session_color};
 struct Decor {
     kinds: HashMap<String, Kind>,
     sessions: HashMap<String, Vec<String>>,
+    /// Lines added and removed in each file, staged and not.
+    counts: HashMap<String, Size>,
+}
+
+/// How big a file's change is.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Size {
+    added: u32,
+    removed: u32,
+    binary: bool,
+}
+
+impl Size {
+    fn of(f: &crate::changes::FileChange) -> Size {
+        Size { added: f.added, removed: f.removed, binary: f.binary }
+    }
+
+    fn add(&mut self, o: Size) {
+        self.added += o.added;
+        self.removed += o.removed;
+        self.binary |= o.binary;
+    }
+
+    /// `+12 −3` in green and red (only the sides that changed), or `bin`.
+    fn spans(self) -> Vec<Span<'static>> {
+        let t = theme::get();
+        if self.binary {
+            return vec![sp(" bin", faint())];
+        }
+        let mut v = Vec::new();
+        if self.added > 0 {
+            v.push(sp(format!(" +{}", self.added), fg(t.green)));
+        }
+        if self.removed > 0 {
+            v.push(sp(format!(" −{}", self.removed), fg(t.red)));
+        }
+        v
+    }
 }
 
 fn decor(app: &App, root: &str) -> Decor {
-    let mut d = Decor { kinds: HashMap::new(), sessions: HashMap::new() };
+    let mut d = Decor { kinds: HashMap::new(), sessions: HashMap::new(), counts: HashMap::new() };
     let Some(p) = app.changes.get(root) else { return d };
     for f in &p.files {
+        d.counts.entry(f.entry.path.clone()).or_default().add(Size::of(f));
         let path = f.entry.path.as_str();
         let mut keys = vec![path.to_string()];
         let mut dir = path;
@@ -51,9 +90,8 @@ fn decor(app: &App, root: &str) -> Decor {
 
 pub fn draw(f: &mut Frame, area: Rect, app: &mut App, root: &str) {
     let t = theme::get();
-    if app.project(root).is_some_and(|p| p.git.is_some()) {
-        app.refresh_changes(root);
-    }
+    // Also for a folder of repositories, whose changes show under each.
+    app.refresh_changes(root);
     // Top line: the search box, or where you are.
     let width = area.width as usize;
     let searching = app.files_view(root).search.as_ref().map(|s| (s.query.clone(), s.editing));
@@ -136,8 +174,10 @@ fn changed(f: &mut Frame, area: Rect, app: &mut App, root: &str) -> u16 {
         let is_sel = selected.as_deref() == Some(path.as_str());
         let color = kind_color(file.entry.kind);
         let mut right: Vec<Span> = file.sessions.iter().take(3).map(|s| sp("●", fg(session_color(s)))).collect();
+        right.extend(Size::of(file).spans());
         right.push(sp(format!(" {} ", file.entry.kind.letter()), fg(color)));
-        let room = width.saturating_sub(name.chars().count() + 4 + right.len() * 2);
+        let right_w: usize = right.iter().map(|s| w(&s.content)).sum();
+        let room = width.saturating_sub(name.chars().count() + 4 + right_w);
         let mut left = vec![sp("   ", text()), sp(name.to_string(), if is_sel { bold(color) } else { fg(color) })];
         if !dir.is_empty() && room > 4 {
             left.push(sp(format!(" {}", fit(dir, room)), faint()));
@@ -216,7 +256,15 @@ fn tree_line(r: &Row, decor: &Decor, is_sel: bool, width: usize, now: i64) -> Li
     let t = theme::get();
     let indent = "  ".repeat(r.depth);
     let kind = decor.kinds.get(&r.rel).copied();
-    let color = kind.map(kind_color).unwrap_or(if r.is_dir { t.dim } else { t.text });
+    // VS Code's explorer: changes in their colour, ignored paths faded.
+    let plain = if r.ignored {
+        t.faint
+    } else if r.is_dir {
+        t.dim
+    } else {
+        t.text
+    };
+    let color = kind.map(kind_color).unwrap_or(plain);
     let name_style = if is_sel { bold(color) } else { fg(color) };
     let mut left = vec![sp(format!(" {indent}"), text())];
     if r.is_dir {
@@ -236,6 +284,9 @@ fn tree_line(r: &Row, decor: &Decor, is_sel: bool, width: usize, now: i64) -> Li
     if !r.is_dir {
         for s in decor.sessions.get(&r.rel).into_iter().flatten().take(3) {
             right.push(sp("●", fg(session_color(s))));
+        }
+        if let Some(c) = decor.counts.get(&r.rel) {
+            right.extend(c.spans());
         }
         if let Some(k) = kind {
             right.push(sp(format!(" {} ", k.letter()), fg(kind_color(k))));

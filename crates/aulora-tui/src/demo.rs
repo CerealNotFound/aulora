@@ -970,7 +970,7 @@ pub fn dirs(root_path: &str) -> Vec<(String, Vec<crate::files::DirEntry>)> {
             let is_dir = i + 1 < parts.len();
             let list = dirs.entry(dir.clone()).or_default();
             if !list.iter().any(|e| e.name == *part) {
-                list.push(crate::files::DirEntry { name: part.to_string(), is_dir });
+                list.push(crate::files::DirEntry { name: part.to_string(), is_dir, ignored: part == &"target" });
             }
             dir = if dir.is_empty() { part.to_string() } else { format!("{dir}/{part}") };
             if is_dir {

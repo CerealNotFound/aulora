@@ -131,6 +131,51 @@ pub fn parse_status(out: &[u8]) -> Vec<Entry> {
     entries
 }
 
+/// The repositories a workspace shows changes from, relative to it: the
+/// workspace itself ("") when it's one; otherwise the repositories up to
+/// two folders down, as VS Code finds them in a folder that holds several.
+pub fn repos_in(root: &str) -> Vec<String> {
+    use std::path::Path;
+    if run(root, &["rev-parse", "--show-toplevel"]).is_ok() {
+        return vec![String::new()];
+    }
+    let folders = |dir: &Path| -> Vec<(String, std::path::PathBuf)> {
+        let Ok(rd) = std::fs::read_dir(dir) else { return vec![] };
+        let mut v: Vec<_> = rd
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path()))
+            .filter(|(n, _)| !n.starts_with('.') && n != "node_modules" && n != "target")
+            .collect();
+        v.sort();
+        v.truncate(300);
+        v
+    };
+    let is_repo = |p: &Path| p.join(".git").exists();
+    let mut found = Vec::new();
+    for (name, path) in folders(Path::new(root)) {
+        if is_repo(&path) {
+            found.push(name);
+        } else {
+            found.extend(folders(&path).into_iter().filter(|(_, p)| is_repo(p)).map(|(n, _)| format!("{name}/{n}")));
+        }
+    }
+    found
+}
+
+/// The repository holding `rel` (a path under `root`), and the path
+/// inside it: the nearest folder above it with a `.git`, else `root`.
+pub fn locate(root: &str, rel: &str) -> (String, String) {
+    let mut dir = rel;
+    while let Some((parent, _)) = dir.rsplit_once('/') {
+        if std::path::Path::new(root).join(parent).join(".git").exists() {
+            return (format!("{root}/{parent}"), rel[parent.len() + 1..].to_string());
+        }
+        dir = parent;
+    }
+    (root.to_string(), rel.to_string())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LineKind {
     Context,
