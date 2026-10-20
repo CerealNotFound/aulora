@@ -5,7 +5,7 @@
 use aulora_core::model::*;
 use aulora_core::paths::tildify;
 use aulora_core::reduce::tool_label;
-use aulora_core::util::{ago, basename, first_line, fmt_tokens, short_duration, short_model};
+use aulora_core::util::{ago, basename, fmt_tokens, short_duration, short_model};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -69,6 +69,67 @@ pub(crate) fn fit_spans(spans: Vec<Span<'static>>, max: usize) -> Vec<Span<'stat
         }
     }
     out
+}
+
+/// Wrap styled text over lines of the given widths, breaking at spaces,
+/// with an ellipsis only if it still doesn't fit in all of them.
+pub(crate) fn wrap_spans(spans: &[Span<'static>], widths: &[usize]) -> Vec<Vec<Span<'static>>> {
+    let cells: Vec<(char, Style)> = spans.iter().flat_map(|s| s.content.chars().map(move |c| (c, s.style))).collect();
+    let mut lines: Vec<Vec<(char, Style)>> = Vec::new();
+    let mut start = 0;
+    for (n, &width) in widths.iter().enumerate() {
+        while start < cells.len() && cells[start].0 == ' ' {
+            start += 1;
+        }
+        if start >= cells.len() || width == 0 {
+            break;
+        }
+        let (mut end, mut used, mut space) = (start, 0, None);
+        while end < cells.len() {
+            let cw = cells[end].0.width().unwrap_or(0);
+            if used + cw > width {
+                break;
+            }
+            if cells[end].0 == ' ' {
+                space = Some(end);
+            }
+            used += cw;
+            end += 1;
+        }
+        let last = n + 1 == widths.len();
+        // Back up to the last space, unless the line ends right at one.
+        if end < cells.len()
+            && !last
+            && cells[end].0 != ' '
+            && let Some(s) = space.filter(|s| *s > start)
+        {
+            end = s;
+        }
+        let mut line = cells[start..end].to_vec();
+        if last && end < cells.len() {
+            // Out of room: end with an ellipsis.
+            while line.iter().map(|(c, _)| c.width().unwrap_or(0)).sum::<usize>() + 1 > width && !line.is_empty() {
+                line.pop();
+            }
+            let style = line.last().map(|(_, s)| *s).unwrap_or_default();
+            line.push(('…', style));
+        }
+        lines.push(line);
+        start = end;
+    }
+    lines
+        .into_iter()
+        .map(|line| {
+            let mut out: Vec<Span<'static>> = Vec::new();
+            for (c, style) in line {
+                match out.last_mut() {
+                    Some(last) if last.style == style => last.content.to_mut().push(c),
+                    _ => out.push(Span::styled(c.to_string(), style)),
+                }
+            }
+            out
+        })
+        .collect()
 }
 
 /// Left and right content on one line, padded to `width`.
@@ -266,7 +327,42 @@ fn git_line(g: &GitInfo, selected: bool) -> Vec<Span<'static>> {
     v
 }
 
-/// The second line under an agent: what it's doing.
+/// Markdown out of a reply, so a line under an agent reads as text.
+fn plain_text(s: &str) -> String {
+    aulora_core::util::squash(&s.replace("**", "").replace('`', "").replace("## ", "").replace("# ", ""))
+}
+
+/// The newest thing that happened in a session: Claude's last reply, or
+/// your last prompt if you've sent one since. The title can be hours old;
+/// this is what's true now.
+fn latest(s: &Session) -> Vec<Span<'static>> {
+    let t = theme::get();
+    let reply_newer = match (s.last_reply_at, s.last_prompt_at) {
+        (Some(r), Some(p)) => r >= p,
+        _ => s.last_reply.is_some(),
+    };
+    match (&s.last_reply, &s.last_prompt) {
+        (Some(r), _) if reply_newer && !r.trim().is_empty() => vec![sp(plain_text(r), faint())],
+        (_, Some(p)) if !p.trim().is_empty() => vec![sp("› ", fg(t.accent)), sp(plain_text(p), dim())],
+        _ => vec![],
+    }
+}
+
+/// What a session that's waiting is waiting with.
+fn waiting(s: &Session) -> Vec<Span<'static>> {
+    let l = latest(s);
+    if !l.is_empty() {
+        return l;
+    }
+    if s.turns == 0 && s.transcript_path.is_none() {
+        vec![sp("waiting for a first prompt", faint())]
+    } else {
+        vec![sp("idle", faint())]
+    }
+}
+
+/// The lines under an agent: what it's doing, or the last thing that
+/// happened.
 fn agent_detail(app: &App, r: &RowRef) -> Vec<Span<'static>> {
     let t = theme::get();
     let now = app.now;
@@ -281,18 +377,25 @@ fn agent_detail(app: &App, r: &RowRef) -> Vec<Span<'static>> {
                 vec![sp(format!("{}: ", reason.label()), fg(t.red)), sp(detail.clone(), dim())]
             }
             SessionState::Errored { detail } => vec![sp(detail.clone(), fg(t.red))],
-            SessionState::Working | SessionState::Compacting => match &s.current_tool {
-                Some(c) => vec![sp(tool_label(&c.name), fg(t.cyan)), sp(format!(" {}", c.target), faint())],
-                None => vec![sp("thinking…", faint())],
+            SessionState::Working | SessionState::Compacting => match (&s.current_tool, &s.live_text) {
+                (Some(c), _) => vec![sp(tool_label(&c.name), fg(t.cyan)), sp(format!(" {}", c.target), faint())],
+                (None, Some(text)) if !text.trim().is_empty() => vec![sp(plain_text(text), faint())],
+                _ => {
+                    // Thinking: say about what, from your prompt.
+                    let mut v = vec![sp("thinking", faint())];
+                    if let Some(p) = s.last_prompt.as_deref().filter(|p| !p.trim().is_empty()) {
+                        v.push(sp(" about › ", faint()));
+                        v.push(sp(plain_text(p), dim()));
+                    }
+                    v
+                }
             },
-            SessionState::YourTurn => {
-                vec![sp(first_line(s.last_reply.as_deref().unwrap_or("")).replace("**", ""), faint())]
+            SessionState::YourTurn | SessionState::Idle => waiting(s),
+            SessionState::Ended { .. } => {
+                let mut v = vec![sp(format!("ended {} · ", ago(now, s.last_event_at)), faint())];
+                v.extend(latest(s));
+                v
             }
-            SessionState::Idle => vec![sp("waiting for a first prompt", faint())],
-            SessionState::Ended { .. } if s.origin == Origin::History => {
-                vec![sp(format!("past session · {}", ago(now, s.last_event_at)), faint())]
-            }
-            SessionState::Ended { reason } => vec![sp(format!("ended · {reason}"), faint())],
         };
     }
     match r {
@@ -424,21 +527,36 @@ fn sidebar(f: &mut Frame, area: Rect, app: &mut App) {
                     _ => vec![sp(format!("{} ", short_duration(now - app.since(a))), faint())],
                 }
             };
-            let l1 = lr(
-                vec![
-                    sp(branch, faint()),
-                    sp(format!("{} ", status_glyph(status)), fg(status_color(status))),
-                    sp(app.title(a), title_style),
-                ],
-                right,
-                width,
+            // The title and what's happening, each on up to two lines:
+            // cutting them short hides exactly what you came to read.
+            let indent = 5;
+            let right_w = spans_width(&right) + 1;
+            let title = wrap_spans(
+                &[sp(app.title(a), title_style)],
+                &[width.saturating_sub(indent + right_w), width.saturating_sub(indent + 1)],
             );
-            let mut l2_left = vec![sp(stem, faint()), sp("  ", text())];
-            l2_left.extend(agent_detail(app, a));
-            let l2 = lr(l2_left, vec![], width);
+            let detail = wrap_spans(&agent_detail(app, a), &[width.saturating_sub(indent + 1); 2]);
+            let mut lines = Vec::new();
+            for (k, part) in title.into_iter().enumerate() {
+                let mut left = if k == 0 {
+                    vec![sp(branch, faint()), sp(format!("{} ", status_glyph(status)), fg(status_color(status)))]
+                } else {
+                    vec![sp(stem, faint()), sp("  ", text())]
+                };
+                left.extend(part);
+                lines.push(lr(left, if k == 0 { right.clone() } else { vec![] }, width));
+            }
+            if lines.is_empty() {
+                lines.push(lr(vec![sp(branch, faint())], right.clone(), width));
+            }
+            for part in detail {
+                let mut left = vec![sp(stem, faint()), sp("  ", text())];
+                left.extend(part);
+                lines.push(lr(left, vec![], width));
+            }
             let bg = row_bg(selected);
             items.push(Item {
-                lines: vec![l1.style(bg), l2.style(bg)],
+                lines: lines.into_iter().map(|l| l.style(bg)).collect(),
                 row: Some(a.clone()),
                 button: (hot && closable).then(|| Hit::Close(a.clone())),
             });
@@ -784,7 +902,10 @@ fn status_strip(app: &App, s: &Session, width: usize) -> Line<'static> {
         SessionState::YourTurn => vec![sp(" ● ", fg(t.cyan)), sp("finished, your turn", fg(t.cyan))],
         SessionState::Errored { detail } => vec![sp(" ✗ ", bold(t.red)), sp(detail.clone(), fg(t.red))],
         SessionState::Compacting => vec![sp(" ◌ compacting context", fg(t.magenta))],
-        SessionState::Idle => vec![sp(" ○ waiting for a first prompt", faint())],
+        SessionState::Idle if s.turns == 0 && s.transcript_path.is_none() => {
+            vec![sp(" ○ waiting for a first prompt", faint())]
+        }
+        SessionState::Idle => vec![sp(" ○ idle", faint())],
         SessionState::Ended { .. } if s.origin == Origin::History => {
             vec![sp(" · past session · resume with ", faint()), sp(format!("claude --resume {}", s.id), text())]
         }
@@ -1439,6 +1560,20 @@ fn empty_state(f: &mut Frame, area: Rect, app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wraps_at_words_and_ellipsizes_only_at_the_end() {
+        let text = |lines: &[Vec<Span<'static>>]| -> Vec<String> {
+            lines.iter().map(|l| l.iter().map(|s| s.content.to_string()).collect()).collect()
+        };
+        let spans = [sp("Creative project and portfolio inspiration", Style::new())];
+        assert_eq!(text(&wrap_spans(&spans, &[20, 24])), ["Creative project and", "portfolio inspiration"]);
+        assert_eq!(text(&wrap_spans(&spans, &[20, 12])), ["Creative project and", "portfolio i…"]);
+        let styled = [sp("› ", fg(Color::Red)), sp("fix the bug", Style::new())];
+        let w = wrap_spans(&styled, &[30, 30]);
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].len(), 2, "styles survive wrapping");
+    }
 
     #[test]
     fn helpers() {

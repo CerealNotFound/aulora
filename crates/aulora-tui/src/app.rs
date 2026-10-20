@@ -486,7 +486,9 @@ impl App {
             RowRef::Session(id) => self.session(id).map(|s| s.display_title()).unwrap_or_default(),
             RowRef::Pane(id) => {
                 let Some(p) = self.pane(id) else { return String::new() };
-                match self.pane_session(id).filter(|s| s.state.is_live()) {
+                match self.pane_session(id).filter(|s| s.state.is_live() && s.title.is_some()) {
+                    // A Claude pane is its session; "claude ·" says nothing.
+                    Some(s) if p.kind == PaneKind::Claude => s.display_title(),
                     Some(s) => format!("{} · {}", p.name, s.display_title()),
                     None => p.name.clone(),
                 }
