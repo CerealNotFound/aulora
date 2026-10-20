@@ -137,7 +137,7 @@ pub fn apply_hook(sess: &mut Session, env: &HookEnvelope) -> Vec<FeedEvent> {
             session_id: sid.clone(),
             project_root: root.clone(),
             kind,
-            text: truncate(&squash(&text), 200),
+            text: truncate(&squash(&text), 1200),
         })
     };
 
@@ -367,7 +367,8 @@ pub fn apply_hook(sess: &mut Session, env: &HookEnvelope) -> Vec<FeedEvent> {
         }
         "SubagentStop" => {
             sess.subagents_active = sess.subagents_active.saturating_sub(1);
-            let msg = s(p, "last_assistant_message").map(first_line).unwrap_or("");
+            // The whole summary: it's what the agent found or did.
+            let msg = s(p, "last_assistant_message").unwrap_or("");
             push(FeedKind::Agent, format!("{} agent done · {msg}", agent.unwrap_or_else(|| "sub".into())));
         }
         "PreCompact" => {
