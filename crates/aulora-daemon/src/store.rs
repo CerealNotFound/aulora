@@ -10,6 +10,8 @@ pub enum StoreCmd {
     Upsert(Box<Session>),
     Delete(String),
     Feed(FeedEvent),
+    /// Answer once everything sent before has been written.
+    Flush(mpsc::Sender<()>),
 }
 
 pub struct Loaded {
@@ -67,10 +69,12 @@ fn writer(conn: Connection, rx: mpsc::Receiver<StoreCmd>) {
         while let Ok(more) = rx.try_recv() {
             batch.push(more);
         }
+        let mut flushed = Vec::new();
         let res = (|| -> rusqlite::Result<()> {
             let tx = conn.unchecked_transaction()?;
             for cmd in batch {
                 match cmd {
+                    StoreCmd::Flush(done) => flushed.push(done),
                     StoreCmd::Upsert(s) => {
                         let data = serde_json::to_string(&*s).unwrap_or_default();
                         tx.execute(
@@ -92,6 +96,9 @@ fn writer(conn: Connection, rx: mpsc::Receiver<StoreCmd>) {
         })();
         if let Err(e) = res {
             tracing::warn!("store write failed: {e}");
+        }
+        for done in flushed {
+            let _ = done.send(());
         }
     }
 }

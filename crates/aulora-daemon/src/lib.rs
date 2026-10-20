@@ -41,6 +41,66 @@ struct Shared {
     editors: editors::Editors,
     /// Re-match sessions to editor terminals now.
     reach_kick: Notify,
+    /// The single-instance lock, kept open across an upgrade.
+    lock: Mutex<Option<std::fs::File>>,
+}
+
+/// What a daemon hands the one replacing it: every pane, with its
+/// terminal's master fd left open across exec.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Handover {
+    lock_fd: Option<i32>,
+    panes: Vec<HandedPane>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct HandedPane {
+    pane: Pane,
+    fd: Option<i32>,
+    screen: String,
+    title: Option<String>,
+}
+
+fn handover_path() -> std::path::PathBuf {
+    paths::home().join("handover.json")
+}
+
+/// The running panes, kept on disk so they can come back after a crash or
+/// a reboot. A deliberate stop clears it.
+fn saved_panes_path() -> std::path::PathBuf {
+    paths::home().join("panes.json")
+}
+
+/// A restored pane's arguments: a Claude pane resumes its last session
+/// (replacing any `--resume` it was started with); others run as before.
+fn restore_args(kind: PaneKind, args: &[String], session: Option<&str>) -> Vec<String> {
+    if kind != PaneKind::Claude {
+        return args.to_vec();
+    }
+    let mut rest = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--resume" || a == "-r" {
+            it.next();
+        } else if a != "--fork-session" {
+            rest.push(a.clone());
+        }
+    }
+    match session {
+        Some(s) => [vec!["--resume".to_string(), s.to_string()], rest].concat(),
+        None => rest,
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, PartialEq)]
+struct SavedPane {
+    id: String,
+    name: String,
+    cwd: String,
+    kind: PaneKind,
+    args: Vec<String>,
+    /// The Claude session last seen in it, to resume.
+    session: Option<String>,
 }
 
 static NEXT_CONN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -144,6 +204,148 @@ impl Shared {
         if changed {
             self.changed();
         }
+    }
+
+    /// Replace this daemon with `exe`, keeping every pane: write down the
+    /// panes and their screens, keep their terminals' fds and the lock open,
+    /// and exec. The pid stays the same, so the programs in the panes stay
+    /// our children and never notice. Only returns if exec failed.
+    fn upgrade(self: &Arc<Self>, exe: &Path) -> Result<()> {
+        use std::os::unix::io::AsRawFd;
+        use std::os::unix::process::CommandExt;
+        let panes: Vec<Pane> = self.hub.lock().unwrap().panes.values().cloned().collect();
+        let procs = self.procs.lock().unwrap();
+        let handed: Vec<HandedPane> = panes
+            .into_iter()
+            .map(|pane| {
+                let exported = procs.get(&pane.id).map(|p| p.export());
+                let (fd, screen, title) = match exported {
+                    Some(e) => (e.fd.filter(|_| pane.is_running()), e.screen, e.title),
+                    None => (None, Vec::new(), None),
+                };
+                HandedPane { pane, fd, screen: proto::encode(&screen), title }
+            })
+            .collect();
+        drop(procs);
+        let lock_fd = self.lock.lock().unwrap().as_ref().map(|f| {
+            let fd = f.as_raw_fd();
+            // SAFETY: fcntl on our own open fd.
+            unsafe {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+            }
+            fd
+        });
+        let n = handed.len();
+        std::fs::write(handover_path(), serde_json::to_vec(&Handover { lock_fd, panes: handed })?)?;
+        self.hub.lock().unwrap().flush();
+        let _ = std::fs::remove_file(paths::socket());
+        tracing::info!("upgrading to {}, keeping {n} panes", exe.display());
+        let err = std::process::Command::new(exe).args(["daemon", "run", "--handover"]).exec();
+        Err(anyhow::anyhow!("couldn't start {}: {err}", exe.display()))
+    }
+
+    /// Take over the panes the previous daemon handed over.
+    fn adopt(self: &Arc<Self>, handed: Vec<HandedPane>) {
+        for h in handed {
+            let id = h.pane.id.clone();
+            let generation = h.pane.generation;
+            let (on_exit, on_wake) = (Arc::downgrade(self), Arc::downgrade(self));
+            let exit_id = id.clone();
+            let adopted = Proc::adopt(
+                &id,
+                h.fd,
+                h.pane.pid,
+                h.pane.cols,
+                h.pane.rows,
+                &proto::decode(&h.screen),
+                h.title,
+                move |exit| {
+                    if let Some(s) = on_exit.upgrade()
+                        && s.hub.lock().unwrap().pane_exited(&exit_id, generation, exit)
+                    {
+                        s.changed();
+                    }
+                },
+                move || {
+                    if let Some(s) = on_wake.upgrade() {
+                        s.changed();
+                    }
+                },
+            );
+            match adopted {
+                Ok(p) => {
+                    self.procs.lock().unwrap().insert(id.clone(), p);
+                    self.hub.lock().unwrap().add_pane(h.pane);
+                }
+                Err(e) => tracing::warn!("couldn't adopt pane {id}: {e:#}"),
+            }
+        }
+    }
+
+    /// What to bring back if the daemon dies: every running pane.
+    fn saved_panes(&self) -> Vec<SavedPane> {
+        let snap = self.hub.lock().unwrap().snapshot();
+        let mut panes: Vec<SavedPane> = snap
+            .panes
+            .iter()
+            .filter(|p| p.is_running())
+            .map(|p| SavedPane {
+                id: p.id.clone(),
+                name: p.name.clone(),
+                cwd: p.cwd.clone(),
+                kind: p.kind,
+                args: p.args.clone(),
+                session: snap
+                    .sessions
+                    .iter()
+                    .filter(|s| s.terminal.pane_id.as_deref() == Some(p.id.as_str()) && s.transcript_path.is_some())
+                    .max_by_key(|s| s.last_event_at)
+                    .map(|s| s.id.clone()),
+            })
+            .collect();
+        panes.sort_by(|a, b| a.id.cmp(&b.id));
+        panes
+    }
+
+    /// Start the panes that were running when the daemon last died, with
+    /// their ids, so layouts still fit. Claude panes resume their session.
+    async fn restore(self: &Arc<Self>, saved: Vec<SavedPane>) {
+        for p in saved {
+            if !Path::new(&p.cwd).is_dir() {
+                continue;
+            }
+            let args = restore_args(p.kind, &p.args, p.session.as_deref());
+            let root = self.root_for(&p.cwd).await;
+            let spec =
+                Spec { id: p.id.clone(), cwd: p.cwd.clone(), kind: p.kind, args: args.clone(), cols: 120, rows: 36 };
+            match self.start(&spec, 0) {
+                Ok(proc_) => {
+                    let now = now_ms();
+                    self.hub.lock().unwrap().add_pane(Pane {
+                        id: p.id.clone(),
+                        project_root: root,
+                        cwd: p.cwd,
+                        name: p.name,
+                        kind: p.kind,
+                        args,
+                        pid: proc_.pid,
+                        cols: 120,
+                        rows: 36,
+                        created_at: now,
+                        last_output_at: now,
+                        bytes_out: 0,
+                        title: None,
+                        bell_at: None,
+                        exit: None,
+                        generation: 0,
+                    });
+                    tracing::info!("restored pane {}", p.id);
+                }
+                Err(e) => tracing::warn!("couldn't restore pane {}: {e:#}", p.id),
+            }
+        }
+        self.changed();
     }
 
     fn proc_(&self, id: &str) -> Option<Arc<Proc>> {
@@ -287,9 +489,22 @@ pub fn spawn_detached(exe: &Path) -> std::io::Result<()> {
     cmd.spawn().map(|_| ())
 }
 
-pub async fn run() -> Result<()> {
+pub async fn run(handover: bool) -> Result<()> {
+    use std::os::unix::io::FromRawFd;
     paths::ensure_home()?;
-    let _lock = acquire_lock()?;
+    // Taking over from a daemon that just upgraded: its lock and panes.
+    let handed: Option<Handover> = if handover {
+        let h = std::fs::read(handover_path()).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        let _ = std::fs::remove_file(handover_path());
+        h
+    } else {
+        None
+    };
+    let lock = match handed.as_ref().and_then(|h| h.lock_fd) {
+        // SAFETY: the previous daemon left its lock fd open for us.
+        Some(fd) => unsafe { std::fs::File::from_raw_fd(fd) },
+        None => acquire_lock()?,
+    };
     let _ = std::fs::remove_file(paths::stopped_marker());
     let sock = paths::socket();
     let _ = std::fs::remove_file(&sock);
@@ -312,7 +527,14 @@ pub async fn run() -> Result<()> {
         shutdown: Notify::new(),
         editors: editors::Editors::default(),
         reach_kick: Notify::new(),
+        lock: Mutex::new(Some(lock)),
     });
+    let fresh_start = handed.is_none();
+    if let Some(h) = handed {
+        let n = h.panes.len();
+        shared.adopt(h.panes);
+        tracing::info!("took over {n} panes");
+    }
     tracing::info!("aulora daemon {} listening on {}", aulora_core::VERSION, sock.display());
 
     ingest_spool(&shared).await;
@@ -321,6 +543,18 @@ pub async fn run() -> Result<()> {
     tokio::spawn(transcript_loop(shared.clone()));
     tokio::spawn(discover_loop(shared.clone()));
     tokio::spawn(reach_loop(shared.clone()));
+    tokio::spawn(upgrade_loop(shared.clone()));
+    // Started fresh while panes were saved: the last daemon died (a crash,
+    // a reboot). Bring them back.
+    if fresh_start
+        && let Some(saved) =
+            std::fs::read(saved_panes_path()).ok().and_then(|b| serde_json::from_slice::<Vec<SavedPane>>(&b).ok())
+        && !saved.is_empty()
+    {
+        tracing::info!("restoring {} panes", saved.len());
+        shared.restore(saved).await;
+    }
+    tokio::spawn(save_panes_loop(shared.clone()));
 
     loop {
         tokio::select! {
@@ -483,6 +717,8 @@ async fn handle_conn(shared: Arc<Shared>, stream: UnixStream) -> Result<()> {
                         ack
                     }
                     ClientMsg::Shutdown => {
+                        // Stopped on purpose: don't bring the panes back next time.
+                        let _ = std::fs::remove_file(saved_panes_path());
                         let _ = std::fs::write(paths::stopped_marker(), now_ms().to_string());
                         let _ = out.send(ServerMsg::Ok).await;
                         shared.shutdown.notify_one();
@@ -528,6 +764,21 @@ async fn handle_conn(shared: Arc<Shared>, stream: UnixStream) -> Result<()> {
                     ClientMsg::Typed { request_id, error } => {
                         shared.editors.typed(request_id, error);
                         None
+                    }
+                    ClientMsg::Upgrade { exe } => {
+                        let exe = exe.map(std::path::PathBuf::from).or_else(|| std::env::current_exe().ok());
+                        match exe {
+                            Some(exe) if exe.is_file() => {
+                                let _ = out.send(ServerMsg::Ok).await;
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                                let sh = shared.clone();
+                                if let Ok(Err(e)) = tokio::task::spawn_blocking(move || sh.upgrade(&exe)).await {
+                                    tracing::error!("upgrade failed: {e:#}");
+                                }
+                                None
+                            }
+                            _ => err(anyhow::anyhow!("no program to upgrade to")),
+                        }
                     }
                     ClientMsg::SendPrompt { session_id, text } => match shared.send_prompt(&session_id, text).await {
                         Ok(()) => Some(ServerMsg::Ok),
@@ -678,6 +929,50 @@ async fn liveness_loop(shared: Arc<Shared>) {
     }
 }
 
+/// Keep the list of running panes on disk, for restoring after a crash.
+async fn save_panes_loop(shared: Arc<Shared>) {
+    let mut last: Option<Vec<u8>> = None;
+    loop {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let Ok(json) = serde_json::to_vec(&shared.saved_panes()) else { continue };
+        if last.as_ref() != Some(&json) {
+            let tmp = saved_panes_path().with_extension("json.tmp");
+            if std::fs::write(&tmp, &json).is_ok() && std::fs::rename(&tmp, saved_panes_path()).is_ok() {
+                last = Some(json);
+            }
+        }
+    }
+}
+
+/// Upgrade in place when the aulora program is replaced (a `cargo install`
+/// or a release), so updates never cost the panes.
+async fn upgrade_loop(shared: Arc<Shared>) {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(exe) = std::env::current_exe() else { return };
+    let stamp = |p: &Path| std::fs::metadata(p).ok().map(|m| (m.ino(), m.mtime(), m.len()));
+    let mut current = stamp(&exe);
+    let mut seen_change: Option<(u64, i64, u64)> = None;
+    loop {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let now = stamp(&exe);
+        if now.is_none() || now == current {
+            seen_change = None;
+            continue;
+        }
+        // Wait one more look, so a file still being written settles.
+        if seen_change != now {
+            seen_change = now;
+            continue;
+        }
+        let sh = shared.clone();
+        let target = exe.clone();
+        if let Ok(Err(e)) = tokio::task::spawn_blocking(move || sh.upgrade(&target)).await {
+            tracing::error!("upgrade failed: {e:#}");
+        }
+        current = now;
+    }
+}
+
 /// Keep track of which sessions run in editor terminals we can type into.
 async fn reach_loop(shared: Arc<Shared>) {
     loop {
@@ -704,5 +999,21 @@ async fn transcript_loop(shared: Arc<Shared>) {
         if changed {
             shared.changed();
         }
+    }
+}
+
+#[cfg(test)]
+mod restore_tests {
+    use super::*;
+
+    #[test]
+    fn claude_panes_resume_their_last_session() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            restore_args(PaneKind::Claude, &a(&["--resume", "old", "--model", "opus"]), Some("new")),
+            a(&["--resume", "new", "--model", "opus"])
+        );
+        assert_eq!(restore_args(PaneKind::Claude, &a(&["--resume", "old", "--fork-session"]), None), a(&[]));
+        assert_eq!(restore_args(PaneKind::Command, &a(&["pnpm", "dev"]), Some("x")), a(&["pnpm", "dev"]));
     }
 }

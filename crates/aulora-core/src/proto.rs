@@ -89,6 +89,11 @@ pub enum ClientMsg {
         request_id: u64,
         error: Option<String>,
     },
+    /// Replace the daemon with the program at `exe` (this one's, if None),
+    /// keeping every pane running: the new daemon adopts their terminals.
+    Upgrade {
+        exe: Option<String>,
+    },
     /// Send a prompt to a Claude session running in an editor's terminal,
     /// as if typed there. Replies once the editor has typed it.
     SendPrompt {

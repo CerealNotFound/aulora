@@ -75,13 +75,62 @@ pub struct Spec {
     pub rows: u16,
 }
 
+/// The terminal's master side: opened here, or adopted from the daemon
+/// this one replaced.
+enum Master {
+    Pty(Box<dyn MasterPty + Send>),
+    Fd(std::fs::File),
+    Gone,
+}
+
+impl Master {
+    fn resize(&self, rows: u16, cols: u16) -> Result<()> {
+        match self {
+            Master::Pty(m) => m.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?,
+            Master::Fd(f) => {
+                use std::os::unix::io::AsRawFd;
+                let ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
+                // SAFETY: a valid fd and a valid winsize.
+                if unsafe { libc::ioctl(f.as_raw_fd(), libc::TIOCSWINSZ, &ws) } != 0 {
+                    return Err(std::io::Error::last_os_error().into());
+                }
+            }
+            Master::Gone => {}
+        }
+        Ok(())
+    }
+
+    fn raw_fd(&self) -> Option<std::os::unix::io::RawFd> {
+        use std::os::unix::io::AsRawFd;
+        match self {
+            Master::Pty(m) => m.as_raw_fd(),
+            Master::Fd(f) => Some(f.as_raw_fd()),
+            Master::Gone => None,
+        }
+    }
+}
+
+enum Killer {
+    Pty(Box<dyn ChildKiller + Send + Sync>),
+    Pid(u32),
+    Gone,
+}
+
+/// A pane's state, for handing it to the daemon that replaces this one.
+pub struct Exported {
+    /// The master fd, left open across exec.
+    pub fd: Option<i32>,
+    pub screen: Vec<u8>,
+    pub title: Option<String>,
+}
+
 pub struct Proc {
     pub pid: Option<u32>,
     term: Mutex<vt100::Parser<Signals>>,
     tx: broadcast::Sender<PaneEvent>,
     input: mpsc::Sender<Vec<u8>>,
-    master: Mutex<Box<dyn MasterPty + Send>>,
-    killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    master: Mutex<Master>,
+    killer: Mutex<Killer>,
     pub last_output: AtomicI64,
     pub bytes_out: AtomicU64,
 }
@@ -121,6 +170,52 @@ pub fn argv(kind: PaneKind, args: &[String]) -> Vec<String> {
     }
 }
 
+/// Start a pane's input and output threads: writes go to the program
+/// from a queue (they can block), output feeds the screen and subscribers.
+fn wire(
+    proc_: &Arc<Proc>,
+    id: &str,
+    mut reader: Box<dyn Read + Send>,
+    mut writer: Box<dyn Write + Send>,
+    input_rx: mpsc::Receiver<Vec<u8>>,
+    on_wake: impl Fn() + Send + Sync + 'static,
+) -> Result<()> {
+    std::thread::Builder::new().name(format!("pane-{id}-in")).spawn(move || {
+        while let Ok(data) = input_rx.recv() {
+            if writer.write_all(&data).and_then(|_| writer.flush()).is_err() {
+                break;
+            }
+        }
+    })?;
+    let out = proc_.clone();
+    std::thread::Builder::new().name(format!("pane-{id}-out")).spawn(move || {
+        let mut buf = vec![0u8; 32 * 1024];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let now = now_ms();
+                    let quiet = now - out.last_output.swap(now, Ordering::Relaxed) > 1_500;
+                    out.bytes_out.fetch_add(n as u64, Ordering::Relaxed);
+                    let chunk: Arc<[u8]> = Arc::from(&buf[..n]);
+                    let bell = {
+                        // Parse and publish under one lock so attach() never sees
+                        // a screen that disagrees with the stream that follows it.
+                        let mut term = out.term.lock().unwrap();
+                        term.process(&chunk);
+                        let _ = out.tx.send(PaneEvent::Output(chunk));
+                        std::mem::take(&mut term.callbacks_mut().bell)
+                    };
+                    if quiet || bell {
+                        on_wake();
+                    }
+                }
+            }
+        }
+    })?;
+    Ok(())
+}
+
 impl Proc {
     /// Start the pane's program. `on_exit` runs once when it ends;
     /// `on_wake` runs when output arrives after a quiet spell.
@@ -154,8 +249,8 @@ impl Proc {
         drop(pair.slave);
         let pid = child.process_id();
         let killer = child.clone_killer();
-        let mut reader = pair.master.try_clone_reader()?;
-        let mut writer = pair.master.take_writer()?;
+        let reader = pair.master.try_clone_reader()?;
+        let writer = pair.master.take_writer()?;
 
         let (tx, _) = broadcast::channel(CHANNEL);
         let (input, input_rx) = mpsc::channel::<Vec<u8>>();
@@ -169,47 +264,13 @@ impl Proc {
             )),
             tx,
             input,
-            master: Mutex::new(pair.master),
-            killer: Mutex::new(killer),
+            master: Mutex::new(Master::Pty(pair.master)),
+            killer: Mutex::new(Killer::Pty(killer)),
             last_output: AtomicI64::new(now_ms()),
             bytes_out: AtomicU64::new(0),
         });
 
-        // Writes can block when the program isn't reading, so they get a thread.
-        std::thread::Builder::new().name(format!("pane-{}-in", spec.id)).spawn(move || {
-            while let Ok(data) = input_rx.recv() {
-                if writer.write_all(&data).and_then(|_| writer.flush()).is_err() {
-                    break;
-                }
-            }
-        })?;
-
-        let out = proc_.clone();
-        std::thread::Builder::new().name(format!("pane-{}-out", spec.id)).spawn(move || {
-            let mut buf = vec![0u8; 32 * 1024];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        let now = now_ms();
-                        let quiet = now - out.last_output.swap(now, Ordering::Relaxed) > 1_500;
-                        out.bytes_out.fetch_add(n as u64, Ordering::Relaxed);
-                        let chunk: Arc<[u8]> = Arc::from(&buf[..n]);
-                        let bell = {
-                            // Parse and publish under one lock so attach() never sees
-                            // a screen that disagrees with the stream that follows it.
-                            let mut term = out.term.lock().unwrap();
-                            term.process(&chunk);
-                            let _ = out.tx.send(PaneEvent::Output(chunk));
-                            std::mem::take(&mut term.callbacks_mut().bell)
-                        };
-                        if quiet || bell {
-                            on_wake();
-                        }
-                    }
-                }
-            }
-        })?;
+        wire(&proc_, &spec.id, reader, writer, input_rx, on_wake)?;
 
         let done = proc_.clone();
         let mut child = child;
@@ -227,6 +288,96 @@ impl Proc {
         })?;
 
         Ok(proc_)
+    }
+
+    /// Take over a pane from the daemon this one replaced: its terminal's
+    /// master fd (inherited across exec), its process (still our child,
+    /// since exec keeps the pid) and its last screen. `fd` is None for a
+    /// pane whose program had already exited.
+    #[allow(clippy::too_many_arguments)]
+    pub fn adopt(
+        id: &str,
+        fd: Option<i32>,
+        pid: Option<u32>,
+        cols: u16,
+        rows: u16,
+        screen: &[u8],
+        title: Option<String>,
+        on_exit: impl FnOnce(PaneExit) + Send + 'static,
+        on_wake: impl Fn() + Send + Sync + 'static,
+    ) -> Result<Arc<Proc>> {
+        use std::os::unix::io::FromRawFd;
+        let mut parser = vt100::Parser::new_with_callbacks(nz(rows), nz(cols), SCROLLBACK, Signals::default());
+        parser.process(screen);
+        parser.callbacks_mut().title = title;
+        let (tx, _) = broadcast::channel(CHANNEL);
+        let (input, input_rx) = mpsc::channel::<Vec<u8>>();
+        let running = fd.zip(pid);
+        // SAFETY: the fd was handed over open by the daemon we replaced, and
+        // nothing else in this process owns it.
+        let file = running.map(|(fd, _)| unsafe { std::fs::File::from_raw_fd(fd) });
+        let (reader, writer) = match &file {
+            Some(f) => (Some(f.try_clone()?), Some(f.try_clone()?)),
+            None => (None, None),
+        };
+        let proc_ = Arc::new(Proc {
+            pid,
+            term: Mutex::new(parser),
+            tx,
+            input,
+            master: Mutex::new(file.map(Master::Fd).unwrap_or(Master::Gone)),
+            killer: Mutex::new(running.map(|(_, p)| Killer::Pid(p)).unwrap_or(Killer::Gone)),
+            last_output: AtomicI64::new(now_ms()),
+            bytes_out: AtomicU64::new(0),
+        });
+        let (Some(reader), Some(writer), Some((_, pid))) = (reader, writer, running) else {
+            return Ok(proc_);
+        };
+        wire(&proc_, id, Box::new(reader), Box::new(writer), input_rx, on_wake)?;
+        let done = proc_.clone();
+        std::thread::Builder::new().name(format!("pane-{id}-wait")).spawn(move || {
+            let mut status = 0;
+            loop {
+                // SAFETY: waiting on our own child.
+                let r = unsafe { libc::waitpid(pid as i32, &mut status, 0) };
+                if r == -1 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                break;
+            }
+            let exit = if libc::WIFEXITED(status) {
+                PaneExit { code: libc::WEXITSTATUS(status) as u32, signal: None, at: now_ms() }
+            } else if libc::WIFSIGNALED(status) {
+                let sig = libc::WTERMSIG(status);
+                PaneExit { code: 128 + sig as u32, signal: Some(format!("signal {sig}")), at: now_ms() }
+            } else {
+                PaneExit { code: 1, signal: None, at: now_ms() }
+            };
+            let term = done.term.lock().unwrap();
+            let _ = done.tx.send(PaneEvent::Exited(exit.clone()));
+            drop(term);
+            on_exit(exit);
+        })?;
+        Ok(proc_)
+    }
+
+    /// Get ready to hand this pane to a new daemon over exec: its screen,
+    /// and its master fd with close-on-exec cleared.
+    pub fn export(&self) -> Exported {
+        let fd = self.master.lock().unwrap().raw_fd();
+        if let Some(fd) = fd {
+            // SAFETY: fcntl on our own open fd.
+            unsafe {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags >= 0 {
+                    libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+                }
+            }
+        }
+        let term = self.term.lock().unwrap();
+        let mut screen = b"\x1b[H\x1b[2J".to_vec();
+        screen.extend_from_slice(term.screen().state_formatted().as_bytes());
+        Exported { fd, screen, title: term.callbacks().title.clone() }
     }
 
     /// The current screen as escape sequences, its size, and a receiver for
@@ -253,7 +404,7 @@ impl Proc {
             return Ok(());
         }
         term.set_size(nz(rows), nz(cols));
-        self.master.lock().unwrap().resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?;
+        self.master.lock().unwrap().resize(rows, cols)?;
         Ok(())
     }
 
@@ -272,7 +423,16 @@ impl Proc {
     }
 
     pub fn kill(&self) {
-        let _ = self.killer.lock().unwrap().kill();
+        match &mut *self.killer.lock().unwrap() {
+            Killer::Pty(k) => {
+                let _ = k.kill();
+            }
+            // SAFETY: signalling our own child; SIGHUP as a closed terminal would.
+            Killer::Pid(pid) => unsafe {
+                libc::kill(*pid as i32, libc::SIGHUP);
+            },
+            Killer::Gone => {}
+        }
     }
 
     pub fn last_output_at(&self) -> Ms {

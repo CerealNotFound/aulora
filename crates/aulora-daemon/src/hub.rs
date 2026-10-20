@@ -225,6 +225,14 @@ impl Hub {
     }
 
     /// Live sessions with a known Claude process: (id, pid).
+    /// Wait (briefly) until every session change so far is on disk.
+    pub fn flush(&self) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        if self.store.send(crate::store::StoreCmd::Flush(tx)).is_ok() {
+            let _ = rx.recv_timeout(std::time::Duration::from_secs(3));
+        }
+    }
+
     pub fn live_sessions(&self) -> Vec<(String, u32)> {
         self.sessions.values().filter(|s| s.state.is_live()).filter_map(|s| Some((s.id.clone(), s.pid?))).collect()
     }

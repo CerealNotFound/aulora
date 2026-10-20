@@ -194,7 +194,13 @@ enum HooksCmd {
 #[derive(Subcommand)]
 enum DaemonCmd {
     /// Run in the foreground (what `aulora daemon` does with no subcommand).
-    Run,
+    Run {
+        /// Take over from a daemon that is upgrading (used by the daemon).
+        #[arg(long, hide = true)]
+        handover: bool,
+    },
+    /// Restart in place with this aulora, keeping every pane running.
+    Restart,
     /// Start in the background if it isn't running.
     Start,
     /// Stop the running daemon. Refuses while panes are running.
@@ -238,7 +244,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             Ok(())
         }
         Some(Cmd::Hooks { action }) => hooks(action),
-        Some(Cmd::Daemon { action }) => daemon(action.unwrap_or(DaemonCmd::Run)),
+        Some(Cmd::Daemon { action }) => daemon(action.unwrap_or(DaemonCmd::Run { handover: false })),
         Some(Cmd::Status { json, all }) => status(json, all),
         Some(Cmd::Doctor) => doctor(),
         Some(Cmd::New { claude, name, cwd, attach, command }) => new_pane(claude, name, cwd, attach, command),
@@ -418,16 +424,45 @@ fn ensure_daemon() -> Result<String> {
 
 fn daemon(action: DaemonCmd) -> Result<()> {
     match action {
-        DaemonCmd::Run => {
+        DaemonCmd::Run { handover } => {
             init_logging()?;
             let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
-            let res = rt.block_on(aulora_daemon::run());
+            let res = rt.block_on(aulora_daemon::run(handover));
             if let Err(e) = &res {
                 tracing::error!("daemon failed: {e:#}");
             }
             // Don't let a stuck background task keep the process (and its lock) alive.
             rt.shutdown_timeout(Duration::from_secs(1));
             res
+        }
+        DaemonCmd::Restart => {
+            let Ok(snap) = request_snapshot() else {
+                let v = ensure_daemon()?;
+                println!("daemon wasn't running; started it (v{v})");
+                return Ok(());
+            };
+            let running = snap.panes.iter().filter(|p| p.is_running()).count();
+            let exe = exe()?;
+            match request(&ClientMsg::Upgrade { exe: Some(exe.to_string_lossy().to_string()) })? {
+                ServerMsg::Error { message } if message.contains("bad message") => bail!(
+                    "this daemon is from before in-place restarts, so it can't keep its panes.\n\
+                     Restart it the old way, ending {running} pane(s): aulora daemon stop --force && aulora daemon start\n\
+                     From then on, restarts and updates keep panes."
+                ),
+                ServerMsg::Error { message } => bail!(message),
+                _ => {}
+            }
+            // The socket goes away and comes back with the new daemon.
+            std::thread::sleep(Duration::from_millis(300));
+            for _ in 0..100 {
+                if let Ok(s) = request_snapshot() {
+                    let kept = s.panes.iter().filter(|p| p.is_running()).count();
+                    println!("daemon restarted; {kept} of {running} running pane(s) kept");
+                    return Ok(());
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            bail!("the daemon didn't come back within 10 seconds; see {}", paths::log().display())
         }
         DaemonCmd::Start => {
             if let Some(v) = daemon_running() {
@@ -446,7 +481,7 @@ fn daemon(action: DaemonCmd) -> Result<()> {
             let running: Vec<String> = snap.panes.iter().filter(|p| p.is_running()).map(pane_label).collect();
             if !running.is_empty() && !force {
                 bail!(
-                    "{} running pane(s) would be ended: {}\nThey can't be brought back yet. Use --force to stop anyway.",
+                    "{} running pane(s) would be ended: {}\nTo keep them, use `aulora daemon restart` instead. Use --force to stop anyway.",
                     running.len(),
                     running.join(", ")
                 );
