@@ -320,7 +320,7 @@ impl Demo {
         d.add_session(
             "b5a4c3d2-e1f0-4a9b-8c7d-6e5f4a3b2c1d",
             "aulora",
-            "ghostty",
+            "vscode",
             "claude-opus-5-5",
             now - 25 * min,
             "README + demo GIF",
@@ -333,7 +333,8 @@ impl Demo {
             &["write the README and record a demo with vhs"],
         );
         d.hook("b5a4c3d2-e1f0-4a9b-8c7d-6e5f4a3b2c1d", now - 95_000, json!({"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_use_id":"q1",
-            "tool_input":{"questions":[{"question":"Which license should the README show: MIT, Apache-2.0, or both?","header":"License"}]}}));
+            "tool_input":{"questions":[{"question":"Which license should the README show: MIT, Apache-2.0, or both?","header":"License","multiSelect":false,
+                "options":[{"label":"Both","description":"Dual MIT / Apache-2.0, as Rust crates usually are"},{"label":"MIT","description":"Shortest and most permissive"},{"label":"Apache-2.0","description":"Adds a patent grant"}]}]}}));
         d.set_tokens("b5a4c3d2-e1f0-4a9b-8c7d-6e5f4a3b2c1d", 38_900, 6_100);
 
         // cloudcast: idle, a fresh session.

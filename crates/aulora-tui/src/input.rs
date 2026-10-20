@@ -127,6 +127,29 @@ pub fn on_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx, input: &m
         paste_image_into_prompt(app);
         return false;
     }
+    // A session waiting on an answer: number keys choose, Enter submits,
+    // Esc says no, all pressed in its terminal.
+    if app.focus == Focus::Main
+        && !app.typing
+        && app.compose.is_none()
+        && let Some(crate::layout::View::Conversation { session }) = app.focused_view()
+        && app.session(&session).is_some_and(|s| {
+            matches!(s.state, aulora_core::model::SessionState::NeedsYou { .. })
+                && s.ask.is_some()
+                && s.terminal.editor.is_some()
+        })
+    {
+        let keys = match key.code {
+            KeyCode::Char(c @ '1'..='9') if key.modifiers.is_empty() => Some(c.to_string()),
+            KeyCode::Enter => Some("\r".to_string()),
+            KeyCode::Esc => Some("\x1b".to_string()),
+            _ => None,
+        };
+        if let Some(keys) = keys {
+            answer(app, opts, &session, keys);
+            return false;
+        }
+    }
     if app.compose.is_some() && app.slash_key(&key, &opts.socket) {
         return false;
     }
@@ -1116,6 +1139,19 @@ fn open_file_in_editor(app: &mut App, root: &str, rel: &str, line: Option<u32>) 
     match spawned {
         Ok(_) => app.toast(format!("Opened {rel} in {editor}")),
         Err(e) => app.error(format!("Couldn't run `{editor}`: {e}. Set AULORA_EDITOR.")),
+    }
+}
+
+/// Press keys in a waiting session's terminal to answer it.
+fn answer(app: &mut App, opts: &Options, session: &str, keys: String) {
+    if app.conn == Conn::Demo {
+        app.toast(format!("Would answer {} (demo)", keys.escape_debug()));
+        return;
+    }
+    match client::command(&opts.socket, &ClientMsg::Answer { session_id: session.to_string(), keys }) {
+        Some(ServerMsg::Error { message }) => app.error(message),
+        Some(_) => app.toast("Answered"),
+        None => app.error("The daemon didn't answer"),
     }
 }
 

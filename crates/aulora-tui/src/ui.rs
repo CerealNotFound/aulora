@@ -1183,6 +1183,75 @@ fn working_line(app: &App, s: &Session, width: usize) -> Vec<Line<'static>> {
     ]
 }
 
+/// What Claude is waiting on, with numbered choices that a key answers
+/// (sent into its terminal), in place of the prompt box.
+fn answer_card(f: &mut Frame, area: Rect, s: &Session, ask: &Ask) -> u16 {
+    let t = theme::get();
+    let w = (area.width as usize).saturating_sub(2);
+    let many = ask.questions.len() > 1;
+    let mut lines: Vec<Line> = Vec::new();
+    for (qi, q) in ask.questions.iter().enumerate() {
+        let head = match &q.header {
+            Some(h) if many => format!("{}. {h}: ", qi + 1),
+            _ => String::new(),
+        };
+        let question = format!("{head}{}", q.question);
+        for (k, l) in crate::conv::wrap(&question, w.saturating_sub(3)).into_iter().enumerate() {
+            lines.push(Line::from(sp(format!(" {} {l}", if k == 0 { "?" } else { " " }), bold(t.text))));
+        }
+        for (i, o) in q.options.iter().enumerate().take(9) {
+            let mut spans =
+                vec![sp(format!("   {} ", i + 1), bold(t.accent)), sp(fit(&o.label, w.saturating_sub(5)), text())];
+            let desc = o.description.as_deref().unwrap_or("").trim();
+            // The description goes beside the label when it fits, else
+            // under it, as Claude Code lays its choices out.
+            if !desc.is_empty() && 5 + o.label.chars().count() + 2 + desc.chars().count() <= w {
+                spans.push(sp(format!("  {desc}"), faint()));
+                lines.push(Line::from(spans));
+            } else {
+                lines.push(Line::from(spans));
+                let wrapped = crate::conv::wrap(desc, w.saturating_sub(7));
+                for (k, l) in wrapped.iter().enumerate().take(2) {
+                    let l = if k == 1 && wrapped.len() > 2 {
+                        fit(&format!("{l} …"), w.saturating_sub(7))
+                    } else {
+                        l.clone()
+                    };
+                    lines.push(Line::from(sp(format!("       {l}"), faint())));
+                }
+            }
+        }
+    }
+    let n = ask.questions.iter().map(|q| q.options.len().min(9)).max().unwrap_or(0);
+    let keys = if n > 1 { format!("1-{n}") } else { "1".to_string() };
+    let hint = match s.terminal.editor.as_deref() {
+        Some(e) => {
+            let (long, short) = if many {
+                (
+                    format!(" {keys} answers each question in turn · ⏎ submits · esc says no · answered in {e}"),
+                    format!(" {keys} each · ⏎ submit · esc no"),
+                )
+            } else {
+                (format!(" {keys} answers · esc says no · answered in {e}"), format!(" {keys} answer · esc no"))
+            };
+            if long.chars().count() <= w { long } else { short }
+        }
+        None => " answer it where it runs".to_string(),
+    };
+    lines.push(Line::from(sp(fit(&hint, w), faint())));
+    let height = (lines.len() as u16 + 2).min(area.height.saturating_sub(3).max(4));
+    let r = Rect { y: area.bottom().saturating_sub(height), height, ..area };
+    let title = if w >= 26 { " Claude is waiting on you " } else { " waiting on you " };
+    let block = Block::bordered()
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_style(fg(t.red))
+        .title(sp(title, bold(t.red)));
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+    f.render_widget(Paragraph::new(lines), inner);
+    height
+}
+
 /// Claude Code's `/` menu, above the prompt box while a command is typed.
 fn slash_menu(f: &mut Frame, boxed: Rect, app: &mut App) {
     let t = theme::get();
@@ -1220,7 +1289,10 @@ fn conversation(f: &mut Frame, area: Rect, app: &mut App, session_id: &str) {
     let t = theme::get();
     let Some(s) = app.session(session_id).cloned() else { return };
     let mut area = area;
-    if app.can_compose(session_id) {
+    if let (SessionState::NeedsYou { .. }, Some(ask)) = (&s.state, s.ask.clone()) {
+        let h = answer_card(f, area, &s, &ask);
+        area.height = area.height.saturating_sub(h);
+    } else if app.can_compose(session_id) {
         let h = prompt_box(f, area, app, &s);
         area.height = area.height.saturating_sub(h);
     }

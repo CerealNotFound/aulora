@@ -67,7 +67,7 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 
 | | Request | Where it stands |
 |---|---|---|
-| ⬜ | Answer Claude's questions and permission prompts from aulora, for VS Code sessions too | Next: show the question and its numbered options; a number key answers (through the extension for VS Code sessions, directly for panes). |
+| 🟡 | Answer Claude's questions and permission prompts from aulora, for VS Code sessions too | A red "Claude is waiting on you" card replaces the prompt box with the question and its numbered choices (AskUserQuestion, plan approval, permission requests); 1-9 picks, Enter submits a multi-question form, Esc says no, pressed in the VS Code terminal by the extension (0.2.1). aulora panes already show Claude's own picker. Needs the restarted daemon and reloaded VS Code; unverified how Claude Code's multi-question form takes keys. |
 | 🟡 | Send a prompt from aulora into a session running in VS Code, same session | Extension built and installed; prompt box in aulora. Needs the daemon restarted once to work live. |
 | ✅ | Read code and changes inside aulora | Changes tab (diffs, attribution), Files tab (tree, viewer, gutter marks). |
 | ✅ | Commit and push from aulora | `c`, `P`, `p` in Changes. |
@@ -88,6 +88,7 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 | ✅ | Notifications when an agent needs you | Desktop notification from the daemon. |
 | ✅ | "Where you left off" cards | Back on a workspace after 30 minutes or more: a card with what each agent finished or is asking, files edited, new commits. Any key carries on. |
 | 🟡 | Global hotkey switcher | `aulora focus` brings the dashboard's Terminal.app or iTerm2 window to the front (or opens one). A terminal program can't own a system-wide key, so bind `aulora focus` to one in macOS Shortcuts or Raycast. |
+| ✅ | Exact steps to move onto the new daemon | Given in chat: `aulora daemon stop --force && aulora daemon start`, reload VS Code windows; later upgrades keep panes. |
 
 ## Process
 
