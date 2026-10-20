@@ -135,27 +135,35 @@ pub fn on_key(app: &mut App, key: KeyEvent, opts: &Options, ctx: &Ctx, input: &m
         paste_clipboard_into_prompt(app);
         return false;
     }
-    // A session waiting on an answer: number keys choose, Enter submits,
-    // Esc says no, all pressed in its terminal.
-    if app.focus == Focus::Main
-        && !app.typing
+    // A session waiting on an answer: its picker takes the keys Claude's
+    // would, and presses them in its terminal. From the sidebar, the
+    // numbers answer; everything else needs the conversation focused.
+    if !app.typing
         && app.compose.is_none()
-        && let Some(crate::layout::View::Conversation { session }) = app.focused_view()
-        && app.session(&session).is_some_and(|s| {
-            matches!(s.state, aulora_core::model::SessionState::NeedsYou { .. })
-                && s.ask.is_some()
-                && s.terminal.editor.is_some()
-        })
+        && let Some(session) = app.answer_target()
     {
-        let keys = match key.code {
-            KeyCode::Char(c @ '1'..='9') if key.modifiers.is_empty() => Some(c.to_string()),
-            KeyCode::Enter => Some("\r".to_string()),
-            KeyCode::Esc => Some("\x1b".to_string()),
-            _ => None,
-        };
-        if let Some(keys) = keys {
-            answer(app, opts, &session, keys);
-            return false;
+        let sidebar = app.focus == Focus::Sidebar;
+        let number = matches!(key.code, KeyCode::Char('1'..='9')) && key.modifiers.is_empty();
+        if (!sidebar || number)
+            && let Some(ask) = app.session(&session).and_then(|s| s.ask.clone())
+        {
+            let own = app.session(&session).is_some_and(|s| {
+                matches!(
+                    s.state,
+                    aulora_core::model::SessionState::NeedsYou { reason: aulora_core::model::Attention::Question, .. }
+                )
+            });
+            let fresh = app.picker.as_ref().is_none_or(|p| p.session != session || p.sig != crate::picker::sig(&ask));
+            if fresh {
+                app.picker = Some(crate::picker::Picker::new(&session, &ask));
+            }
+            let out = app.picker.as_mut().map(|p| p.key(&ask, own, &key)).unwrap_or_default();
+            if out.took {
+                if !out.keys.is_empty() {
+                    answer(app, opts, &session, out.keys);
+                }
+                return false;
+            }
         }
     }
     if app.compose.is_some() && app.slash_key(&key, &opts.socket) {
@@ -1265,10 +1273,11 @@ fn answer(app: &mut App, opts: &Options, session: &str, keys: String) {
         app.toast(format!("Would answer {} (demo)", keys.escape_debug()));
         return;
     }
+    // Quiet when it works: the picker shows what you chose.
     match client::command(&opts.socket, &ClientMsg::Answer { session_id: session.to_string(), keys }) {
-        Some(ServerMsg::Error { message }) => app.error(message),
-        Some(_) => app.toast("Answered"),
-        None => app.error("The daemon didn't answer"),
+        Some(ServerMsg::Error { message }) => app.error(format!("Couldn't answer: {message}")),
+        Some(_) => {}
+        None => app.error("Couldn't answer: the daemon didn't respond"),
     }
 }
 
@@ -2057,6 +2066,26 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                     app.focus = Focus::Main;
                     app.typing = false;
                     perform(app, a, opts, ctx);
+                }
+                Hit::AnswerRow(i) => {
+                    app.focus = Focus::Main;
+                    app.typing = false;
+                    if let Some(session) = app.answer_target()
+                        && let Some(s) = app.session(&session).cloned()
+                        && let Some(ask) = s.ask.clone()
+                    {
+                        let own = matches!(
+                            s.state,
+                            aulora_core::model::SessionState::NeedsYou {
+                                reason: aulora_core::model::Attention::Question,
+                                ..
+                            }
+                        );
+                        let out = app.picker.as_mut().map(|p| p.pick(&ask, own, i)).unwrap_or_default();
+                        if !out.keys.is_empty() {
+                            answer(app, opts, &session, out.keys);
+                        }
+                    }
                 }
                 Hit::Compose(id) => {
                     app.focus = Focus::Main;

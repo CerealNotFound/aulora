@@ -20,6 +20,7 @@ mod keymap;
 mod keys;
 mod layout;
 mod links;
+mod picker;
 mod select;
 mod slash;
 mod term;

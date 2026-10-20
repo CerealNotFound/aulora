@@ -106,6 +106,8 @@ pub enum Hit {
     Leaf(u64),
     /// A changed file listed at the top of the Files panel.
     ChangedFile(String),
+    /// A row of Claude's question picker.
+    AnswerRow(usize),
     /// The border between a split's sides.
     Split(u64),
     Terminal(String),
@@ -299,6 +301,8 @@ pub struct App {
     pub confirm: Option<Confirm>,
     /// Text selected with the mouse.
     pub selection: Option<crate::select::Selection>,
+    /// Where you are in the question picker of a session waiting on you.
+    pub picker: Option<crate::picker::Picker>,
     /// The last frame as drawn, before the selection was painted, to copy from.
     pub frame: Option<ratatui::buffer::Buffer>,
 }
@@ -407,6 +411,7 @@ impl App {
             hits: Vec::new(),
             confirm: None,
             selection: None,
+            picker: None,
             frame: None,
         }
     }
@@ -498,6 +503,24 @@ impl App {
             RowRef::Session(id) => self.session(id).map(|s| s.project_root.clone()),
             RowRef::Pane(id) => self.pane(id).map(|p| p.project_root.clone()),
         }
+    }
+
+    /// The session whose question picker is on screen and can be answered
+    /// from here: the focused conversation, or the selected row while
+    /// that conversation shows.
+    pub fn answer_target(&self) -> Option<String> {
+        let shown = match self.focused_view() {
+            Some(crate::layout::View::Conversation { session }) => session,
+            _ => return None,
+        };
+        let waiting = self.session(&shown).is_some_and(|s| {
+            matches!(s.state, SessionState::NeedsYou { .. }) && s.ask.is_some() && s.terminal.editor.is_some()
+        });
+        let here = match self.focus {
+            Focus::Main => true,
+            Focus::Sidebar => self.selected == Some(RowRef::Session(shown.clone())),
+        };
+        (waiting && here).then_some(shown)
     }
 
     pub fn selected_root(&self) -> Option<String> {
