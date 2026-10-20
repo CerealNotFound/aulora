@@ -712,6 +712,7 @@ fn main(f: &mut Frame, area: Rect, app: &mut App) {
     app.hits.push((area, Hit::Main));
     app.follow_selection();
     app.ensure_space();
+    app.ensure_panel(area.width);
     let Some(root) = app.space_root() else { return };
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
     tab_strip(f, rows[0], app, &root);
@@ -889,9 +890,19 @@ fn draw_leaf(
     {
         block = block.title_top(Line::from(sp(" ⏎ type ", faint())).right_aligned());
     }
+    let panel = view.is_panel() && !zoomed;
+    if panel {
+        block = block.title_top(Line::from(sp(" × ", fg(t.dim))).right_aligned());
+    }
     let inner = block.inner(r);
     f.render_widget(block, r);
     app.hits.push((r, Hit::Leaf(leaf)));
+    if panel {
+        app.hits.push((
+            Rect { x: r.right().saturating_sub(4), y: r.y, width: 3, height: 1 },
+            Hit::Action(crate::keymap::Action::ClosePanel),
+        ));
+    }
     app.leaf_focused = focused;
     match view {
         View::Pane { id } => pane_view(f, inner, app, id),

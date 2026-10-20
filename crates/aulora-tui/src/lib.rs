@@ -122,6 +122,25 @@ pub(crate) fn which(name: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(name).is_file()))
 }
 
+/// Set a true/false setting in ~/.aulora/config.json, keeping the rest.
+pub(crate) fn save_config_bool(key: &str, value: bool) {
+    let path = config_path();
+    let mut v: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    v[key] = serde_json::json!(value);
+    let _ = aulora_core::paths::ensure_home();
+    let _ = std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap_or_default());
+}
+
+fn config_bool(key: &str) -> Option<bool> {
+    let text = std::fs::read_to_string(config_path()).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    v.get(key)?.as_bool()
+}
+
 pub(crate) fn config_path_pub() -> PathBuf {
     config_path()
 }
@@ -201,6 +220,7 @@ pub fn run(mut opts: Options) -> Result<()> {
         app.layouts = tiles::load();
         let order = app::load_order();
         app.project_order = order.workspaces;
+        app.panel_shown = config_bool("files_panel").unwrap_or(true);
         if !welcome::seen() {
             app.open_welcome();
         }
@@ -665,6 +685,36 @@ mod tests {
             app.toast = None;
             input::paste(app, "x", &ctx);
             assert!(app.toast.as_ref().is_some_and(|t| t.msg.contains("Nothing to paste into")), "a toast explains");
+        });
+    }
+
+    #[test]
+    fn the_files_panel_is_there_by_default_and_hides() {
+        use crate::layout::{Layouts, View};
+        frame(None, &|app| {
+            let s = "b5a4c3d2-e1f0-4a9b-8c7d-6e5f4a3b2c1d".to_string();
+            let root = app.session(&s).unwrap().project_root.clone();
+            app.layouts = Layouts::default();
+            app.layouts.new_tab(&root, View::Conversation { session: s.clone() });
+            app.select(RowRef::Session(s.clone()));
+            let views = |app: &mut App| -> Vec<View> {
+                app.layouts.space(&root).tab().unwrap().leaves().into_iter().map(|(_, v)| v.clone()).collect()
+            };
+            app.ensure_panel(160);
+            assert_eq!(views(app), [View::Conversation { session: s.clone() }, View::Files], "there by default");
+            assert!(matches!(app.focused_view(), Some(View::Conversation { .. })), "without taking focus");
+            app.ensure_panel(160);
+            assert_eq!(views(app).len(), 2, "only once");
+            app.hide_panel();
+            app.ensure_panel(160);
+            assert_eq!(views(app), [View::Conversation { session: s.clone() }], "hidden stays hidden");
+            app.set_tab(crate::app::Tab::Files);
+            assert_eq!(views(app), [View::Conversation { session: s.clone() }, View::Files], "f brings it back");
+            let mut narrow = Layouts::default();
+            narrow.new_tab(&root, View::Conversation { session: s.clone() });
+            app.layouts = narrow;
+            app.ensure_panel(90);
+            assert_eq!(views(app).len(), 1, "not on a narrow screen");
         });
     }
 

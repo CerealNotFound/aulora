@@ -93,12 +93,7 @@ impl App {
     pub fn ensure_space(&mut self) {
         let Some(root) = self.space_root() else { return };
         if self.layouts.spaces.get(&root).is_none_or(|s| s.tabs.is_empty()) {
-            let view = if self.project(&root).is_some_and(|p| p.git.is_some()) {
-                View::Changes { filter: None }
-            } else {
-                View::Overview
-            };
-            self.layouts.new_tab(&root, view);
+            self.layouts.new_tab(&root, View::Overview);
             self.layouts_dirty = true;
         }
     }
@@ -171,7 +166,10 @@ impl App {
                 self.layouts.new_tab(root, view);
             }
             Some(tab) => {
-                let alone = tab.leaves().len() == 1 && matches!(tab.focused(), Some(View::Overview));
+                // A tab with only the overview or a panel in it: a conversation
+                // or terminal takes its place (the panel comes back beside it).
+                let alone = tab.leaves().len() == 1
+                    && tab.focused().is_some_and(|v| matches!(v, View::Overview) || (v.is_panel() && !view.is_panel()));
                 if let Some(leaf) = tab.find(|v| v == &view) {
                     tab.focus = leaf;
                 } else if view.is_panel() && !alone {
@@ -206,21 +204,22 @@ impl App {
     pub fn set_tab(&mut self, kind: Tab) {
         let Some(root) = self.space_root() else { return };
         let session = self.selected_session_id().filter(|_| !matches!(self.selected, Some(RowRef::Project(_))));
-        // Pressed again on the open panel, d and f close it.
-        let open = |v: &View| match kind {
-            Tab::Changes => matches!(v, View::Changes { .. }),
-            Tab::Files => matches!(v, View::Files),
-            _ => false,
-        };
-        if self.focus == Focus::Main
-            && let Some(tab) = self.layouts.space(&root).tab_mut()
-            && tab.leaves().len() > 1
-            && tab.focused().is_some_and(open)
-        {
-            let f = tab.focus;
-            tab.close(f);
-            self.layouts_dirty = true;
-            return;
+        // f shows or hides the panel everywhere; d switches it between
+        // Changes and Files.
+        if matches!(kind, Tab::Files | Tab::Changes) {
+            let shown =
+                self.layouts.space(&root).tab().and_then(|t| t.find(View::is_panel).and_then(|l| t.view(l).cloned()));
+            match (kind, shown) {
+                (Tab::Files, Some(View::Files)) => {
+                    self.hide_panel();
+                    return;
+                }
+                (Tab::Changes, Some(View::Changes { .. })) => {
+                    self.open_view(&root, View::Files, true);
+                    return;
+                }
+                _ => self.set_panel_shown(true),
+            }
         }
         let view = match kind {
             // Every change; `a` narrows it to one agent's.
@@ -246,6 +245,58 @@ impl App {
             }
         };
         self.open_view(&root, view, true);
+    }
+
+    /// Hide the panel in every workspace, and remember that.
+    pub fn hide_panel(&mut self) {
+        for space in self.layouts.spaces.values_mut() {
+            for tab in &mut space.tabs {
+                while tab.leaves().len() > 1 {
+                    let Some(leaf) = tab.find(View::is_panel) else { break };
+                    tab.close(leaf);
+                }
+            }
+        }
+        self.layouts_dirty = true;
+        self.set_panel_shown(false);
+        if self.focused_view().is_none() {
+            self.focus = Focus::Sidebar;
+        }
+    }
+
+    pub fn set_panel_shown(&mut self, shown: bool) {
+        if self.panel_shown != shown {
+            self.panel_shown = shown;
+            if self.conn != crate::app::Conn::Demo {
+                crate::save_config_bool("files_panel", shown);
+            }
+        }
+    }
+
+    /// Give the shown tab its Files panel, unless hidden, too narrow, or
+    /// the tab is nothing but a view. Focus stays where it was.
+    pub fn ensure_panel(&mut self, width: u16) {
+        if !self.panel_shown || width < 110 {
+            return;
+        }
+        let Some(root) = self.space_root() else { return };
+        let (leaf_id, split_id) = (self.layouts.id(), self.layouts.id());
+        let Some(tab) = self.layouts.space(&root).tab_mut() else { return };
+        if tab.zoom
+            || tab.find(View::is_panel).is_some()
+            || !tab.leaves().iter().any(|(_, v)| v.is_terminal() || matches!(v, View::Conversation { .. }))
+        {
+            return;
+        }
+        let focus = tab.focus;
+        tab.add_panel(View::Files, leaf_id, split_id);
+        // About 42 columns, more on wide screens.
+        let ratio = 1.0 - (42.0_f32.max(width as f32 * 0.26) / width as f32);
+        if let crate::layout::Node::Split { ratio: r, .. } = &mut tab.root {
+            *r = ratio.clamp(0.5, 0.8);
+        }
+        tab.focus = focus;
+        self.layouts_dirty = true;
     }
 
     /// Put a new pane beside the focused leaf (or in a new tab).

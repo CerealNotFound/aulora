@@ -112,8 +112,59 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App, root: &str) {
     }
 }
 
+/// What changed, listed above the tree (VS Code's explorer colours the
+/// files; this also lists them, so they're visible without digging).
+/// Returns the rows used.
+fn changed(f: &mut Frame, area: Rect, app: &mut App, root: &str) -> u16 {
+    let t = theme::get();
+    let Some(files) = app.changes.get(root).filter(|p| p.loaded).map(|p| p.files.clone()) else { return 0 };
+    if files.is_empty() || area.height < 12 {
+        return 0;
+    }
+    let max = (area.height / 3).max(3) as usize;
+    let width = area.width.saturating_sub(1) as usize;
+    let selected = app.files_view(root).selected.clone();
+    let mut lines = vec![lr(
+        vec![sp(" CHANGES ", bold(t.dim)), sp(files.len().to_string(), fg(t.yellow))],
+        vec![sp("d review ", faint())],
+        width,
+    )];
+    let shown = if files.len() > max { max - 1 } else { files.len() };
+    for (i, file) in files.iter().take(shown).enumerate() {
+        let path = &file.entry.path;
+        let (dir, name) = path.rsplit_once('/').map_or(("", path.as_str()), |(d, n)| (d, n));
+        let is_sel = selected.as_deref() == Some(path.as_str());
+        let color = kind_color(file.entry.kind);
+        let mut right: Vec<Span> = file.sessions.iter().take(3).map(|s| sp("●", fg(session_color(s)))).collect();
+        right.push(sp(format!(" {} ", file.entry.kind.letter()), fg(color)));
+        let room = width.saturating_sub(name.chars().count() + 4 + right.len() * 2);
+        let mut left = vec![sp("   ", text()), sp(name.to_string(), if is_sel { bold(color) } else { fg(color) })];
+        if !dir.is_empty() && room > 4 {
+            left.push(sp(format!(" {}", fit(dir, room)), faint()));
+        }
+        let mut line = lr(left, right, width);
+        if is_sel {
+            line = line.style(Style::new().bg(t.active));
+        }
+        lines.push(line);
+        app.hits.push((
+            Rect { x: area.x, y: area.y + 1 + i as u16, width: area.width, height: 1 },
+            Hit::ChangedFile(path.clone()),
+        ));
+    }
+    if shown < files.len() {
+        lines.push(Line::from(sp(format!("   … {} more · d shows all", files.len() - shown), faint())));
+    }
+    let used = lines.len() as u16;
+    lines.push(Line::from(sp(" FILES", bold(t.dim))));
+    f.render_widget(Paragraph::new(lines), Rect { height: used + 1, ..area });
+    used + 1
+}
+
 fn tree(f: &mut Frame, area: Rect, app: &mut App, root: &str) {
     let t = theme::get();
+    let top = changed(f, area, app, root);
+    let area = Rect { y: area.y + top, height: area.height.saturating_sub(top), ..area };
     let rows = app.file_rows(root);
     let decor = decor(app, root);
     let h = area.height as usize;

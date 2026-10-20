@@ -441,6 +441,7 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
             app.sidebar_compact = Some(!now);
         }
         Action::Welcome => app.open_welcome(),
+        Action::ClosePanel => app.hide_panel(),
         Action::MoveUp | Action::MoveDown => {
             let delta = if action == Action::MoveUp { -1 } else { 1 };
             // On an agent, its workspace moves: agents keep themselves in
@@ -2084,6 +2085,12 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                     new_pane(app, opts, ctx, PaneKind::Shell);
                 }
                 Hit::Leaf(_) => {}
+                Hit::ChangedFile(path) => {
+                    if let Some(root) = app.selected_root() {
+                        let line = app.first_change_line(&root, &path);
+                        app.reveal_file(&root, &path, line);
+                    }
+                }
                 Hit::Split(id) => app.dragging = Some(id),
                 Hit::Terminal(id) => {
                     let wants_mouse = app

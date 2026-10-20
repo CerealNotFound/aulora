@@ -104,6 +104,8 @@ pub enum Hit {
     NewTab,
     /// Anywhere in a leaf.
     Leaf(u64),
+    /// A changed file listed at the top of the Files panel.
+    ChangedFile(String),
     /// The border between a split's sides.
     Split(u64),
     Terminal(String),
@@ -238,6 +240,9 @@ pub struct App {
     /// The sidebar as glyphs (Some(true)), full (Some(false)), or decided
     /// by width (None).
     pub sidebar_compact: Option<bool>,
+    /// The Files panel down the right of each workspace (VS Code's
+    /// explorer): shown unless you hid it with `f` or its ×.
+    pub panel_shown: bool,
     /// Where the mouse is, and the link under it in the last frame.
     pub mouse_pos: Option<(u16, u16)>,
     pub hover_url: Option<(u16, u16, u16, String)>,
@@ -365,6 +370,7 @@ impl App {
             leaf_focused: false,
             mouse_pos: None,
             sidebar_compact: None,
+            panel_shown: true,
             hover_url: None,
             compose: None,
             drafts: HashMap::new(),

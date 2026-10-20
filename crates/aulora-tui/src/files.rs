@@ -426,6 +426,14 @@ impl App {
         self.files.get(root)?.texts.get(rel)
     }
 
+    /// The first changed line of a file, if its text is already read.
+    pub fn first_change_line(&self, root: &str, rel: &str) -> Option<u32> {
+        match self.files.get(root)?.texts.get(rel)? {
+            Loaded::Ready(text, _) => text.marks.keys().min().copied(),
+            _ => None,
+        }
+    }
+
     /// Every file in the project, for Ctrl-P; None while it's being read.
     pub fn file_index(&mut self, root: &str) -> Option<Arc<Vec<String>>> {
         if self.conn == Conn::Demo {

@@ -71,6 +71,8 @@ pub enum Action {
     MoveDown,
     SideBySide,
     Welcome,
+    /// Hide the Files and Changes panel (its ×).
+    ClosePanel,
     ToggleSidebar,
     Discard,
     HalfUp,
@@ -315,8 +317,8 @@ pub static BINDINGS: &[Binding] = &[
     b!(Global, "-", [k('-')], SplitDown, "split: a new shell below"),
     b!(Global, "C", [k('C')], NewClaude, "Claude Code in a new pane beside this one"),
     b!(Global, "T", [k('T')], NewTab, "a new tab with a shell"),
-    b!(Global, "d", [k('d')], OpenChanges, "Changes in the panel on the right (again closes it)", "changes"),
-    b!(Global, "f", [k('f')], OpenFiles, "Files in the panel on the right (again closes it)", "files"),
+    b!(Global, "d", [k('d')], OpenChanges, "Changes in the panel on the right (again: back to Files)", "changes"),
+    b!(Global, "f", [k('f')], OpenFiles, "show or hide the Files panel on the right", "files"),
     b!(Global, "< >", [k('<'), k('>')], Shrink, "make this pane smaller / bigger"),
     b!(Global, "=", [k('=')], Equalize, "make every pane even"),
     b!(
