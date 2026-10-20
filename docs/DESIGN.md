@@ -114,6 +114,8 @@ Claude Code's own transcript, readable and scrollable. It shows for sessions run
 - Your prompts, Claude's replies with light markdown, and every tool call in place, with its result: commands with exit status, duration and the first lines of output; edits with `+n −m` and a short colored diff; reads and searches as one-line summaries. `⏎` expands any of them.
 - Permission requests, questions and your answers, subagents, compaction, interruptions and session start and end appear inline as quiet notes.
 - At the bottom it follows new messages; scrolled up it stays put and shows `↓ 3 new · G latest`.
+- While Claude works, Claude Code's working line follows the last message: a spinner, a verb for what it's doing (Running, Editing, Searching, or a whimsical one between tools), the time so far, the current target and the context size. Under it, a tip that rotates every few seconds; the tips teach aulora's own keys, so waiting is a chance to learn one.
+- Each finished turn ends with a recap, as Claude Code's `✻ Worked for 3m 12s`, plus what the turn did: files edited with `+/−` lines and commands run, with failures in red.
 
 ## Changes
 
