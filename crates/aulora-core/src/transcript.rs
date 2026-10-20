@@ -105,6 +105,31 @@ pub fn read_new(path: &str, cur: &mut Cursor, sum: &mut Summary) -> std::io::Res
     Ok(*sum != before)
 }
 
+/// A user message's text: a string, or the text parts of a list, with an
+/// image marked unless the text already names it ("[Image #1]").
+pub fn prompt_text(content: &Value) -> String {
+    match content {
+        Value::String(s) => s.clone(),
+        Value::Array(parts) => {
+            let text: Vec<&str> = parts
+                .iter()
+                .filter(|p| p.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|p| p.get("text").and_then(Value::as_str))
+                .collect();
+            let mut out = text.join("\n");
+            let images = parts.iter().filter(|p| p.get("type").and_then(Value::as_str) == Some("image")).count();
+            if images > 0 && !out.contains("[Image") {
+                if !out.is_empty() {
+                    out.push(' ');
+                }
+                out.push_str(&if images == 1 { "[image]".to_string() } else { format!("[{images} images]") });
+            }
+            out
+        }
+        _ => String::new(),
+    }
+}
+
 fn process_line(line: &[u8], sum: &mut Summary) {
     if line.is_empty() {
         return;
@@ -154,11 +179,32 @@ fn process_line(line: &[u8], sum: &mut Summary) {
             let meta = v.get("isMeta").and_then(Value::as_bool).unwrap_or(false);
             if human && !meta {
                 sum.turn_text = None;
-                let text = v.get("message").and_then(|m| m.get("content")).and_then(Value::as_str).unwrap_or("");
+                // A prompt with an image is a list of parts, not a string.
+                let content = v.get("message").and_then(|m| m.get("content")).cloned().unwrap_or(Value::Null);
+                let text = prompt_text(&content);
+                let text = text.as_str();
                 // Slash commands and their output are recorded as tagged text.
                 if !text.trim().is_empty() && !crate::util::is_injected(text) {
                     sum.prompt_count += 1;
                     sum.prompts.push(PromptEntry { at, text: truncate(text, 600) });
+                    if sum.prompts.len() > MAX_PROMPTS {
+                        sum.prompts.remove(0);
+                    }
+                }
+            }
+        }
+        // A prompt sent while Claude worked, recorded as a queued command.
+        "attachment" => {
+            let a = &v["attachment"];
+            if a.get("type").and_then(Value::as_str) == Some("queued_command") {
+                let text = prompt_text(&a["prompt"]);
+                if !text.trim().is_empty()
+                    && !crate::util::is_injected(&text)
+                    && !sum.prompts.iter().any(|p| p.text == text)
+                {
+                    sum.prompt_count += 1;
+                    sum.last_prompt = Some(text.clone());
+                    sum.prompts.push(PromptEntry { at, text: truncate(&text, 600) });
                     if sum.prompts.len() > MAX_PROMPTS {
                         sum.prompts.remove(0);
                     }
@@ -295,6 +341,19 @@ impl Summary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prompts_with_images_count() {
+        let v: Value = serde_json::json!([{"type":"text","text":"[Image #2] - fix this"},{"type":"image","source":{}}]);
+        assert_eq!(prompt_text(&v), "[Image #2] - fix this");
+        let v: Value = serde_json::json!([{"type":"text","text":"look"},{"type":"image","source":{}}]);
+        assert_eq!(prompt_text(&v), "look [image]");
+        let mut sum = Summary::default();
+        let line = serde_json::json!({"type":"user","origin":{"kind":"human"},"timestamp":"2026-10-20T10:00:00Z","message":{"role":"user","content":[{"type":"text","text":"see this"},{"type":"image","source":{}}]}});
+        process_line(line.to_string().as_bytes(), &mut sum);
+        assert_eq!(sum.prompt_count, 1);
+        assert_eq!(sum.prompts[0].text, "see this [image]");
+    }
     use std::io::Write;
 
     #[test]

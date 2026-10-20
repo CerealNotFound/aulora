@@ -116,19 +116,7 @@ pub struct Conversation {
 }
 
 fn text_of(content: &Value) -> String {
-    match content {
-        Value::String(s) => s.clone(),
-        Value::Array(parts) => parts
-            .iter()
-            .filter_map(|p| match p.get("type").and_then(Value::as_str) {
-                Some("text") => p.get("text").and_then(Value::as_str).map(str::to_string),
-                Some("image") => Some("[image]".into()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-        _ => String::new(),
-    }
+    aulora_core::transcript::prompt_text(content)
 }
 
 fn input_summary(name: &str, input: &Value) -> String {
