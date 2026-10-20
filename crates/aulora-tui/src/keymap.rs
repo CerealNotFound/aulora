@@ -174,7 +174,13 @@ pub static BINDINGS: &[Binding] = &[
     b!(Sidebar, "⏎", [code(KeyCode::Enter), code(KeyCode::Right), k('l')], Open, "open the selection", "open"),
     b!(Sidebar, "c", [k('c')], NewShell, "new shell in this workspace", "shell"),
     b!(Sidebar, "C", [k('C')], NewClaude, "new Claude Code pane in this workspace", "claude"),
-    b!(Sidebar, "x", [k('x')], Close, "close a pane or dismiss an ended session"),
+    b!(
+        Sidebar,
+        "x",
+        [k('x')],
+        Close,
+        "close a pane, end a session (VS Code closes its terminal), dismiss an ended one"
+    ),
     b!(Sidebar, "r", [k('r')], Restart, "restart a pane, or resume a session in a new terminal"),
     b!(Sidebar, "m", [k('m')], Menu, "actions for the selection (or right-click)"),
     b!(Sidebar, "K J", [k('K'), k('J')], MoveUp, "move this workspace or agent up / down"),

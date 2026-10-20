@@ -127,6 +127,8 @@ pub enum MenuItem {
     Resume(String),
     Restart(String),
     Close(RowRef),
+    /// End a live session running outside aulora.
+    End(String),
     OpenEditor(String),
     NewClaude(String),
     NewShell(String),
@@ -146,6 +148,7 @@ impl MenuItem {
             MenuItem::Resume(_) => "Resume in a terminal",
             MenuItem::Restart(_) => "Restart",
             MenuItem::Close(RowRef::Session(_)) => "Dismiss",
+            MenuItem::End(_) => "End session",
             MenuItem::Close(_) => "Close",
             MenuItem::OpenEditor(_) => "Open in VS Code",
             MenuItem::NewClaude(_) => "New Claude here",
@@ -158,7 +161,7 @@ impl MenuItem {
     }
 
     pub fn danger(&self) -> bool {
-        matches!(self, MenuItem::Close(_))
+        matches!(self, MenuItem::Close(_) | MenuItem::End(_))
     }
 }
 
@@ -759,7 +762,11 @@ impl App {
     pub fn closable(&self, r: &RowRef) -> bool {
         match r {
             RowRef::Pane(id) => self.pane(id).is_some(),
-            RowRef::Session(id) => self.session(id).is_some_and(|s| !s.state.is_live()),
+            // Live ones too, when aulora can reach them: through the
+            // editor's extension, or their Claude process.
+            RowRef::Session(id) => {
+                self.session(id).is_some_and(|s| !s.state.is_live() || s.terminal.editor.is_some() || s.pid.is_some())
+            }
             RowRef::Project(_) => false,
         }
     }
@@ -786,7 +793,9 @@ impl App {
                     items.push(MenuItem::Jump(id.clone()));
                 }
                 items.push(MenuItem::Resume(id.clone()));
-                if self.session(id).is_some_and(|s| !s.state.is_live()) {
+                if self.session(id).is_some_and(|s| s.state.is_live()) {
+                    items.push(MenuItem::End(id.clone()));
+                } else {
                     items.push(MenuItem::Close(r.clone()));
                 }
             }

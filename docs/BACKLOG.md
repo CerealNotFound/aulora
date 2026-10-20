@@ -41,7 +41,7 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 | ✅ | Look like Herdr (the screenshot) | Tiled panes in tabs per workspace, accent frame on the focused pane, `new` / `menu` at the bottom of the sidebar. |
 | ✅ | Workspaces and agents in one tree, not two sections | One tree; kept when the Herdr screenshot showed two sections. |
 | ✅ | Every agent is a terminal | Ended sessions open as `claude --resume`; sessions in VS Code show their conversation read-only. |
-| ✅ | A way to close terminals and agents | `×` on hover, `x`, the row menu; a running pane asks first. |
+| 🟡 | A way to close terminals and agents | Panes: `×`, `x`, the menu. Live sessions outside aulora had no close at all ("why am I not able to close a specific terminal here"); now `×`, `x` and "End session" ask, then close a VS Code session's terminal through the extension (0.2.2), or end Claude (SIGTERM, after checking the PID is still Claude) in other terminals. Needs the restarted daemon and reloaded VS Code. |
 | ✅ | New terminals start in the selected workspace | `c`, `C`, `\|`, `-`, the menus. |
 | ✅ | Changes and Files visible on screen | Buttons in the tab strip (`d changes N`, `f files`). |
 | ✅ | The line under an agent must be true | Its last reply, your last prompt since, or what it's doing; "waiting for a first prompt" only with no history. |
@@ -52,6 +52,7 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 | ✅ | A better name than "projects" | "workspaces", as VS Code calls the folder you open: the sidebar, palette (`#`), Ctrl-O, menus, help, welcome and docs. |
 | ✅ | Compact sidebar on narrow terminals | Below 100 columns, or `\` any time: a strip of status dots and workspace initials; click to select. |
 | ✅ | First-run onboarding | A welcome checklist on first launch: connect Claude Code (`H`), the VS Code extension (`V`), open a workspace (Ctrl-O), the keys that matter, the Terminal.app Option tip. "Getting started" in the menu brings it back. |
+| ⬜ | A good ASCII design for aulora's branding | Asked 2026-10-20: study how other products built theirs (Claude Code, Gemini CLI, Crush, opencode, lazygit…), then design aulora's. Research under way. |
 
 ## Conversations
 

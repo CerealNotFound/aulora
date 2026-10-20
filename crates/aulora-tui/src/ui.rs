@@ -1693,7 +1693,11 @@ fn confirm(f: &mut Frame, area: Rect, app: &App) {
     let t = theme::get();
     let Some(c) = &app.confirm else { return };
     let body = crate::conv::wrap(&c.body, 54);
-    let color = if matches!(c.action, crate::ConfirmAction::KillPane(_)) { t.red } else { t.accent };
+    let color = if matches!(c.action, crate::ConfirmAction::KillPane(_) | crate::ConfirmAction::EndSession(_)) {
+        t.red
+    } else {
+        t.accent
+    };
     let inner = modal(f, centered(area, 60, 6 + body.len() as u16), &c.title, color);
     let mut lines = vec![Line::raw("")];
     lines.extend(body.into_iter().map(|l| Line::from(sp(format!(" {l}"), text()))));

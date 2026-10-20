@@ -14,6 +14,8 @@ use crate::{Ctx, Options, client, keys, theme};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfirmAction {
     KillPane(String),
+    /// End a live session running outside aulora.
+    EndSession(String),
     /// Resume a session that is still running somewhere else, as a fork.
     Fork(String),
     /// Stage everything in a project and commit it with this message.
@@ -26,6 +28,7 @@ impl ConfirmAction {
     pub fn verb(&self) -> &'static str {
         match self {
             ConfirmAction::KillPane(_) => "kill",
+            ConfirmAction::EndSession(_) => "end",
             ConfirmAction::Fork(_) => "fork",
             ConfirmAction::CommitAll(..) => "commit all",
             ConfirmAction::Discard(..) => "discard",
@@ -738,6 +741,12 @@ fn run_confirmed(app: &mut App, opts: &Options, ctx: &Ctx) {
     let Some(c) = app.confirm.take() else { return };
     match c.action {
         ConfirmAction::KillPane(id) => pane_action(app, opts, ClientMsg::KillPane { pane_id: id }, "Stopped"),
+        ConfirmAction::EndSession(id) => match client::command(&opts.socket, &ClientMsg::EndSession { session_id: id })
+        {
+            Some(ServerMsg::Error { message }) => app.error(message),
+            Some(_) => app.toast("Ended"),
+            None => app.error("The daemon didn't answer"),
+        },
         ConfirmAction::Discard(root, entry) => app.discard(&root, entry),
         ConfirmAction::CommitAll(root, message) => app.start_op(&root, crate::git::Op::Commit { message, all: true }),
         ConfirmAction::Fork(id) => {
@@ -774,7 +783,33 @@ fn close(app: &mut App, opts: &Options, row: RowRef) {
         Some(RowRef::Session(id)) => {
             let ended = app.session(&id).is_some_and(|s| !s.state.is_live());
             if !ended {
-                app.toast("This session runs outside aulora; end it where it runs, or r to fork it here");
+                let Some(s) = app.session(&id).cloned() else { return };
+                if demo {
+                    app.toast("Demo sessions can't be ended");
+                    return;
+                }
+                let body = match (&s.terminal.editor, s.pid) {
+                    (Some(e), _) => format!("Its terminal in {e} closes, and Claude with it."),
+                    (None, Some(_)) => "Claude Code stops (SIGTERM); the terminal it ran in stays open.".to_string(),
+                    (None, None) => {
+                        app.toast("aulora can't reach this session's process; end it where it runs");
+                        return;
+                    }
+                };
+                let what = match app.status(&RowRef::Session(id.clone())) {
+                    Status::Working => " It is working right now; whatever it's doing stops.",
+                    Status::Blocked => " It is waiting for you.",
+                    _ => "",
+                };
+                app.confirm = Some(Confirm {
+                    title: format!(
+                        "end {}?",
+                        crate::ui::fit(&s.title.clone().unwrap_or_else(|| "this session".into()), 40)
+                    ),
+                    body: format!("{body}{what} Its conversation stays; r resumes it."),
+                    action: ConfirmAction::EndSession(id),
+                    on_action: false,
+                });
             } else if demo {
                 app.toast("Dismissed (demo)");
             } else {
@@ -1571,6 +1606,10 @@ fn run_menu_item(app: &mut App, opts: &Options, ctx: &Ctx, item: MenuItem) {
         MenuItem::Close(r) => {
             app.select(r.clone());
             close(app, opts, r);
+        }
+        MenuItem::End(id) => {
+            app.select(RowRef::Session(id.clone()));
+            close(app, opts, RowRef::Session(id));
         }
         MenuItem::OpenEditor(root) => open_in_editor(app, &root),
         MenuItem::NewClaude(root) => spawn(app, opts, ctx, PaneKind::Claude, root, vec![], "Claude Code"),
