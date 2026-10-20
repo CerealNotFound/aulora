@@ -42,3 +42,50 @@ impl Liveness {
         dead
     }
 }
+
+/// End a Claude Code process (SIGTERM, as closing its terminal would),
+/// after checking the PID still belongs to Claude Code.
+pub fn end_claude(pid: u32) -> Result<(), String> {
+    let mut sys = System::new();
+    let p = Pid::from_u32(pid);
+    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[p]), true, ProcessRefreshKind::everything());
+    let Some(proc_) = sys.process(p) else { return Err("it has already ended".into()) };
+    let named = |s: &std::ffi::OsStr| s.to_string_lossy().to_lowercase().contains("claude");
+    if !named(proc_.name()) && !proc_.cmd().iter().any(|a| named(a)) {
+        return Err(format!("process {pid} isn't Claude Code anymore"));
+    }
+    // SAFETY: kill(2) with a checked, live PID and a standard signal.
+    if unsafe { libc::kill(pid as i32, libc::SIGTERM) } != 0 {
+        return Err(format!("couldn't end process {pid}: {}", std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ends_only_claude() {
+        let mut other = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        assert!(end_claude(other.id()).unwrap_err().contains("isn't Claude Code"));
+        other.kill().unwrap();
+        other.wait().unwrap();
+
+        let dir = std::env::temp_dir().join(format!("aulora-end-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let claude = dir.join("claude");
+        // A script, so its command line says claude (macOS kills copies
+        // of signed system binaries).
+        std::fs::write(&claude, "#!/bin/sh\nwhile :; do sleep 1; done\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut child = std::process::Command::new(&claude).spawn().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        end_claude(child.id()).unwrap();
+        let status = child.wait().unwrap();
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(status.signal(), Some(libc::SIGTERM));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

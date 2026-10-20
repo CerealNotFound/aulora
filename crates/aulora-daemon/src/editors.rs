@@ -132,6 +132,13 @@ impl Editors {
         out.send(ServerMsg::Show { terminal_id: target.terminal }).await.map_err(|_| format!("{} closed", target.app))
     }
 
+    /// Ask the editor to close the session's terminal.
+    pub async fn close(&self, target: &Target) -> Result<(), String> {
+        let out = self.editors.lock().unwrap().get(&target.conn).map(|e| e.out.clone());
+        let Some(out) = out else { return Err(format!("{} closed", target.app)) };
+        out.send(ServerMsg::Close { terminal_id: target.terminal }).await.map_err(|_| format!("{} closed", target.app))
+    }
+
     pub fn typed(&self, request_id: u64, error: Option<String>) {
         if let Some(tx) = self.pending.lock().unwrap().remove(&request_id) {
             let _ = tx.send(error);

@@ -245,6 +245,11 @@ impl Hub {
         self.sessions.get(id).map(|s| s.state.clone())
     }
 
+    /// The Claude Code process of a live session.
+    pub fn session_pid(&self, id: &str) -> Option<u32> {
+        self.sessions.get(id).filter(|s| s.state.is_live()).and_then(|s| s.pid)
+    }
+
     pub fn live_pids(&self) -> Vec<u32> {
         let mut pids: Vec<u32> = self.sessions.values().filter(|s| s.state.is_live()).filter_map(|s| s.pid).collect();
         pids.sort_unstable();

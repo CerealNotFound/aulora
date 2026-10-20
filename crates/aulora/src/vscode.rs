@@ -207,6 +207,6 @@ mod tests {
         assert_eq!(u16::from_le_bytes([z[eocd + 10], z[eocd + 11]]), 5);
         let text = String::from_utf8_lossy(&z);
         assert!(text.contains("extension/extension.js"));
-        assert!(text.contains(r#"Version="0.2.1""#));
+        assert!(text.contains(r#"Version="0.2.2""#));
     }
 }

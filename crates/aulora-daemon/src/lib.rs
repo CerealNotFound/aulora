@@ -825,6 +825,23 @@ async fn handle_conn(shared: Arc<Shared>, stream: UnixStream) -> Result<()> {
                             None => err(anyhow::anyhow!("no editor with the aulora extension has this session's terminal")),
                         }
                     }
+                    ClientMsg::EndSession { session_id } => {
+                        if shared.editors.target(&session_id).is_none() {
+                            shared.recompute_reach().await;
+                        }
+                        let pid = shared.hub.lock().unwrap().session_pid(&session_id);
+                        match (shared.editors.target(&session_id), pid) {
+                            (Some(t), _) => match shared.editors.close(&t).await {
+                                Ok(()) => Some(ServerMsg::Ok),
+                                Err(e) => err(anyhow::anyhow!(e)),
+                            },
+                            (None, Some(pid)) => match procs::end_claude(pid) {
+                                Ok(()) => Some(ServerMsg::Ok),
+                                Err(e) => err(anyhow::anyhow!(e)),
+                            },
+                            (None, None) => err(anyhow::anyhow!("aulora doesn't know this session's process; end it where it runs")),
+                        }
+                    }
                     ClientMsg::SendPrompt { session_id, text } => match shared.send_prompt(&session_id, text).await {
                         Ok(()) => Some(ServerMsg::Ok),
                         Err(e) => err(e),

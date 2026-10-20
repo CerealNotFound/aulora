@@ -120,6 +120,10 @@ function create(vscode, opts = {}) {
       const t = terminalById(msg.terminal_id);
       if (t) t.show(false);
     }
+    if (msg.type === "close") {
+      const t = terminalById(msg.terminal_id);
+      if (t) t.dispose();
+    }
   }
 
   function connect() {

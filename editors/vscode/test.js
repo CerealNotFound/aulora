@@ -10,7 +10,7 @@ const { create, socketPath, keystrokes, paneTerminal } = require("./extension.js
 
 function fakeVscode(pids) {
   const listeners = { open: [], close: [] };
-  const terminals = pids.map((pid, i) => ({ name: `zsh ${i}`, processId: Promise.resolve(pid), sent: [], shown: false, sendText(t) { this.sent.push(t); }, show() { this.shown = true; } }));
+  const terminals = pids.map((pid, i) => ({ name: `zsh ${i}`, processId: Promise.resolve(pid), sent: [], shown: false, sendText(t) { this.sent.push(t); }, show() { this.shown = true; }, dispose() { this.disposed = true; } }));
   return {
     terminals,
     window: {
@@ -83,6 +83,10 @@ async function main() {
   // Showing a terminal brings it into view.
   client.write(JSON.stringify({ type: "show", terminal_id: id }) + "\n");
   await until(() => vscode.terminals[1].shown);
+
+  // Closing a session's terminal disposes it.
+  client.write(JSON.stringify({ type: "close", terminal_id: id }) + "\n");
+  await until(() => vscode.terminals[1].disposed);
 
   // An unknown terminal is an error, not a crash.
   client.write(JSON.stringify({ type: "type", request_id: 10, terminal_id: 99, text: "x" }) + "\n");

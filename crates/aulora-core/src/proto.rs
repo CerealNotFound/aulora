@@ -104,6 +104,11 @@ pub enum ClientMsg {
     ShowSession {
         session_id: String,
     },
+    /// End a session running outside aulora: close its editor terminal
+    /// through the extension, or else end its Claude process.
+    EndSession {
+        session_id: String,
+    },
     /// Send a prompt to a Claude session running in an editor's terminal,
     /// as if typed there. Replies once the editor has typed it.
     SendPrompt {
@@ -165,6 +170,10 @@ pub enum ServerMsg {
     },
     /// To an editor extension: show this terminal and give it focus.
     Show {
+        terminal_id: u32,
+    },
+    /// To an editor extension: close this terminal.
+    Close {
         terminal_id: u32,
     },
     /// To an editor extension: type this into a terminal and press Enter.
