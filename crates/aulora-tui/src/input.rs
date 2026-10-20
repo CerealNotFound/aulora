@@ -394,6 +394,11 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
             _ => {}
         },
         Action::Discard => {}
+        Action::ToggleSidebar => {
+            let wide = crate::terminal_size().is_some_and(|(w, _)| w >= 100);
+            let now = app.sidebar_compact.unwrap_or(!wide);
+            app.sidebar_compact = Some(!now);
+        }
         Action::Finder => app.open_finder(),
         Action::OpenProject => app.open_project_picker(),
         Action::Reveal => {

@@ -232,6 +232,9 @@ pub struct App {
     pub fresh_leaves: Vec<(String, Ms)>,
     /// The sidebar row the main area last followed.
     pub shown_row: Option<RowRef>,
+    /// The sidebar as glyphs (Some(true)), full (Some(false)), or decided
+    /// by width (None).
+    pub sidebar_compact: Option<bool>,
     /// Where the mouse is, and the link under it in the last frame.
     pub mouse_pos: Option<(u16, u16)>,
     pub hover_url: Option<(u16, u16, u16, String)>,
@@ -328,6 +331,7 @@ impl App {
             shown_row: None,
             leaf_focused: false,
             mouse_pos: None,
+            sidebar_compact: None,
             hover_url: None,
             compose: None,
             drafts: HashMap::new(),

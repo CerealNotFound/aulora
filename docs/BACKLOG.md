@@ -46,7 +46,7 @@ Status: ✅ done · 🟡 done but not yet checked in real use · ⬜ open
 | ✅ | The line under an agent must be true | Its last reply, your last prompt since, or what it's doing; "waiting for a first prompt" only with no history. |
 | ✅ | No truncation that hides what you came to read | Agent rows wrap to 2+2 lines; notes wrap to 6 lines. |
 | ✅ | Notes such as "agent done" readable in full | Whole summary kept (1,200 chars), wrapped. |
-| ⬜ | Compact sidebar on narrow terminals | Designed (glyphs and counts), not built. |
+| ✅ | Compact sidebar on narrow terminals | Below 100 columns, or `\` any time: a strip of status dots and project initials; click to select. |
 | ⬜ | First-run onboarding | Not built. |
 
 ## Conversations

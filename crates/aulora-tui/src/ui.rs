@@ -295,15 +295,21 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
 fn body(f: &mut Frame, area: Rect, app: &mut App) {
     let t = theme::get();
-    let narrow = area.width < 90;
-    let main_only = narrow && app.focus == Focus::Main;
-    if main_only {
-        main(f, area, app);
-        return;
-    }
-    if narrow {
-        fill(f, area, t.surface);
-        sidebar(f, area, app);
+    // Narrow, or asked for (`\`): the sidebar shrinks to glyphs (Herdr's
+    // compact sidebar), so the panes keep the room.
+    let compact = match app.sidebar_compact {
+        Some(c) => c,
+        None => area.width < 100,
+    };
+    if compact {
+        let side_w = 5;
+        let cols =
+            Layout::horizontal([Constraint::Length(side_w), Constraint::Length(1), Constraint::Min(0)]).split(area);
+        fill(f, cols[0], t.surface);
+        sidebar_compact(f, cols[0], app);
+        let sep: Vec<Line> = (0..cols[1].height).map(|_| Line::from(sp("│", fg(t.rule)))).collect();
+        f.render_widget(Paragraph::new(sep), cols[1]);
+        main(f, cols[2], app);
         return;
     }
     let side_w = ((area.width as u32 * 26) / 100).clamp(30, 44) as u16;
@@ -317,6 +323,51 @@ fn body(f: &mut Frame, area: Rect, app: &mut App) {
 
 // ---------------------------------------------------------------------------
 // Sidebar
+
+/// The sidebar as a strip of glyphs: each project's state and first
+/// letter, then a dot per agent. Click to select; `\\` to widen.
+fn sidebar_compact(f: &mut Frame, area: Rect, app: &mut App) {
+    let t = theme::get();
+    let rows = app.rows();
+    let mut lines = Vec::new();
+    lines.push(Line::from(sp(" au", bold(t.accent))));
+    lines.push(Line::raw(""));
+    app.hits.push((area, Hit::Sidebar));
+    for r in rows.iter() {
+        let y = area.y + lines.len() as u16;
+        if y + 1 >= area.bottom() {
+            break;
+        }
+        let selected = app.selected.as_ref() == Some(r);
+        let status = app.status(r);
+        let bg = match (selected, app.focus) {
+            (true, Focus::Sidebar) => Style::new().bg(t.select),
+            (true, Focus::Main) => Style::new().bg(t.active),
+            _ => Style::new(),
+        };
+        let line = match r {
+            RowRef::Project(_) => {
+                let initial: String =
+                    app.title(r).chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+                if lines.len() > 2 {
+                    lines.push(Line::raw(""));
+                }
+                Line::from(vec![
+                    sp(format!(" {} ", status_glyph(status)), fg(status_color(status))),
+                    sp(initial, bold(t.text)),
+                ])
+            }
+            _ => Line::from(vec![sp("  ", text()), sp(status_glyph(status), fg(status_color(status)))]),
+        };
+        let y = area.y + lines.len() as u16;
+        app.hits.push((Rect { x: area.x, y, width: area.width, height: 1 }, Hit::Row(r.clone())));
+        lines.push(line.style(bg));
+    }
+    f.render_widget(Paragraph::new(lines), area);
+    let foot = Rect { y: area.bottom().saturating_sub(1), height: 1, ..area };
+    f.render_widget(Paragraph::new(Line::from(sp(" \\ ", faint()))), foot);
+    app.hits.push((foot, Hit::Action(crate::keymap::Action::ToggleSidebar)));
+}
 
 /// One sidebar entry: its lines and what it stands for.
 struct Item {
