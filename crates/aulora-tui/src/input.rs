@@ -2052,7 +2052,10 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
             if let Some((_, _, _, Hit::ChangedFile(path))) = first
                 && let Some(root) = app.selected_root()
             {
-                let line = app.first_change_line(&root, &path);
+                // A quick double-click comes before its text is read.
+                let line = app
+                    .first_change_line(&root, &path)
+                    .or_else(|| if app.conn == Conn::Demo { None } else { crate::files::first_change(&root, &path) });
                 open_file_in_editor(app, &root, &path, line);
                 return;
             }

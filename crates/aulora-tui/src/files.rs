@@ -145,6 +145,13 @@ fn shown(rel: &str, content: &str) -> Text {
     Text { styled: Some(Arc::new(styled)), lines: n, ..Default::default() }
 }
 
+/// A file's first changed line, asked for now rather than waiting for
+/// its text to be read.
+pub fn first_change(root: &str, rel: &str) -> Option<u32> {
+    let content = git::read_text(&Path::new(root).join(rel)).ok().flatten()?;
+    marks(root, rel, &content).keys().min().copied()
+}
+
 /// Lines changed since HEAD, from `git diff -U0 HEAD`.
 fn marks(root: &str, rel: &str, content: &str) -> HashMap<u32, Mark> {
     let mut out = HashMap::new();
