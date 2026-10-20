@@ -1031,6 +1031,7 @@ pub fn file_text(root_path: &str, rel: &str) -> crate::files::Text {
         marks,
         modified: None,
         truncated: false,
+        deleted: false,
     }
 }
 

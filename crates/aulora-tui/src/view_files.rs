@@ -457,11 +457,20 @@ fn file(f: &mut Frame, area: Rect, app: &mut App, root: &str, rel: &str) {
     };
     let changed = text.marks.len();
     let mut right = vec![sp(format!("{} ", crate::ui::plural(text.lines, "line")), faint())];
-    if changed > 0 {
+    if text.deleted {
+        right.insert(0, sp("deleted · ", fg(t.red)));
+    } else if changed > 0 {
         right.insert(0, sp(format!("{changed} changed · "), fg(t.yellow)));
     }
     let header = lr(vec![sp(dir, faint()), sp(name, bold(t.text))], right, width);
-    let hint = Line::from(sp("e edit here · o open in your editor · [ ] changes", faint()));
+    let hint = Line::from(sp(
+        if text.deleted {
+            "as last committed · d changes"
+        } else {
+            "e edit here · o open in your editor · [ ] changes"
+        },
+        faint(),
+    ));
     f.render_widget(Paragraph::new(vec![header, hint]), Rect { height: 2, ..area });
     let body = Rect { y: area.y + 3, height: area.height.saturating_sub(3), ..area };
     app.hits.push((body, Hit::FileView));
@@ -483,6 +492,7 @@ fn file(f: &mut Frame, area: Rect, app: &mut App, root: &str, rel: &str) {
     for l in lines.iter().skip(scroll).take(h) {
         let n = l.new.unwrap_or(0);
         let (bar, bar_color) = match text.marks.get(&n) {
+            _ if text.deleted => ("▎", t.red),
             Some(Mark::Added) => ("▎", t.green),
             Some(Mark::Modified) => ("▎", t.blue),
             Some(Mark::Removed) => ("▔", t.red),

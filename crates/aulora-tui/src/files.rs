@@ -92,18 +92,39 @@ pub struct Text {
     pub marks: HashMap<u32, Mark>,
     pub modified: Option<std::time::SystemTime>,
     pub truncated: bool,
+    /// Gone from disk: this is the text of the last commit.
+    pub deleted: bool,
 }
 
 /// The file's text, highlighted, with marks for what changed since the
 /// last commit.
 pub fn read(root: &str, rel: &str) -> Result<Text, String> {
     let path = Path::new(root).join(rel);
-    let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    let meta = match std::fs::metadata(&path) {
+        Ok(meta) => meta,
+        // Deleted since the last commit (opened from the changes list):
+        // what it was, as VS Code shows a deleted file.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let (repo, inside) = git::locate(root, rel);
+            let Ok(old) = git::run(&repo, &["show", &format!("HEAD:./{inside}")]) else { return Err(e.to_string()) };
+            if old.iter().take(8000).any(|b| *b == 0) {
+                return Ok(Text { binary: true, deleted: true, ..Default::default() });
+            }
+            let text = shown(rel, &String::from_utf8_lossy(&old));
+            return Ok(Text { deleted: true, ..text });
+        }
+        Err(e) => return Err(e.to_string()),
+    };
     let modified = meta.modified().ok();
     let Some(content) = git::read_text(&path)? else {
         return Ok(Text { binary: true, modified, ..Default::default() });
     };
     let truncated = meta.len() > content.len() as u64;
+    Ok(Text { marks: marks(root, rel), modified, truncated, ..shown(rel, &content) })
+}
+
+/// A file's text, highlighted, without marks.
+fn shown(rel: &str, content: &str) -> Text {
     let lines: Vec<git::DiffLine> = content
         .lines()
         .enumerate()
@@ -121,7 +142,7 @@ pub fn read(root: &str, rel: &str) -> Result<Text, String> {
         binary: false,
     };
     let styled = highlight::style(&diff, |_| None);
-    Ok(Text { styled: Some(Arc::new(styled)), binary: false, lines: n, marks: marks(root, rel), modified, truncated })
+    Text { styled: Some(Arc::new(styled)), lines: n, ..Default::default() }
 }
 
 /// Lines changed since HEAD, from `git diff -U0 HEAD`.
@@ -248,6 +269,11 @@ mod tests {
         assert_eq!(found, [("README.md", 2)], "smart case: \"hi\" matches Hi; ignored files are skipped");
         let (hits, _) = search(&root, "Hi").unwrap();
         assert_eq!(hits.len(), 1);
+        // A deleted file shows what it was.
+        std::fs::remove_file(dir.join("README.md")).unwrap();
+        let t = read(&root, "README.md").unwrap();
+        assert!(t.deleted);
+        assert_eq!(t.lines, 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
