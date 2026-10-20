@@ -54,6 +54,7 @@ area: Imperative sentence that ends with a period.
   | `daemon` | `crates/aulora-daemon` |
   | `tui` | `crates/aulora-tui` |
   | `cli` | `crates/aulora`: commands, hook entry point, hooks install |
+  | `vscode` | `editors/vscode`: the VS Code and Cursor extension |
   | `hooks` | how aulora talks to Claude Code hooks specifically |
   | `docs` | README, CONTRIBUTING, docs/ |
   | `ci` | `.github/`, `tools/` |

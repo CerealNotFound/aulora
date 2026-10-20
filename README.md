@@ -24,6 +24,7 @@ aulora watches every session through Claude Code's hooks and shows them all in o
 - **What's happening where.** One tree: each project with its branch and git status, and under it every agent running there. Every agent is a terminal. Sessions that have ended open again with `claude --resume`, in the folder they ran in. Sessions running in another app (VS Code, Ghostty) show their whole conversation, scrollable and searchable, with every tool call.
 - **What changed, and who changed it.** The Changes tab is VS Code's Source Control view: staged and unstaged files in a tree, a syntax-highlighted diff with changed words marked, and a colored dot for the Claude session that wrote each change, read from its transcript. Select an agent to see only what it wrote. <kbd>space</kbd> stages, <kbd>o</kbd> opens the editor at the change.
 - **Run Claude and your shells inside it.** <kbd>C</kbd> starts Claude Code in a pane and <kbd>c</kbd> starts a shell. The daemon owns these terminals, so they keep running when you close the dashboard, and `aulora attach` puts any of them in another terminal. A Claude session in a pane shows its live status right above its screen.
+- **Prompt sessions running in VS Code.** With the aulora extension (`aulora vscode install`), a session running in a VS Code or Cursor terminal gets a prompt box in aulora. What you write is typed into that terminal, so it shows up there as if you'd typed it, in the same session. aulora won't send while Claude is waiting on a permission prompt, where the keys would answer the dialog instead.
 - **Jump straight there.** <kbd>⏎</kbd> opens the project in your editor, and VS Code brings that project's window to the front. <kbd>n</kbd> cycles through the sessions that need you.
 
 It works with Claude Code running anywhere: VS Code, Cursor, Ghostty, iTerm, tmux. aulora shows which app each session runs in.
@@ -68,6 +69,8 @@ Sessions show up as soon as they start or you send a prompt. To try the dashboar
 | `aulora ls [--json]` | List panes. |
 | `aulora attach PANE` | Put a pane in this terminal, like `tmux attach`. <kbd>Ctrl</kbd>+<kbd>Q</kbd> detaches. |
 | `aulora kill\|restart\|close PANE` | Stop a pane, start its program again, or remove it. |
+| `aulora send TARGET TEXT…` | Type a prompt into a session (in a pane, or in VS Code with the extension), or a command into a pane, and press Enter. Reads stdin when no text is given. |
+| `aulora vscode install\|uninstall\|status [--editor code\|cursor]` | Install the editor extension that lets aulora type into sessions running in VS Code or Cursor terminals. |
 
 `PANE` can be a pane id, a unique id prefix, a name, or `project/name`.
 
@@ -127,7 +130,7 @@ More detail is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 - [x] **1. Status dashboard.** Hooks, daemon and the terminal dashboard.
 - [x] **2. Daemon-owned terminals.** Live panes in the dashboard that survive closing it, and `aulora attach` from any terminal.
-- [ ] **3. VS Code extension.** The same terminals inside VS Code, plus jump-to-terminal.
+- [ ] **3. VS Code extension.** Done: prompts from aulora typed into sessions running in VS Code terminals. Next: jump to a session's terminal, and aulora's panes inside VS Code.
 - [ ] **4. Restore.** Bring every project's terminals back after a reboot, with `claude --resume`.
 - [ ] **5. "Where you left off" cards.** A summary per project when you switch back to it.
 - [ ] **6. Notifications and a global hotkey switcher.**

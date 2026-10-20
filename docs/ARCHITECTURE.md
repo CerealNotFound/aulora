@@ -80,3 +80,11 @@ Clients use two kinds of connection. The dashboard keeps one for snapshots and o
 - The main area shows one tab at a time. The Conversation tab reads the session's transcript directly (the dashboard runs on the same machine), keeps a byte offset so a multi-megabyte transcript is parsed once, pairs each tool call with its result, and caches the wrapped lines per width.
 - Every color comes from the active theme (`crates/aulora-tui/src/theme.rs`). Themes whose background is `Reset` draw on the terminal's own background. Without a saved choice, the dashboard asks the terminal for its background with OSC 11 and picks Catppuccin or Catppuccin Latte.
 - `--snapshot WxH` renders one frame to text with Ratatui's `TestBackend`. It's useful for docs and checking the layout.
+
+## Editor extension
+
+`editors/vscode` is a VS Code (and Cursor) extension in plain JavaScript, with no dependencies and no build step. `aulora vscode install` packages it as a .vsix from files built into the binary and installs it with the editor's CLI.
+
+The extension connects to the daemon's socket and sends `editor` with its window's terminals and their shell PIDs, again whenever terminals open or close. The connection stays open. Every few seconds, and when a session starts, the daemon walks each live Claude process's parents (up to 8 levels: `claude` → `zsh` is typical) and matches them against those shell PIDs. A matched session gets `terminal.editor` in the snapshot, which is what makes aulora show a prompt box for it.
+
+`send_prompt` refuses sessions that have ended or are waiting on a permission prompt or question, where typed keys would answer the dialog. Otherwise it sends `type` to the extension, which writes the text with `terminal.sendText` (a bracketed paste when it has several lines), waits briefly, sends Enter, and answers `typed`. The daemon waits up to 5 seconds for that answer, so the client hears whether the prompt really arrived.
