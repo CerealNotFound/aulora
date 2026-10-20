@@ -441,6 +441,11 @@ impl App {
     pub fn set_snapshot(&mut self, snap: Snapshot) {
         let prev_root = self.selected_root();
         self.snap = Some(snap);
+        // A picker is for one asking: once answered, the same question
+        // asked again starts on its first row, unanswered.
+        if self.picker.as_ref().is_some_and(|p| self.session(&p.session).is_none_or(|s| s.ask.is_none())) {
+            self.picker = None;
+        }
         self.reconcile_layouts();
         self.remember_order();
         if let Some((id, focus)) = self.pending_select.clone()

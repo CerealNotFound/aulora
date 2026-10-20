@@ -799,6 +799,28 @@ mod tests {
     }
 
     #[test]
+    fn a_question_asked_again_starts_fresh() {
+        use aulora_core::model::{Ask, AskOption, AskQuestion};
+        frame(None, &|app| {
+            let option = AskOption { label: "a".into(), description: None };
+            let question = AskQuestion { question: "Which?".into(), header: None, options: vec![option], multi: false };
+            let ask = Ask { questions: vec![question] };
+            let mut snap = app.snap.clone().unwrap();
+            let id = snap.sessions[0].id.clone();
+            snap.sessions[0].ask = Some(ask.clone());
+            app.set_snapshot(snap.clone());
+            let mut picker = crate::picker::Picker::new(&id, &ask);
+            picker.cursor = 1;
+            app.picker = Some(picker);
+            app.set_snapshot(snap.clone());
+            assert_eq!(app.picker.as_ref().map(|p| p.cursor), Some(1), "still asking");
+            snap.sessions[0].ask = None;
+            app.set_snapshot(snap);
+            assert!(app.picker.is_none(), "answered: the next asking starts on its first row");
+        });
+    }
+
+    #[test]
     fn the_menu_lists_actions_for_the_row() {
         let out = frame(Some("a41c07"), &|app| {
             let items = app.menu_for(&RowRef::Pane("a41c07".into()));
