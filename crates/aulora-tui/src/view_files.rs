@@ -10,6 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 
 use crate::app::{App, Hit};
+use crate::changes::FileChange;
 use crate::files::{Loaded, Mark, Row};
 use crate::git::Kind;
 use crate::theme::{self, bold, dim, faint, fg, spinner, text};
@@ -33,7 +34,7 @@ struct Size {
 }
 
 impl Size {
-    fn of(f: &crate::changes::FileChange) -> Size {
+    fn of(f: &FileChange) -> Size {
         Size { added: f.added, removed: f.removed, binary: f.binary }
     }
 
@@ -60,10 +61,39 @@ impl Size {
     }
 }
 
+/// The workspace's changes as the panel lists them: one per file, so a
+/// file staged and then edited again is one row with both counted.
+fn per_file(files: &[FileChange]) -> Vec<FileChange> {
+    let mut out: Vec<FileChange> = Vec::new();
+    for f in files {
+        match out.iter_mut().find(|o| o.entry.path == f.entry.path) {
+            Some(o) => {
+                o.entry.kind = merge_kind(o.entry.kind, f.entry.kind);
+                o.added += f.added;
+                o.removed += f.removed;
+                o.binary |= f.binary;
+                for s in &f.sessions {
+                    if !o.sessions.contains(s) {
+                        o.sessions.push(s.clone());
+                    }
+                }
+            }
+            None => out.push(f.clone()),
+        }
+    }
+    out
+}
+
+/// What a file's staged and unstaged changes add up to: a new or
+/// renamed file edited again is still new or renamed.
+fn merge_kind(a: Kind, b: Kind) -> Kind {
+    [Kind::Conflict, Kind::Added, Kind::Renamed].into_iter().find(|k| a == *k || b == *k).unwrap_or(a.min(b))
+}
+
 fn decor(app: &App, root: &str) -> Decor {
     let mut d = Decor { kinds: HashMap::new(), sessions: HashMap::new(), counts: HashMap::new() };
     let Some(p) = app.changes.get(root) else { return d };
-    for f in &p.files {
+    for f in &per_file(&p.files) {
         d.counts.entry(f.entry.path.clone()).or_default().add(Size::of(f));
         let path = f.entry.path.as_str();
         let mut keys = vec![path.to_string()];
@@ -155,7 +185,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App, root: &str) {
 /// Returns the rows used.
 fn changed(f: &mut Frame, area: Rect, app: &mut App, root: &str) -> u16 {
     let t = theme::get();
-    let Some(files) = app.changes.get(root).filter(|p| p.loaded).map(|p| p.files.clone()) else { return 0 };
+    let Some(files) = app.changes.get(root).filter(|p| p.loaded).map(|p| per_file(&p.files)) else { return 0 };
     if files.is_empty() || area.height < 12 {
         return 0;
     }
@@ -581,4 +611,39 @@ pub fn finder(f: &mut Frame, area: Rect, app: &mut App) {
     f.render_widget(Paragraph::new(lines), inner);
     app.hits.push((area, Hit::Dismiss));
     app.hits.extend(hits);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::{Entry, Group};
+
+    fn change(group: Group, kind: Kind, path: &str, added: u32, removed: u32, session: &str) -> FileChange {
+        FileChange {
+            entry: Entry { group, kind, path: path.into(), orig: None },
+            added,
+            removed,
+            binary: false,
+            sessions: vec![session.into()],
+            sig: 0,
+        }
+    }
+
+    #[test]
+    fn a_file_staged_and_edited_again_is_one_row() {
+        let files = [
+            change(Group::Staged, Kind::Modified, "both.txt", 1, 1, "a"),
+            change(Group::Staged, Kind::Added, "new.txt", 3, 0, "a"),
+            change(Group::Changes, Kind::Modified, "both.txt", 2, 0, "b"),
+            change(Group::Changes, Kind::Modified, "new.txt", 1, 1, "a"),
+        ];
+        let rows = per_file(&files);
+        assert_eq!(rows.len(), 2);
+        let both = &rows[0];
+        assert_eq!((both.entry.path.as_str(), both.added, both.removed), ("both.txt", 3, 1));
+        assert_eq!(both.entry.kind, Kind::Modified);
+        assert_eq!(both.sessions, ["a", "b"]);
+        assert_eq!(rows[1].entry.kind, Kind::Added, "a new file edited again is still new");
+        assert_eq!((rows[1].added, rows[1].removed), (4, 1));
+    }
 }
