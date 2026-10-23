@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""Draw the wordmark from crates/aulora-tui/src/brand.rs as SVGs for the README.
+
+It reads WORDMARK from brand.rs and shades it the same way the
+dashboard does: solid strokes as filled cells, the box-drawn shadow
+edge in a deeper shade, blue to cyan to green from top to bottom.
+
+    tools/render-wordmark          # writes docs/brand/wordmark-{dark,light}.svg
+"""
+
+import pathlib
+import re
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+BRAND = ROOT / "crates/aulora-tui/src/brand.rs"
+OUT = ROOT / "docs/brand"
+
+# Cell size, like a terminal's 1:2 character cell.
+CW, CH = 12, 24
+# Half the gap between the two lines of a double box-drawing stroke.
+D = 2.4
+STROKE = 1.6
+
+# (blue, cyan, green, page background the shadow blends into)
+THEMES = {
+    # Catppuccin Mocha, on GitHub's dark background.
+    "dark": ("#89b4fa", "#94e2d5", "#a6e3a1", "#0d1117"),
+    # Catppuccin Latte, on GitHub's light background.
+    "light": ("#1e66f5", "#179299", "#40a02b", "#ffffff"),
+}
+
+# Which way each double-line glyph runs: (horizontal, vertical),
+# -1 left/up, +1 right/down, 0 both ways along that axis, None not at all.
+GLYPHS = {
+    "═": (0, None),
+    "║": (None, 0),
+    "╗": (-1, 1),
+    "╔": (1, 1),
+    "╝": (-1, -1),
+    "╚": (1, -1),
+}
+
+
+def wordmark():
+    src = BRAND.read_text()
+    block = re.search(r"pub const WORDMARK: \[&str; \d+\] = \[(.*?)\];", src, re.S)
+    return re.findall(r'"(.*?)"', block.group(1))
+
+
+def rgb(hex_):
+    return tuple(int(hex_[i : i + 2], 16) for i in (1, 3, 5))
+
+
+def mix(a, b, f):
+    return "#" + "".join(f"{round(x + (y - x) * f):02x}" for x, y in zip(rgb(a), rgb(b)))
+
+
+def shade(stops, p):
+    # The same as brand::shade: blue, cyan, green.
+    seg = min(max(p, 0.0) * 2.0, 1.999)
+    i = int(seg)
+    return mix(stops[i], stops[i + 1], seg - i)
+
+
+def edge_paths(ch, x, y):
+    """Path data for one double-line glyph in the cell at (x, y)."""
+    h, v = GLYPHS[ch]
+    cx, cy = x + CW / 2, y + CH / 2
+    if v is None:
+        return [f"M{x} {cy - D}H{x + CW}", f"M{x} {cy + D}H{x + CW}"]
+    if h is None:
+        return [f"M{cx - D} {y}V{y + CH}", f"M{cx + D} {y}V{y + CH}"]
+    ex = x if h < 0 else x + CW
+    ey = y + CH if v > 0 else y
+    # The outer line turns away from both arms, the inner one toward them.
+    outer = f"M{ex} {cy - v * D}H{cx - h * D}V{ey}"
+    inner = f"M{ex} {cy + v * D}H{cx + h * D}V{ey}"
+    return [outer, inner]
+
+
+def svg(rows, theme):
+    *stops, page = THEMES[theme]
+    n = len(rows)
+    width = max(len(r) for r in rows) * CW
+    height = n * CH
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" role="img" aria-label="aulora">',
+        "<title>aulora</title>",
+    ]
+    for yi, row in enumerate(rows):
+        c = shade(stops, yi / (n - 1) if n > 1 else 0.0)
+        edge = mix(c, page, 0.45)
+        y = yi * CH
+        # Runs of solid cells as one rect, so no seams show between them.
+        for m in re.finditer("█+", row):
+            parts.append(
+                f'<rect x="{m.start() * CW}" y="{y}" width="{len(m.group()) * CW}" '
+                f'height="{CH}" fill="{c}"/>'
+            )
+        paths = []
+        for xi, ch in enumerate(row):
+            if ch in GLYPHS:
+                paths += edge_paths(ch, xi * CW, y)
+        if paths:
+            parts.append(
+                f'<path d="{"".join(paths)}" fill="none" stroke="{edge}" '
+                f'stroke-width="{STROKE}" stroke-linecap="square"/>'
+            )
+    parts.append("</svg>")
+    return "\n".join(parts) + "\n"
+
+
+def main():
+    rows = wordmark()
+    OUT.mkdir(parents=True, exist_ok=True)
+    for theme in THEMES:
+        path = OUT / f"wordmark-{theme}.svg"
+        path.write_text(svg(rows, theme))
+        print(path.relative_to(ROOT))
+
+
+if __name__ == "__main__":
+    main()
