@@ -1,10 +1,9 @@
 <div align="center">
 
-```
-┌─┐┬ ┬┬  ┌─┐┬─┐┌─┐
-├─┤│ ││  │ │├┬┘├─┤
-┴ ┴└─┘┴─┘└─┘┴└─┴ ┴
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/brand/wordmark-dark.svg">
+  <img alt="aulora" src="docs/brand/wordmark-light.svg" width="500">
+</picture>
 
 **Every Claude Code session across all your workspaces, on one screen.**
 

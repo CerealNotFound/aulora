@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="144" viewBox="0 0 600 144" role="img" aria-label="aulora">
+<title>aulora</title>
+<rect x="12" y="0" width="60" height="24" fill="#89b4fa"/>
+<rect x="96" y="0" width="24" height="24" fill="#89b4fa"/>
+<rect x="168" y="0" width="24" height="24" fill="#89b4fa"/>
+<rect x="204" y="0" width="24" height="24" fill="#89b4fa"/>
+<rect x="312" y="0" width="72" height="24" fill="#89b4fa"/>
+<rect x="408" y="0" width="72" height="24" fill="#89b4fa"/>
+<rect x="516" y="0" width="60" height="24" fill="#89b4fa"/>
+<path d="M72 9.6H80.4V24M72 14.4H75.6V24M120 9.6H128.4V24M120 14.4H123.6V24M192 9.6H200.4V24M192 14.4H195.6V24M228 9.6H236.4V24M228 14.4H231.6V24M384 9.6H392.4V24M384 14.4H387.6V24M480 9.6H488.4V24M480 14.4H483.6V24M576 9.6H584.4V24M576 14.4H579.6V24" fill="none" stroke="#516b94" stroke-width="1.6" stroke-linecap="square"/>
+<rect x="0" y="24" width="24" height="24" fill="#8dc6eb"/>
+<rect x="60" y="24" width="24" height="24" fill="#8dc6eb"/>
+<rect x="96" y="24" width="24" height="24" fill="#8dc6eb"/>
+<rect x="168" y="24" width="24" height="24" fill="#8dc6eb"/>
+<rect x="204" y="24" width="24" height="24" fill="#8dc6eb"/>
+<rect x="300" y="24" width="24" height="24" fill="#8dc6eb"/>
+<rect x="372" y="24" width="24" height="24" fill="#8dc6eb"/>
+<rect x="408" y="24" width="24" height="24" fill="#8dc6eb"/>
+<rect x="468" y="24" width="24" height="24" fill="#8dc6eb"/>
+<rect x="504" y="24" width="24" height="24" fill="#8dc6eb"/>
+<rect x="564" y="24" width="24" height="24" fill="#8dc6eb"/>
+<path d="M36 33.6H27.6V48M36 38.4H32.4V48M36 33.6H48M36 38.4H48M48 33.6H60M48 38.4H60M84 33.6H92.4V48M84 38.4H87.6V48M123.6 24V48M128.4 24V48M195.6 24V48M200.4 24V48M231.6 24V48M236.4 24V48M336 33.6H327.6V48M336 38.4H332.4V48M336 33.6H348M336 38.4H348M348 33.6H360M348 38.4H360M360 33.6H372M360 38.4H372M396 33.6H404.4V48M396 38.4H399.6V48M444 33.6H435.6V48M444 38.4H440.4V48M444 33.6H456M444 38.4H456M456 33.6H468M456 38.4H468M492 33.6H500.4V48M492 38.4H495.6V48M540 33.6H531.6V48M540 38.4H536.4V48M540 33.6H552M540 38.4H552M552 33.6H564M552 38.4H564M588 33.6H596.4V48M588 38.4H591.6V48" fill="none" stroke="#53758c" stroke-width="1.6" stroke-linecap="square"/>
+<rect x="0" y="48" width="84" height="24" fill="#92d9dc"/>
+<rect x="96" y="48" width="24" height="24" fill="#92d9dc"/>
+<rect x="168" y="48" width="24" height="24" fill="#92d9dc"/>
+<rect x="204" y="48" width="24" height="24" fill="#92d9dc"/>
+<rect x="300" y="48" width="24" height="24" fill="#92d9dc"/>
+<rect x="372" y="48" width="24" height="24" fill="#92d9dc"/>
+<rect x="408" y="48" width="72" height="24" fill="#92d9dc"/>
+<rect x="504" y="48" width="84" height="24" fill="#92d9dc"/>
+<path d="M87.6 48V72M92.4 48V72M123.6 48V72M128.4 48V72M195.6 48V72M200.4 48V72M231.6 48V72M236.4 48V72M327.6 48V72M332.4 48V72M399.6 48V72M404.4 48V72M492 57.6H483.6V72M492 62.4H488.4V72M492 62.4H500.4V48M492 57.6H495.6V48M591.6 48V72M596.4 48V72" fill="none" stroke="#567f83" stroke-width="1.6" stroke-linecap="square"/>
+<rect x="0" y="72" width="24" height="24" fill="#98e2cb"/>
+<rect x="60" y="72" width="24" height="24" fill="#98e2cb"/>
+<rect x="96" y="72" width="24" height="24" fill="#98e2cb"/>
+<rect x="168" y="72" width="24" height="24" fill="#98e2cb"/>
+<rect x="204" y="72" width="24" height="24" fill="#98e2cb"/>
+<rect x="300" y="72" width="24" height="24" fill="#98e2cb"/>
+<rect x="372" y="72" width="24" height="24" fill="#98e2cb"/>
+<rect x="408" y="72" width="24" height="24" fill="#98e2cb"/>
+<rect x="468" y="72" width="24" height="24" fill="#98e2cb"/>
+<rect x="504" y="72" width="24" height="24" fill="#98e2cb"/>
+<rect x="564" y="72" width="24" height="24" fill="#98e2cb"/>
+<path d="M36 81.6H27.6V96M36 86.4H32.4V96M36 81.6H48M36 86.4H48M48 81.6H60M48 86.4H60M87.6 72V96M92.4 72V96M123.6 72V96M128.4 72V96M195.6 72V96M200.4 72V96M231.6 72V96M236.4 72V96M327.6 72V96M332.4 72V96M399.6 72V96M404.4 72V96M444 81.6H435.6V96M444 86.4H440.4V96M444 81.6H456M444 86.4H456M456 81.6H468M456 86.4H468M492 81.6H500.4V96M492 86.4H495.6V96M540 81.6H531.6V96M540 86.4H536.4V96M540 81.6H552M540 86.4H552M552 81.6H564M552 86.4H564M591.6 72V96M596.4 72V96" fill="none" stroke="#59847a" stroke-width="1.6" stroke-linecap="square"/>
+<rect x="0" y="96" width="24" height="24" fill="#9fe3b6"/>
+<rect x="60" y="96" width="24" height="24" fill="#9fe3b6"/>
+<rect x="108" y="96" width="72" height="24" fill="#9fe3b6"/>
+<rect x="204" y="96" width="84" height="24" fill="#9fe3b6"/>
+<rect x="312" y="96" width="72" height="24" fill="#9fe3b6"/>
+<rect x="408" y="96" width="24" height="24" fill="#9fe3b6"/>
+<rect x="468" y="96" width="24" height="24" fill="#9fe3b6"/>
+<rect x="504" y="96" width="24" height="24" fill="#9fe3b6"/>
+<rect x="564" y="96" width="24" height="24" fill="#9fe3b6"/>
+<path d="M27.6 96V120M32.4 96V120M87.6 96V120M92.4 96V120M108 110.4H99.6V96M108 105.6H104.4V96M192 105.6H183.6V120M192 110.4H188.4V120M192 110.4H200.4V96M192 105.6H195.6V96M288 105.6H296.4V120M288 110.4H291.6V120M312 110.4H303.6V96M312 105.6H308.4V96M396 105.6H387.6V120M396 110.4H392.4V120M396 110.4H404.4V96M396 105.6H399.6V96M435.6 96V120M440.4 96V120M495.6 96V120M500.4 96V120M531.6 96V120M536.4 96V120M591.6 96V120M596.4 96V120" fill="none" stroke="#5d846e" stroke-width="1.6" stroke-linecap="square"/>
+<path d="M12 134.4H3.6V120M12 129.6H8.4V120M12 129.6H24M12 134.4H24M24 134.4H32.4V120M24 129.6H27.6V120M72 134.4H63.6V120M72 129.6H68.4V120M72 129.6H84M72 134.4H84M84 134.4H92.4V120M84 129.6H87.6V120M120 134.4H111.6V120M120 129.6H116.4V120M120 129.6H132M120 134.4H132M132 129.6H144M132 134.4H144M144 129.6H156M144 134.4H156M156 129.6H168M156 134.4H168M168 129.6H180M168 134.4H180M180 134.4H188.4V120M180 129.6H183.6V120M216 134.4H207.6V120M216 129.6H212.4V120M216 129.6H228M216 134.4H228M228 129.6H240M228 134.4H240M240 129.6H252M240 134.4H252M252 129.6H264M252 134.4H264M264 129.6H276M264 134.4H276M276 129.6H288M276 134.4H288M288 134.4H296.4V120M288 129.6H291.6V120M324 134.4H315.6V120M324 129.6H320.4V120M324 129.6H336M324 134.4H336M336 129.6H348M336 134.4H348M348 129.6H360M348 134.4H360M360 129.6H372M360 134.4H372M372 129.6H384M372 134.4H384M384 134.4H392.4V120M384 129.6H387.6V120M420 134.4H411.6V120M420 129.6H416.4V120M420 129.6H432M420 134.4H432M432 134.4H440.4V120M432 129.6H435.6V120M480 134.4H471.6V120M480 129.6H476.4V120M480 129.6H492M480 134.4H492M492 134.4H500.4V120M492 129.6H495.6V120M516 134.4H507.6V120M516 129.6H512.4V120M516 129.6H528M516 134.4H528M528 134.4H536.4V120M528 129.6H531.6V120M576 134.4H567.6V120M576 129.6H572.4V120M576 129.6H588M576 134.4H588M588 134.4H596.4V120M588 129.6H591.6V120" fill="none" stroke="#618463" stroke-width="1.6" stroke-linecap="square"/>
+</svg>
