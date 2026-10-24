@@ -28,7 +28,7 @@ aulora demo
 
 If you run Claude Code in several projects at once, you end up with a VS Code window per project, mostly just to hold Claude's terminal. Claude finishes or stops to ask for permission, and you don't notice until you go looking. Then you have to remember what each session was doing.
 
-aulora replaces those windows. Claude Code, your shells and your dev servers run in its panes, it keeps track of every session through Claude Code's hooks, and its Changes and Files views cover what you kept the editor open for. It's the only thing you need to run. It's a light wrapper: each pane runs the real `claude`, unchanged. Everything stays on your machine, and it's open source, so you can make it yours with themes, layouts, or the code itself.
+aulora replaces those windows. Claude Code, your shells and your dev servers run in its panes, it keeps track of every session through Claude Code's hooks, and its Changes and Files views cover what you kept the editor open for. It's the only thing you need to run. It's a light wrapper: each pane runs the real `claude`, unchanged. Everything stays on your machine, and it's open source, so you can make it yours with themes or the code itself.
 
 A day with it looks like this:
 
