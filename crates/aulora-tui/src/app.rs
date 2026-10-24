@@ -99,17 +99,14 @@ pub enum Hit {
     Resume(String),
     /// Behind an open menu.
     Dismiss,
-    /// A project tab in the strip.
-    SpaceTab(usize),
-    NewTab,
-    /// Anywhere in a leaf.
-    Leaf(u64),
+    /// Anywhere in the main view or the panel.
+    Leaf(crate::layout::Part),
     /// A changed file listed at the top of the Files panel.
     ChangedFile(String),
     /// A row of Claude's question picker.
     AnswerRow(usize),
-    /// The border between a split's sides.
-    Split(u64),
+    /// The border between the main view and the panel.
+    PanelEdge,
     Terminal(String),
     Conversation(String),
     Sidebar,
@@ -136,7 +133,6 @@ pub enum MenuItem {
     OpenEditor(String),
     NewClaude(String),
     NewShell(String),
-    NewTab(String),
     /// Bring a session's VS Code terminal to the front.
     Jump(String),
     /// Show a file or folder in Finder.
@@ -157,7 +153,6 @@ impl MenuItem {
             MenuItem::OpenEditor(_) => "Open in VS Code",
             MenuItem::NewClaude(_) => "New Claude here",
             MenuItem::NewShell(_) => "New shell here",
-            MenuItem::NewTab(_) => "New tab",
             MenuItem::Jump(_) => "Go to its terminal in VS Code",
             MenuItem::Reveal(_) => "Open in Finder",
             MenuItem::Run(_, label) => label,
@@ -229,17 +224,14 @@ pub struct App {
     /// new row has it (VS Code keeps Source Control open as you switch files).
     pub layouts: crate::layout::Layouts,
     pub layouts_dirty: bool,
-    /// Where each leaf of the current tab was drawn last frame.
-    pub leaf_rects: Vec<(u64, ratatui::layout::Rect)>,
-    /// Splits drawn last frame: id, direction, area, dividing line.
-    pub split_rects: Vec<(u64, crate::layout::Dir, ratatui::layout::Rect, ratatui::layout::Rect)>,
-    /// Where the next new pane goes: Some(dir) beside the focused leaf,
-    /// None in a new tab.
-    pub place_next: Option<Option<crate::layout::Dir>>,
-    /// A split border being dragged.
-    pub dragging: Option<u64>,
+    /// Where the main view and the panel were drawn last frame.
+    pub part_rects: Vec<(crate::layout::Part, ratatui::layout::Rect)>,
+    /// The main area last frame, for dragging the panel's edge.
+    pub main_rect: ratatui::layout::Rect,
+    /// The panel's edge is being dragged.
+    pub dragging: bool,
     /// Panes just placed, kept even before the daemon lists them.
-    pub fresh_leaves: Vec<(String, Ms)>,
+    pub fresh_panes: Vec<(String, Ms)>,
     /// The sidebar row the main area last followed.
     pub shown_row: Option<RowRef>,
     /// The sidebar as glyphs (Some(true)), full (Some(false)), or decided
@@ -376,11 +368,10 @@ impl App {
             conv_height: 20,
             layouts: crate::layout::Layouts::default(),
             layouts_dirty: false,
-            leaf_rects: Vec::new(),
-            split_rects: Vec::new(),
-            dragging: None,
-            place_next: None,
-            fresh_leaves: Vec::new(),
+            part_rects: Vec::new(),
+            main_rect: ratatui::layout::Rect::default(),
+            dragging: false,
+            fresh_panes: Vec::new(),
             shown_row: None,
             leaf_focused: false,
             mouse_pos: None,
@@ -811,10 +802,6 @@ impl App {
                 } else {
                     items.push(MenuItem::Restart(id.clone()));
                 }
-                items.push(MenuItem::Run(crate::keymap::Action::SplitRight, "Split right  |"));
-                items.push(MenuItem::Run(crate::keymap::Action::SplitDown, "Split down  -"));
-                items.push(MenuItem::Run(crate::keymap::Action::NewClaude, "Claude beside it  C"));
-                items.push(MenuItem::Run(crate::keymap::Action::Zoom, "Zoom  z"));
                 items.push(MenuItem::Close(r.clone()));
             }
             RowRef::Session(id) => {

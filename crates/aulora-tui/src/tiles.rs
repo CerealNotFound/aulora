@@ -1,11 +1,11 @@
-//! How the app uses tiled layouts: which tab and leaf the sidebar's
-//! selection shows, where new panes and views go, focus movement, and
-//! saving layouts between runs.
+//! How the app uses each workspace's layout: the sidebar's selection
+//! picks the main view, the Files and Changes panel comes and goes,
+//! focus moves between them, and layouts are saved between runs.
 
 use ratatui::layout::Rect;
 
 use crate::app::{App, Focus, RowRef, Tab};
-use crate::layout::{self, Dir, Layouts, View};
+use crate::layout::{Layouts, Part, Space, View};
 
 fn layouts_path() -> std::path::PathBuf {
     aulora_core::paths::home().join("layouts.json")
@@ -21,21 +21,21 @@ impl App {
         self.selected_root()
     }
 
-    pub fn tab(&self) -> Option<&layout::Tab> {
-        self.layouts.spaces.get(&self.space_root()?)?.tab()
+    pub fn space(&self) -> Option<&Space> {
+        self.layouts.spaces.get(&self.space_root()?)
     }
 
-    pub fn tab_mut(&mut self) -> Option<&mut layout::Tab> {
+    pub fn space_mut(&mut self) -> Option<&mut Space> {
         let root = self.space_root()?;
         self.layouts_dirty = true;
-        self.layouts.spaces.get_mut(&root)?.tab_mut()
+        Some(self.layouts.space(&root))
     }
 
     pub fn focused_view(&self) -> Option<View> {
-        self.tab()?.focused().cloned()
+        self.space()?.focused().cloned()
     }
 
-    /// The pane in the focused leaf.
+    /// The pane in the focused view.
     pub fn focused_pane(&self) -> Option<String> {
         match self.focused_view()? {
             View::Pane { id } => Some(id),
@@ -62,92 +62,42 @@ impl App {
         }
     }
 
-    /// Give every live pane a place: a pane nobody placed (started from
-    /// the command line, or before this layout existed) gets its own tab.
-    /// Leaves for panes that are gone go away.
+    /// A workspace showing a pane that's gone shows its overview; a pane
+    /// whose shell moved to another workspace goes with it.
     pub fn reconcile_layouts(&mut self) {
         let Some(snap) = &self.snap else { return };
         let panes: Vec<(String, String)> = snap.panes.iter().map(|p| (p.id.clone(), p.project_root.clone())).collect();
         let now = self.now;
-        // A pane just started may not be in the snapshot yet, so its leaf
-        // is kept for a while; once the daemon has listed it, it isn't
-        // fresh any more, and its leaf goes as soon as the pane does.
-        self.fresh_leaves.retain(|(id, at)| now - at < 5000 && !panes.iter().any(|(p, _)| p == id));
-        let fresh = &self.fresh_leaves;
+        // A pane just started may not be in the snapshot yet, so it's kept
+        // for a while; once the daemon has listed it, it isn't fresh any
+        // more, and it goes as soon as the pane does.
+        self.fresh_panes.retain(|(id, at)| now - at < 5000 && !panes.iter().any(|(p, _)| p == id));
+        let fresh = &self.fresh_panes;
         let alive = |id: &str| panes.iter().any(|(p, _)| p == id) || fresh.iter().any(|(p, _)| p == id);
         if self.layouts.prune(alive) {
             self.layouts_dirty = true;
         }
         for (id, root) in panes {
-            // Its shell changed directory into another workspace: take its
-            // leaf there, and follow it when it's the one you're on.
-            if let Some((at, i, leaf)) = self.layouts.find_pane(&id)
-                && at != root
-            {
-                self.move_leaf(&at, i, leaf);
-                let followed = self.selected == Some(RowRef::Pane(id.clone()));
-                let active = self.layouts.spaces.get(&root).map(|s| s.active);
-                self.layouts.new_tab(&root, View::Pane { id: id.clone() });
-                if !followed && let (Some(a), Some(space)) = (active, self.layouts.spaces.get_mut(&root)) {
-                    space.active = a;
-                }
-                if followed {
-                    let name = self.pane(&id).map(|p| p.name.clone()).unwrap_or_default();
-                    self.toast(format!(
-                        "{name} moved to {}, where its shell is now",
-                        aulora_core::util::basename(&root)
-                    ));
-                }
-                self.layouts_dirty = true;
-                continue;
-            }
-            if self.layouts.find_pane(&id).is_none() {
-                let active = self.layouts.spaces.get(&root).map(|s| s.active);
-                self.layouts.new_tab(&root, View::Pane { id });
-                // Don't pull the view away from what's being looked at.
-                if let (Some(a), Some(space)) = (active, self.layouts.spaces.get_mut(&root)) {
-                    space.active = a;
-                }
-                self.layouts_dirty = true;
-            }
-        }
-    }
-
-    /// Take a leaf out of a tab, dropping the tab when nothing but a panel
-    /// or overview would be left in it.
-    fn move_leaf(&mut self, root: &str, i: usize, leaf: u64) {
-        let Some(space) = self.layouts.spaces.get_mut(root) else { return };
-        let Some(tab) = space.tabs.get_mut(i) else { return };
-        let kept = tab.close(leaf) && tab.leaves().iter().any(|(_, v)| !v.is_panel() && !matches!(v, View::Overview));
-        if !kept {
-            space.tabs.remove(i);
-            if space.active > i || space.active >= space.tabs.len() {
-                space.active = space.active.saturating_sub(1);
-            }
-        }
-        if space.tabs.is_empty() {
-            self.layouts.spaces.remove(root);
-        }
-    }
-
-    /// Make sure the selected project has something to show.
-    pub fn ensure_space(&mut self) {
-        let Some(root) = self.space_root() else { return };
-        if self.layouts.spaces.get(&root).is_none_or(|s| s.tabs.is_empty()) {
-            self.layouts.new_tab(&root, View::Overview);
+            let Some(at) = self.layouts.find_pane(&id).filter(|at| *at != root) else { continue };
+            self.layouts.space(&at).main = View::Overview;
             self.layouts_dirty = true;
+            // The selected one: the view goes with it, to its new workspace.
+            if self.selected == Some(RowRef::Pane(id.clone())) {
+                self.layouts.space(&root).show(View::Pane { id: id.clone() });
+                let name = self.pane(&id).map(|p| p.name.clone()).unwrap_or_default();
+                self.toast(format!("{name} moved to {}, where its shell is now", aulora_core::util::basename(&root)));
+            }
         }
     }
 
-    /// When the sidebar's selection changes, show it: a pane's leaf, or a
-    /// session's conversation.
+    /// When the sidebar's selection changes, show it: a pane's terminal,
+    /// or a session's conversation. A workspace shows what it last did.
     pub fn follow_selection(&mut self) {
         if self.selected == self.shown_row {
             return;
         }
         let before = self.shown_row.as_ref().and_then(|r| self.root_of(r));
         self.shown_row = self.selected.clone();
-        self.ensure_space();
         // Coming to another project: maybe a "since you were here" card.
         if let Some(root) = self.space_root()
             && before.as_deref() != Some(root.as_str())
@@ -157,32 +107,21 @@ impl App {
             }
             self.visit(&root);
         }
-        match self.selected.clone() {
-            Some(RowRef::Pane(id)) => {
-                if let Some((root, tab, leaf)) = self.layouts.find_pane(&id) {
-                    let space = self.layouts.space(&root);
-                    space.active = tab;
-                    space.tabs[tab].focus = leaf;
-                    self.layouts_dirty = true;
-                }
-            }
-            Some(RowRef::Session(id)) => {
-                if let Some(root) = self.space_root() {
-                    self.open_view(&root, View::Conversation { session: id }, false);
-                }
-            }
-            _ => {}
+        let view = match self.selected.clone() {
+            Some(RowRef::Pane(id)) => View::Pane { id },
+            Some(RowRef::Session(session)) => View::Conversation { session },
+            _ => return,
+        };
+        if let Some(space) = self.space_mut() {
+            space.show(view);
         }
     }
 
-    /// Point the sidebar at what the focused leaf shows.
+    /// Point the sidebar at what the main view shows.
     pub fn sync_selection(&mut self) {
-        let row = match self.focused_view() {
+        let row = match self.space().map(|s| s.main.clone()) {
             Some(View::Pane { id }) if self.pane(&id).is_some() => Some(RowRef::Pane(id)),
-            Some(View::Conversation { session }) if self.session(&session).is_some() => {
-                // A session shown from its pane stays that pane's row.
-                Some(RowRef::Session(session))
-            }
+            Some(View::Conversation { session }) if self.session(&session).is_some() => Some(RowRef::Session(session)),
             _ => self.space_root().map(RowRef::Project),
         };
         if row.is_some() && row != self.selected {
@@ -193,46 +132,11 @@ impl App {
         self.shown_row = self.selected.clone();
     }
 
-    /// Show a view in a project: focus it if this tab has it. Changes and
-    /// Files go in the tab's panel down the right edge, made when needed.
-    /// Anything else replaces the focused leaf if that's a view, or opens
-    /// beside it (views never cover terminals or the panel).
+    /// Show a view in a project: Changes and Files in the panel down the
+    /// right edge, anything else in the main place.
     pub fn open_view(&mut self, root: &str, view: View, focus_main: bool) {
         self.layouts_dirty = true;
-        let same_kind = |a: &View, b: &View| std::mem::discriminant(a) == std::mem::discriminant(b);
-        let (leaf_id, split_id) = (self.layouts.id(), self.layouts.id());
-        let space = self.layouts.space(root);
-        match space.tab_mut() {
-            None => {
-                self.layouts.new_tab(root, view);
-            }
-            Some(tab) => {
-                // A tab with only the overview or a panel in it: a conversation
-                // or terminal takes its place (the panel comes back beside it).
-                let alone = tab.leaves().len() == 1
-                    && tab.focused().is_some_and(|v| matches!(v, View::Overview) || (v.is_panel() && !view.is_panel()));
-                if let Some(leaf) = tab.find(|v| v == &view) {
-                    tab.focus = leaf;
-                } else if view.is_panel() && !alone {
-                    match tab.find(View::is_panel) {
-                        Some(leaf) => {
-                            tab.replace(leaf, view);
-                            tab.focus = leaf;
-                        }
-                        None => tab.add_panel(view, leaf_id, split_id),
-                    }
-                } else if let Some(leaf) = tab.find(|v| same_kind(v, &view)) {
-                    tab.replace(leaf, view);
-                    tab.focus = leaf;
-                } else if tab.focused().is_some_and(|v| !v.is_terminal() && (alone || !v.is_panel())) {
-                    let f = tab.focus;
-                    tab.replace(f, view);
-                } else {
-                    let f = tab.focus;
-                    tab.split(f, Dir::Right, view, leaf_id, split_id);
-                }
-            }
-        }
+        self.layouts.space(root).show(view);
         if focus_main {
             self.focus = Focus::Main;
             self.typing = false;
@@ -247,8 +151,7 @@ impl App {
         let session = self.selected_session_id().filter(|_| !matches!(self.selected, Some(RowRef::Project(_))));
         // f shows or hides the panel everywhere; d switches it between
         // Changes and Files.
-        let shown =
-            self.layouts.space(&root).tab().and_then(|t| t.find(View::is_panel).and_then(|l| t.view(l).cloned()));
+        let shown = self.layouts.space(&root).panel.clone();
         if matches!(kind, Tab::Files | Tab::Changes) {
             match (kind, &shown) {
                 (Tab::Files, Some(View::Files)) => {
@@ -272,48 +175,26 @@ impl App {
                 Some(s) => View::Conversation { session: s },
                 None => return,
             },
-            Tab::Terminal => {
-                let pane = match &self.selected {
-                    Some(RowRef::Pane(id)) => id.clone(),
-                    _ => return,
-                };
-                if let Some((root, tab, leaf)) = self.layouts.find_pane(&pane) {
-                    let space = self.layouts.space(&root);
-                    space.active = tab;
-                    space.tabs[tab].focus = leaf;
-                }
-                self.focus = Focus::Main;
-                return;
-            }
+            Tab::Terminal => match &self.selected {
+                Some(RowRef::Pane(id)) => View::Pane { id: id.clone() },
+                _ => return,
+            },
         };
         self.open_view(&root, view, true);
         // The same size it comes up at by itself.
         let width = self.main_width;
-        if new_panel
-            && width > 0
-            && let Some(tab) = self.layouts.space(&root).tab_mut()
-            && let crate::layout::Node::Split { ratio, b, .. } = &mut tab.root
-            && matches!(&**b, crate::layout::Node::Leaf { view, .. } if view.is_panel())
-        {
-            *ratio = panel_ratio(width);
+        if new_panel && width > 0 {
+            self.layouts.space(&root).ratio = panel_ratio(width);
         }
     }
 
     /// Hide the panel in every workspace, and remember that.
     pub fn hide_panel(&mut self) {
         for space in self.layouts.spaces.values_mut() {
-            for tab in &mut space.tabs {
-                while tab.leaves().len() > 1 {
-                    let Some(leaf) = tab.find(View::is_panel) else { break };
-                    tab.close(leaf);
-                }
-            }
+            space.hide_panel();
         }
         self.layouts_dirty = true;
         self.set_panel_shown(false);
-        if self.focused_view().is_none() {
-            self.focus = Focus::Sidebar;
-        }
     }
 
     pub fn set_panel_shown(&mut self, shown: bool) {
@@ -325,77 +206,50 @@ impl App {
         }
     }
 
-    /// Give the shown tab its Files panel, unless hidden, too narrow, or
-    /// the tab is nothing but a view. Focus stays where it was.
+    /// Give the shown workspace its Files panel, unless hidden, too
+    /// narrow, or the main view is only the overview. Focus stays where
+    /// it was.
     pub fn ensure_panel(&mut self, width: u16) {
         self.main_width = width;
         if !self.panel_shown || width < 110 {
             return;
         }
         let Some(root) = self.space_root() else { return };
-        let (leaf_id, split_id) = (self.layouts.id(), self.layouts.id());
-        let Some(tab) = self.layouts.space(&root).tab_mut() else { return };
-        if tab.zoom
-            || tab.find(View::is_panel).is_some()
-            || !tab.leaves().iter().any(|(_, v)| v.is_terminal() || matches!(v, View::Conversation { .. }))
-        {
+        let space = self.layouts.space(&root);
+        if space.panel.is_some() || !(space.main.is_terminal() || matches!(space.main, View::Conversation { .. })) {
             return;
         }
-        let focus = tab.focus;
-        tab.add_panel(View::Files, leaf_id, split_id);
-        if let crate::layout::Node::Split { ratio, .. } = &mut tab.root {
-            *ratio = panel_ratio(width);
-        }
-        tab.focus = focus;
+        space.panel = Some(View::Files);
+        space.ratio = panel_ratio(width);
         self.layouts_dirty = true;
     }
 
-    /// Put a new pane beside the focused leaf (or in a new tab). With
-    /// `take_view`, it takes the place of a focused view instead, such as
-    /// the conversation it was started from.
-    pub fn place_pane(&mut self, root: &str, pane: &str, dir: Option<Dir>, take_view: bool) {
+    /// Show a new pane in its workspace.
+    pub fn place_pane(&mut self, root: &str, pane: &str) {
         self.layouts_dirty = true;
-        self.fresh_leaves.push((pane.to_string(), self.now));
-        let view = View::Pane { id: pane.to_string() };
-        let (leaf_id, split_id) = (self.layouts.id(), self.layouts.id());
-        let space = self.layouts.space(root);
-        match (dir, space.tab_mut()) {
-            (Some(dir), Some(tab)) => match tab.view_to_replace().filter(|_| take_view) {
-                Some(leaf) => {
-                    tab.replace(leaf, view);
-                    tab.focus = leaf;
-                    tab.zoom = false;
-                }
-                None => {
-                    let target = tab.split_target();
-                    tab.split(target, dir, view, leaf_id, split_id);
-                }
-            },
-            _ => {
-                self.layouts.new_tab(root, view);
-            }
-        }
+        self.fresh_panes.push((pane.to_string(), self.now));
+        self.layouts.space(root).show(View::Pane { id: pane.to_string() });
     }
 
-    /// Focus a leaf of the current tab.
-    pub fn focus_leaf(&mut self, leaf: u64) {
-        if let Some(tab) = self.tab_mut()
-            && tab.focus != leaf
+    /// Focus the main view or the panel.
+    pub fn focus_part(&mut self, part: Part) {
+        if let Some(space) = self.space_mut()
+            && space.view(part).is_some()
         {
-            tab.focus = leaf;
+            space.focus = part;
         }
         self.focus = Focus::Main;
         self.sync_selection();
     }
 
-    /// Tab and Shift-Tab: sidebar → each leaf in reading order → sidebar.
+    /// Tab and Shift-Tab: sidebar → main view → panel → sidebar.
     pub fn cycle_focus(&mut self, delta: i32) {
-        let order: Vec<u64> = self.leaf_rects.iter().map(|(id, _)| *id).collect();
+        let order: Vec<Part> = self.part_rects.iter().map(|(p, _)| *p).collect();
         let cur = match self.focus {
             Focus::Sidebar => None,
-            Focus::Main => self.tab().map(|t| t.focus),
+            Focus::Main => self.space().map(|s| s.focus),
         };
-        let i = cur.and_then(|c| order.iter().position(|id| *id == c));
+        let i = cur.and_then(|c| order.iter().position(|p| *p == c));
         let n = order.len() as i32;
         let next = match (i, delta > 0) {
             (None, true) => Some(0),
@@ -407,77 +261,33 @@ impl App {
         };
         self.typing = false;
         match next.filter(|_| n > 0) {
-            Some(j) => self.focus_leaf(order[j as usize]),
+            Some(j) => self.focus_part(order[j as usize]),
             None => self.focus = Focus::Sidebar,
         }
     }
 
-    /// Alt+arrows: the leaf in that direction.
-    pub fn move_focus(&mut self, dx: i32, dy: i32) -> bool {
-        let Some(tab) = self.tab() else { return false };
-        let placed = layout::Placed { leaves: self.leaf_rects.clone(), splits: vec![] };
-        if self.focus == Focus::Sidebar {
-            if dx > 0 {
-                let first = self.leaf_rects.iter().min_by_key(|(_, r)| (r.x, r.y)).map(|(id, _)| *id);
-                if let Some(id) = first {
-                    self.focus_leaf(id);
-                    return true;
-                }
-            }
-            return false;
-        }
-        match layout::neighbor(&placed, tab.focus, dx, dy) {
-            Some(id) => {
-                let typing = self.typing;
-                self.focus_leaf(id);
-                // Keep typing if the new leaf is a terminal too (zellij).
-                self.typing = typing && self.focused_pane().is_some();
-                true
-            }
-            None if dx < 0 => {
-                self.typing = false;
-                self.focus = Focus::Sidebar;
-                true
-            }
-            None => false,
-        }
-    }
-
-    pub fn switch_tab(&mut self, i: usize) -> bool {
-        let Some(root) = self.space_root() else { return false };
-        let space = self.layouts.space(&root);
-        if i >= space.tabs.len() {
-            return false;
-        }
-        space.active = i;
-        self.layouts_dirty = true;
+    /// Option-Left and Option-Right: sidebar ↔ main view ↔ panel.
+    pub fn move_focus(&mut self, dx: i32) -> bool {
         self.typing = false;
-        self.sync_selection();
+        let here = match self.focus {
+            Focus::Sidebar => None,
+            Focus::Main => self.space().map(|s| s.focus),
+        };
+        match (here, dx > 0) {
+            (None, true) => self.focus_part(Part::Main),
+            (Some(Part::Main), true) if self.space().is_some_and(|s| s.panel.is_some()) => self.focus_part(Part::Panel),
+            (Some(Part::Main), false) => self.focus = Focus::Sidebar,
+            (Some(Part::Panel), false) => self.focus_part(Part::Main),
+            _ => return false,
+        }
         true
     }
 
-    pub fn cycle_tab(&mut self, delta: i32) {
-        let Some(root) = self.space_root() else { return };
-        let space = self.layouts.space(&root);
-        let n = space.tabs.len() as i32;
-        if n > 1 {
-            let next = (space.active as i32 + delta).rem_euclid(n) as usize;
-            self.switch_tab(next);
-        }
-    }
-
-    /// Where a pane in the focused leaf's place would get its size, for
-    /// starting a new pane at roughly the right size.
-    pub fn new_pane_size(&self, dir: Option<Dir>) -> Option<(u16, u16)> {
-        let tab = self.tab()?;
-        let target = tab.split_target();
-        let (_, r): &(u64, Rect) = self.leaf_rects.iter().find(|(id, _)| *id == target)?;
-        let (w, h) = (r.width.saturating_sub(2), r.height.saturating_sub(2));
-        Some(match dir {
-            Some(Dir::Right) => (w / 2, h),
-            Some(Dir::Down) => (w, h / 2),
-            None => (w, h),
-        })
+    /// The size a new pane in the main view would get, to start it at
+    /// about the right size.
+    pub fn new_pane_size(&self) -> Option<(u16, u16)> {
+        let (_, r): &(Part, Rect) = self.part_rects.iter().find(|(p, _)| *p == Part::Main)?;
+        Some((r.width.saturating_sub(2), r.height.saturating_sub(2)))
     }
 
     pub fn save_layouts(&mut self) {
@@ -496,8 +306,8 @@ impl App {
     }
 }
 
-/// Where the panel's split goes: about 42 columns for the panel, more
-/// on wide screens.
+/// Where the panel's edge goes: about 42 columns for the panel, more on
+/// wide screens.
 fn panel_ratio(width: u16) -> f32 {
     (1.0 - (42.0_f32.max(width as f32 * 0.26) / width as f32)).clamp(0.5, 0.8)
 }

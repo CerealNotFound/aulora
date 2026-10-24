@@ -45,16 +45,12 @@ pub enum Action {
     Bottom,
     FocusNext,
     FocusPrev,
-    Tab(u8),
-    NextTab,
-    PrevTab,
     Open,
     Back,
     NewShell,
     NewClaude,
     NextAlert,
     Filter,
-    Zoom,
     OpenEditor,
     Close,
     DismissEnded,
@@ -83,16 +79,10 @@ pub enum Action {
     Reveal,
     FocusLeft,
     FocusRight,
-    FocusUp,
-    FocusDown,
-    SplitRight,
-    SplitDown,
-    NewTab,
     OpenChanges,
     OpenFiles,
     Grow,
     Shrink,
-    Equalize,
     CloseLeaf,
     Edit,
     Finder,
@@ -217,7 +207,7 @@ pub static BINDINGS: &[Binding] = &[
     b!(Conversation, "g", [k('g'), code(KeyCode::Home)], Top, "start of the conversation"),
     b!(Conversation, "G", [k('G'), code(KeyCode::End)], Bottom, "latest message, and follow new ones", "latest"),
     b!(Conversation, "esc", [code(KeyCode::Esc), code(KeyCode::Left), k('h')], Back, "back to the sidebar", "back"),
-    b!(Conversation, "x", [k('x')], CloseLeaf, "close this pane"),
+    b!(Conversation, "x", [k('x')], CloseLeaf, "close the conversation: back to the workspace overview"),
     // Pane (focused, not typing).
     b!(Pane, "⏎", [code(KeyCode::Enter), k('i')], Open, "type into the pane (ctrl-q comes back)", "type"),
     b!(
@@ -274,7 +264,7 @@ pub static BINDINGS: &[Binding] = &[
     b!(Changes, "g", [k('g'), code(KeyCode::Home)], Top, "first file"),
     b!(Changes, "G", [k('G'), code(KeyCode::End)], Bottom, "last file"),
     b!(Changes, "esc", [code(KeyCode::Esc)], Back, "back to the files, then the sidebar", "back"),
-    b!(Changes, "x", [k('x')], CloseLeaf, "close this pane"),
+    b!(Changes, "x", [k('x')], CloseLeaf, "hide the panel"),
     // Files.
     b!(
         Files,
@@ -302,41 +292,26 @@ pub static BINDINGS: &[Binding] = &[
     b!(Files, "g", [k('g'), code(KeyCode::Home)], Top, "top"),
     b!(Files, "G", [k('G'), code(KeyCode::End)], Bottom, "bottom"),
     b!(Files, "esc", [code(KeyCode::Esc)], Back, "back to the tree, then the sidebar", "back"),
-    b!(Files, "x", [k('x')], CloseLeaf, "close this pane"),
+    b!(Files, "x", [k('x')], CloseLeaf, "hide the panel"),
     // Project overview.
     b!(Overview, "esc", [code(KeyCode::Esc), code(KeyCode::Left), k('h')], Back, "back to the sidebar", "back"),
-    b!(Overview, "x", [k('x')], CloseLeaf, "close this pane"),
     // Everywhere.
     b!(Global, "⇥", [code(KeyCode::Tab)], FocusNext, "next pane (the sidebar, then each pane)", "focus"),
     b!(Global, "⇧⇥", [code(KeyCode::BackTab)], FocusPrev, "previous pane"),
     b!(
         Global,
-        "⌥←↑↓→",
-        [alt(KeyCode::Left), alt(KeyCode::Right), alt(KeyCode::Up), alt(KeyCode::Down)],
+        "⌥← ⌥→",
+        [alt(KeyCode::Left), alt(KeyCode::Right)],
         FocusLeft,
-        "move to the pane in that direction (zellij)"
+        "move between the sidebar, the main view and the panel"
     ),
-    b!(Global, "|", [k('|')], SplitRight, "split: a new shell to the right", "split"),
-    b!(Global, "-", [k('-')], SplitDown, "split: a new shell below"),
-    b!(Global, "C", [k('C')], NewClaude, "Claude Code in a new pane beside this one"),
-    b!(Global, "T", [k('T')], NewTab, "a new tab with a shell"),
+    b!(Global, "C", [k('C')], NewClaude, "Claude Code in a new pane in this workspace"),
     b!(Global, "d", [k('d')], OpenChanges, "Changes in the panel on the right (again: back to Files)", "changes"),
     b!(Global, "f", [k('f')], OpenFiles, "show or hide the Files panel on the right", "files"),
-    b!(Global, "< >", [k('<'), k('>')], Shrink, "make this pane smaller / bigger"),
-    b!(Global, "=", [k('=')], Equalize, "make every pane even"),
-    b!(
-        Global,
-        "1-9",
-        [k('1'), k('2'), k('3'), k('4'), k('5'), k('6'), k('7'), k('8'), k('9')],
-        Tab(0),
-        "go to tab n",
-        "tabs"
-    ),
-    b!(Global, "{ }", [k('{'), k('}')], PrevTab, "previous / next tab"),
+    b!(Global, "< >", [k('<'), k('>')], Shrink, "make the panel wider / narrower"),
     b!(Global, "ctrl-p", [ctrl('p')], Finder, "find anything: files, # workspaces, @ agents, > actions", "find"),
-    b!(Global, "ctrl-o", [ctrl('o')], OpenProject, "open a workspace (any folder) in a new tab", "open"),
+    b!(Global, "ctrl-o", [ctrl('o')], OpenProject, "open a workspace (any folder)", "open"),
     b!(Global, "n", [k('n')], NextAlert, "jump to the next agent that needs you", "next alert"),
-    b!(Global, "z", [k('z')], Zoom, "zoom this pane (again to unzoom)"),
     b!(Global, "\\", [k('\\')], ToggleSidebar, "shrink the sidebar to glyphs, or widen it"),
     b!(Global, "o", [k('o')], OpenEditor, "open in your editor; a VS Code session: go to its terminal"),
     b!(Global, "O", [k('O')], Reveal, "show it in Finder"),
@@ -366,14 +341,10 @@ fn resolve(b: &Binding, i: usize) -> Action {
         (PrevPrompt, 1) => NextPrompt,
         (PrevHunk, 1) => NextHunk,
         (FocusLeft, 1) => FocusRight,
-        (FocusLeft, 2) => FocusUp,
-        (FocusLeft, 3) => FocusDown,
         (Shrink, 1) => Grow,
         (MoveUp, 1) => MoveDown,
         (HalfUp, 1) => HalfDown,
         (CursorUp, 1) => CursorDown,
-        (PrevTab, 1) => NextTab,
-        (Tab(_), n) => Tab(n as u8),
         (a, _) => a,
     }
 }
@@ -400,7 +371,7 @@ mod tests {
     fn lookups_and_fallback() {
         assert_eq!(lookup(Scope::Sidebar, &ev(KeyCode::Char('j'))), Some(Down));
         assert_eq!(lookup(Scope::Conversation, &ev(KeyCode::Char(']'))), Some(NextPrompt));
-        assert_eq!(lookup(Scope::Sidebar, &ev(KeyCode::Char('3'))), Some(Tab(2)));
+        assert_eq!(lookup(Scope::Sidebar, &ev(KeyCode::Char('3'))), None, "no tabs to go to");
         // The prompt box says "i" while the sidebar has the focus, too.
         assert_eq!(lookup(Scope::Sidebar, &ev(KeyCode::Char('i'))), Some(Compose));
         assert_eq!(lookup(Scope::Pane, &ev(KeyCode::Char('?'))), Some(Help));

@@ -221,9 +221,9 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::raw(""));
     lines.push(Line::from(sp(" The keys that matter", bold(t.text))));
     for (k, what) in [
-        ("⇥", "move between the sidebar and each pane"),
+        ("⇥", "move between the sidebar, the main view and the panel"),
         ("⏎", "type into a pane; ctrl-q gives the keys back to aulora"),
-        ("| -  C", "split with a shell, or put Claude beside this pane"),
+        ("c  C", "a new shell, or Claude, in the selected workspace"),
         ("d f", "Changes or Files in the panel on the right"),
         ("ctrl-p", "find anything: files, # workspaces, @ agents, > actions"),
         ("?", "every key, searchable"),

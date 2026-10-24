@@ -696,11 +696,12 @@ mod tests {
             let s = "b5a4c3d2-e1f0-4a9b-8c7d-6e5f4a3b2c1d".to_string();
             let root = app.session(&s).unwrap().project_root.clone();
             app.layouts = Layouts::default();
-            app.layouts.new_tab(&root, View::Conversation { session: s.clone() });
+            app.layouts.space(&root).show(View::Conversation { session: s.clone() });
             app.select(RowRef::Session(s.clone()));
             app.focus = Focus::Main;
             let views = |app: &mut App| -> Vec<View> {
-                app.layouts.space(&root).tab().unwrap().leaves().into_iter().map(|(_, v)| v.clone()).collect()
+                let space = app.layouts.space(&root);
+                std::iter::once(space.main.clone()).chain(space.panel.clone()).collect()
             };
             app.set_tab(Tab::Changes);
             assert_eq!(views(app), [View::Conversation { session: s.clone() }, View::Changes { filter: None }]);
@@ -739,10 +740,11 @@ mod tests {
             let s = "b5a4c3d2-e1f0-4a9b-8c7d-6e5f4a3b2c1d".to_string();
             let root = app.session(&s).unwrap().project_root.clone();
             app.layouts = Layouts::default();
-            app.layouts.new_tab(&root, View::Conversation { session: s.clone() });
+            app.layouts.space(&root).show(View::Conversation { session: s.clone() });
             app.select(RowRef::Session(s.clone()));
             let views = |app: &mut App| -> Vec<View> {
-                app.layouts.space(&root).tab().unwrap().leaves().into_iter().map(|(_, v)| v.clone()).collect()
+                let space = app.layouts.space(&root);
+                std::iter::once(space.main.clone()).chain(space.panel.clone()).collect()
             };
             app.ensure_panel(160);
             assert_eq!(views(app), [View::Conversation { session: s.clone() }, View::Files], "there by default");
@@ -754,13 +756,10 @@ mod tests {
             assert_eq!(views(app), [View::Conversation { session: s.clone() }], "hidden stays hidden");
             app.set_tab(crate::app::Tab::Files);
             assert_eq!(views(app), [View::Conversation { session: s.clone() }, View::Files], "f brings it back");
-            let ratio = |app: &mut App| match &app.layouts.space(&root).tab().unwrap().root {
-                crate::layout::Node::Split { ratio, .. } => *ratio,
-                _ => 0.0,
-            };
-            assert!((ratio(app) - 0.7375).abs() < 0.001, "at the size it came up at: {}", ratio(app));
+            let ratio = app.layouts.space(&root).ratio;
+            assert!((ratio - 0.7375).abs() < 0.001, "at the size it came up at: {ratio}");
             let mut narrow = Layouts::default();
-            narrow.new_tab(&root, View::Conversation { session: s.clone() });
+            narrow.space(&root).show(View::Conversation { session: s.clone() });
             app.layouts = narrow;
             app.ensure_panel(90);
             assert_eq!(views(app).len(), 1, "not on a narrow screen");
@@ -779,7 +778,8 @@ mod tests {
             let mut snap = app.snap.clone().unwrap();
             snap.panes.iter_mut().find(|p| p.id == id).unwrap().project_root = to.clone();
             app.set_snapshot(snap);
-            assert_eq!(app.layouts.find_pane(&id).map(|(r, _, _)| r), Some(to.clone()), "its leaf moved");
+            assert_eq!(app.layouts.find_pane(&id), Some(to.clone()), "it moved");
+            assert_eq!(app.layouts.space(&from).main, View::Overview, "and left its old workspace");
             assert_eq!(app.space_root(), Some(to.clone()), "the view went with it");
             assert_eq!(app.focused_view(), Some(View::Pane { id: id.clone() }));
             assert!(app.typing, "still typing into it");
@@ -787,13 +787,14 @@ mod tests {
             // One you're not on moves quietly, without changing the view.
             let other = app.snap.as_ref().unwrap().panes.iter().find(|p| p.project_root != to).map(|p| p.id.clone());
             if let Some(other) = other {
-                let shown = app.layouts.spaces.get(&to).map(|s| s.active);
+                let at = app.pane(&other).unwrap().project_root.clone();
+                app.layouts.space(&at).show(View::Pane { id: other.clone() });
                 let mut snap = app.snap.clone().unwrap();
                 snap.panes.iter_mut().find(|p| p.id == other).unwrap().project_root = to.clone();
                 app.set_snapshot(snap);
                 assert_eq!(app.space_root(), Some(to.clone()));
-                assert_eq!(app.layouts.spaces.get(&to).map(|s| s.active), shown);
-                assert_eq!(app.layouts.find_pane(&other).map(|(r, _, _)| r), Some(to.clone()));
+                assert_eq!(app.focused_view(), Some(View::Pane { id: id.clone() }));
+                assert_eq!(app.layouts.space(&at).main, View::Overview);
             }
         });
     }

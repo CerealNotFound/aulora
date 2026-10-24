@@ -284,24 +284,10 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
         Action::FocusNext => app.cycle_focus(1),
         Action::FocusPrev => app.cycle_focus(-1),
         Action::FocusLeft => {
-            app.move_focus(-1, 0);
+            app.move_focus(-1);
         }
         Action::FocusRight => {
-            app.move_focus(1, 0);
-        }
-        Action::FocusUp => {
-            app.move_focus(0, -1);
-        }
-        Action::FocusDown => {
-            app.move_focus(0, 1);
-        }
-        Action::SplitRight | Action::SplitDown | Action::NewTab => {
-            app.place_next = Some(match action {
-                Action::SplitRight => Some(crate::layout::Dir::Right),
-                Action::SplitDown => Some(crate::layout::Dir::Down),
-                _ => None,
-            });
-            new_pane(app, opts, ctx, PaneKind::Shell);
+            app.move_focus(1);
         }
         Action::OpenChanges => {
             if app.selected_root().is_some_and(|r| app.has_git(&r)) {
@@ -312,24 +298,13 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
         }
         Action::OpenFiles => app.set_tab(Tab::Files),
         Action::Grow | Action::Shrink => {
-            let d = if action == Action::Grow { 0.05 } else { -0.05 };
-            if let Some(tab) = app.tab_mut()
-                && !tab.nudge(crate::layout::Dir::Right, d)
-            {
-                tab.nudge(crate::layout::Dir::Down, d);
-            }
-        }
-        Action::Equalize => {
-            if let Some(tab) = app.tab_mut() {
-                tab.equalize();
+            // The main view's share: `>` widens the panel.
+            let d = if action == Action::Grow { -0.05 } else { 0.05 };
+            if let Some(space) = app.space_mut().filter(|s| s.panel.is_some()) {
+                space.set_ratio(space.ratio + d);
             }
         }
         Action::CloseLeaf => close_leaf(app, opts),
-        Action::Tab(n) => {
-            app.switch_tab(n as usize);
-        }
-        Action::NextTab => app.cycle_tab(1),
-        Action::PrevTab => app.cycle_tab(-1),
         Action::Open => open(app, opts, ctx),
         Action::Back => {
             app.focus = Focus::Sidebar;
@@ -343,11 +318,6 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
             }
         }
         Action::Filter => app.filtering = true,
-        Action::Zoom => {
-            if let Some(tab) = app.tab_mut() {
-                tab.zoom = !tab.zoom && tab.leaves().len() > 1;
-            }
-        }
         Action::OpenEditor => {
             // A session running in VS Code: go to its terminal there.
             let jump = app.selected_session_id().filter(|id| {
@@ -1050,20 +1020,14 @@ fn spawn_named(
         return;
     }
     let _ = ctx;
-    // Beside the focused leaf unless asked otherwise (None: a new tab).
-    // Unasked, a pane started from a conversation or the overview takes
-    // that view's place rather than squeezing in next to it; | and -
-    // still split.
-    let take_view = app.place_next.is_none() && app.tab().is_some_and(|t| t.view_to_replace().is_some());
-    let dir = app.place_next.take().unwrap_or(Some(crate::layout::Dir::Right));
-    let (cols, rows) = app.new_pane_size(if take_view { None } else { dir }).unwrap_or_else(|| {
+    let (cols, rows) = app.new_pane_size().unwrap_or_else(|| {
         crate::terminal_size().map(|(w, h)| (w.saturating_sub(40), h.saturating_sub(4))).unwrap_or((100, 30))
     });
     let root = app.place_root.take().or_else(|| app.space_root()).unwrap_or_else(|| cwd.clone());
     let req = NewPane { cwd, kind, args, name, cols: cols.max(20), rows: rows.max(5) };
     match client::command(&opts.socket, &ClientMsg::NewPane(req)) {
         Some(ServerMsg::PaneCreated { pane_id }) => {
-            app.place_pane(&root, &pane_id, dir, take_view);
+            app.place_pane(&root, &pane_id);
             app.focus = Focus::Main;
             app.pending_select = Some((pane_id, true));
             app.toast(if label == "the session" { "Resumed".to_string() } else { format!("Started {label}") });
@@ -1215,9 +1179,8 @@ fn changes_action(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> b
                 None => authors.first().cloned(),
                 Some(cur) => authors.iter().position(|a| *a == cur).and_then(|i| authors.get(i + 1)).cloned(),
             };
-            if let Some(tab) = app.tab_mut() {
-                let f = tab.focus;
-                tab.replace(f, crate::layout::View::Changes { filter: next });
+            if let Some(space) = app.space_mut() {
+                space.panel = Some(crate::layout::View::Changes { filter: next });
             }
             let v = app.view_mut(&root);
             v.selected = None;
@@ -1359,7 +1322,7 @@ fn finder_outcome(app: &mut App, out: crate::finder::Outcome, opts: &Options, ct
 }
 
 /// Open a folder as a project: select it if aulora shows it already,
-/// otherwise start a shell (or Claude) there in a new tab, which makes it
+/// otherwise start a shell (or Claude) there, which makes it
 /// a project in the sidebar (VS Code's Open Folder).
 pub fn open_project(app: &mut App, opts: &Options, ctx: &Ctx, path: &str, claude: bool) {
     let root = crate::git::run(path, &["rev-parse", "--show-toplevel"])
@@ -1373,7 +1336,6 @@ pub fn open_project(app: &mut App, opts: &Options, ctx: &Ctx, path: &str, claude
         return;
     }
     app.place_root = Some(root.clone());
-    app.place_next = Some(None);
     let (kind, label) = if claude { (PaneKind::Claude, "Claude Code") } else { (PaneKind::Shell, "a shell") };
     spawn(app, opts, ctx, kind, path.to_string(), vec![], label);
 }
@@ -1436,27 +1398,22 @@ pub fn reveal_in_finder(app: &mut App, path: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// Leaves
+// Closing views
 
-/// Close the focused leaf: a view just goes; a terminal is killed (asking
-/// first if it's running) and its leaf goes when the pane does.
+/// Close what has focus: a terminal is killed (asking first if it's
+/// running), the panel hides, a conversation gives way to the overview.
 fn close_leaf(app: &mut App, opts: &Options) {
     let Some(view) = app.focused_view() else { return };
     match view {
         crate::layout::View::Pane { id } => close(app, opts, RowRef::Pane(id)),
-        _ => {
-            let Some(root) = app.space_root() else { return };
-            let space = app.layouts.space(&root);
-            let Some(tab) = space.tab_mut() else { return };
-            let leaf = tab.focus;
-            if !tab.close(leaf) {
-                let active = space.active;
-                space.tabs.remove(active);
-                space.active = active.saturating_sub(1).min(space.tabs.len().saturating_sub(1));
+        v if v.is_panel() => app.hide_panel(),
+        crate::layout::View::Conversation { .. } => {
+            if let Some(space) = app.space_mut() {
+                space.main = crate::layout::View::Overview;
             }
-            app.layouts_dirty = true;
             app.sync_selection();
         }
+        _ => {}
     }
 }
 
@@ -1772,10 +1729,6 @@ fn run_menu_item(app: &mut App, opts: &Options, ctx: &Ctx, item: MenuItem) {
         MenuItem::OpenEditor(root) => open_in_editor(app, &root),
         MenuItem::NewClaude(root) => spawn(app, opts, ctx, PaneKind::Claude, root, vec![], "Claude Code"),
         MenuItem::NewShell(root) => spawn(app, opts, ctx, PaneKind::Shell, root, vec![], "a shell"),
-        MenuItem::NewTab(root) => {
-            app.place_next = Some(None);
-            spawn(app, opts, ctx, PaneKind::Shell, root, vec![], "a shell");
-        }
         MenuItem::Reveal(path) => reveal_in_finder(app, &path),
         MenuItem::Jump(id) => jump_to_session(app, opts, &id),
         MenuItem::Run(action, _) => {
@@ -1851,18 +1804,16 @@ fn selectable(
         Hit::Row(_) | Hit::Sidebar | Hit::Add(_) => {
             app.hits.iter().find(|(r, h)| matches!(h, Hit::Sidebar) && inside(r)).map(|(r, _)| (*r, None))
         }
-        Hit::Split(_)
+        Hit::PanelEdge
         | Hit::Close(_)
         | Hit::Action(_)
         | Hit::MenuItem(_)
         | Hit::Dismiss
         | Hit::NewMenu
         | Hit::AppMenu
-        | Hit::SpaceTab(_)
-        | Hit::NewTab
         | Hit::FinderItem(_)
         | Hit::Resume(_) => None,
-        _ => app.leaf_rects.iter().find(|(_, r)| inside(r)).map(|(_, r)| {
+        _ => app.part_rects.iter().find(|(_, r)| inside(r)).map(|(_, r)| {
             let inner = ratatui::layout::Rect {
                 x: r.x + 1,
                 y: r.y + 1,
@@ -1922,7 +1873,7 @@ pub fn on_hover(app: &mut App, ev: MouseEvent) -> bool {
 pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input: &mut Input) {
     let (col, row) = (ev.column, ev.row);
     // A drag that started on text selects it; letting go copies it.
-    if app.dragging.is_none()
+    if !app.dragging
         && let Some((region, pane, at)) = input.press.clone()
     {
         match ev.kind {
@@ -2090,11 +2041,11 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
             }
             // A click in a pane focuses it first (Herdr, zellij).
             let inside = |r: &ratatui::layout::Rect| col >= r.x && col < r.right() && row >= r.y && row < r.bottom();
-            if !matches!(hit, Hit::Split(_))
-                && let Some(leaf) = app.leaf_rects.iter().find(|(_, r)| inside(r)).map(|(id, _)| *id)
-                && (app.focus != Focus::Main || app.tab().is_some_and(|t| t.focus != leaf))
+            if hit != Hit::PanelEdge
+                && let Some(part) = app.part_rects.iter().find(|(_, r)| inside(r)).map(|(p, _)| *p)
+                && (app.focus != Focus::Main || app.space().is_some_and(|s| s.focus != part))
             {
-                app.focus_leaf(leaf);
+                app.focus_part(part);
             }
             match hit {
                 Hit::Row(r) => {
@@ -2205,8 +2156,7 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                     if let Some(root) = app.selected_root() {
                         let items = vec![
                             MenuItem::NewClaude(root.clone()),
-                            MenuItem::NewShell(root.clone()),
-                            MenuItem::NewTab(root),
+                            MenuItem::NewShell(root),
                             MenuItem::Run(Action::OpenProject, "Open a workspace…  ctrl-o"),
                         ];
                         open_menu(app, col, row.saturating_sub(5), items);
@@ -2232,14 +2182,6 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                     ];
                     open_menu(app, col.saturating_sub(24), row.saturating_sub(7), items);
                 }
-                Hit::SpaceTab(i) => {
-                    app.switch_tab(i);
-                    app.focus = Focus::Main;
-                }
-                Hit::NewTab => {
-                    app.place_next = Some(None);
-                    new_pane(app, opts, ctx, PaneKind::Shell);
-                }
                 Hit::Leaf(_) => {}
                 Hit::ChangedFile(path) => {
                     if let Some(root) = app.selected_root() {
@@ -2248,7 +2190,7 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                         app.files_view(&root).to_first_change = line.is_none();
                     }
                 }
-                Hit::Split(id) => app.dragging = Some(id),
+                Hit::PanelEdge => app.dragging = true,
                 Hit::Terminal(id) => {
                     let wants_mouse = app
                         .terms
@@ -2280,20 +2222,15 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                 }
             }
         }
-        MouseEventKind::Drag(MouseButton::Left) if app.dragging.is_some() => {
-            // Move the split border under the pointer.
-            let split = app.dragging.unwrap_or_default();
-            if let Some((_, dir, area, _)) = app.split_rects.iter().find(|(id, ..)| *id == split).cloned() {
-                let ratio = match dir {
-                    crate::layout::Dir::Right => (col.saturating_sub(area.x) as f32 + 0.5) / area.width.max(1) as f32,
-                    crate::layout::Dir::Down => (row.saturating_sub(area.y) as f32 + 0.5) / area.height.max(1) as f32,
-                };
-                if let Some(tab) = app.tab_mut() {
-                    tab.set_ratio(split, ratio);
-                }
+        MouseEventKind::Drag(MouseButton::Left) if app.dragging => {
+            // Move the panel's edge under the pointer.
+            let area = app.main_rect;
+            let ratio = (col.saturating_sub(area.x) as f32 + 0.5) / area.width.max(1) as f32;
+            if let Some(space) = app.space_mut() {
+                space.set_ratio(ratio);
             }
         }
-        MouseEventKind::Up(MouseButton::Left) if app.dragging.is_some() => app.dragging = None,
+        MouseEventKind::Up(MouseButton::Left) if app.dragging => app.dragging = false,
         MouseEventKind::Up(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left) => {
             if let Hit::Terminal(id) = hit
                 && app.typing

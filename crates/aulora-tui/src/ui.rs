@@ -786,83 +786,40 @@ fn main(f: &mut Frame, area: Rect, app: &mut App) {
     let area = Rect { x: area.x + 1, width: area.width.saturating_sub(1), ..area };
     app.hits.push((area, Hit::Main));
     app.follow_selection();
-    app.ensure_space();
     app.ensure_panel(area.width);
     let Some(root) = app.space_root() else { return };
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
-    tab_strip(f, rows[0], app, &root);
-    let Some(tab) = app.tab().cloned() else { return };
-    let placed = crate::layout::place(&tab, rows[1]);
-    app.leaf_rects = placed.leaves.clone();
-    app.split_rects = placed.splits.clone();
-    for (leaf, r) in &placed.leaves {
-        let Some(view) = tab.view(*leaf).cloned() else { continue };
-        let focused = app.focus == Focus::Main && *leaf == tab.focus;
-        draw_leaf(f, *r, app, &root, *leaf, &view, focused, tab.zoom);
+    top_bar(f, rows[0], app, &root);
+    let space = app.layouts.space(&root).clone();
+    let placed = crate::layout::place(&space, rows[1]);
+    app.part_rects = placed.parts.clone();
+    app.main_rect = rows[1];
+    for (part, r) in &placed.parts {
+        let Some(view) = space.view(*part).cloned() else { continue };
+        let focused = app.focus == Focus::Main && *part == space.focus;
+        draw_leaf(f, *r, app, &root, *part, &view, focused);
     }
-    // Borders between leaves can be dragged; they sit on top.
-    for (id, _, _, line) in &placed.splits {
-        app.hits.push((*line, Hit::Split(*id)));
-    }
-}
-
-/// A short name for a tab: its first terminal's, else its first view's.
-fn tab_name(app: &App, tab: &crate::layout::Tab) -> String {
-    use crate::layout::View;
-    let leaves = tab.leaves();
-    let pick = leaves.iter().find(|(_, v)| v.is_terminal()).or(leaves.first()).map(|(_, v)| (*v).clone());
-    match pick {
-        Some(View::Pane { id }) => match (app.pane(&id), app.pane_session(&id)) {
-            (_, Some(s)) if s.title.is_some() => fit(&s.display_title(), 22),
-            (Some(p), _) => fit(&p.title.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| p.name.clone()), 22),
-            _ => "terminal".into(),
-        },
-        Some(View::Changes { .. }) => "changes".into(),
-        Some(View::Files) => "files".into(),
-        Some(View::Conversation { session }) => {
-            app.session(&session).map(|s| fit(&s.display_title(), 22)).unwrap_or_default()
-        }
-        _ => "overview".into(),
+    // The panel's edge can be dragged; it sits on top.
+    if let Some(edge) = placed.edge {
+        app.hits.push((edge, Hit::PanelEdge));
     }
 }
 
-/// The project's tabs as pills (Herdr), `+` for a new one, and how the
-/// focused agent is doing on the right.
-fn tab_strip(f: &mut Frame, area: Rect, app: &mut App, root: &str) {
+/// Changes and Files buttons above the main area, and how the selected
+/// agent is doing.
+fn top_bar(f: &mut Frame, area: Rect, app: &mut App, root: &str) {
     let t = theme::get();
     let now = app.now;
     fill(f, area, t.panel);
-    let Some(space) = app.layouts.spaces.get(root).cloned() else { return };
-    let mut x = area.x;
-    let mut spans = Vec::new();
-    for (i, tab) in space.tabs.iter().enumerate() {
-        let active = i == space.active;
-        let name = format!("  {} {}  ", i + 1, tab_name(app, tab));
-        let style = if active {
-            Style::new().bg(t.accent).fg(on_fill()).add_modifier(Modifier::BOLD)
-        } else {
-            Style::new().bg(t.select).fg(t.dim)
-        };
-        let wd = w(&name) as u16;
-        if x + wd > area.right().saturating_sub(20) {
-            break;
-        }
-        app.hits.push((Rect { x, y: area.y, width: wd, height: 1 }, Hit::SpaceTab(i)));
-        x += wd + 1;
-        spans.push(sp(name, style));
-        spans.push(sp(" ", Style::new().bg(t.panel)));
-    }
-    spans.push(sp(" + ", bold(t.accent).bg(t.panel)));
-    app.hits.push((Rect { x, y: area.y, width: 3, height: 1 }, Hit::NewTab));
+    let panel = app.layouts.space(root).panel.clone();
     // Changes and Files, one click away (VS Code's activity bar).
     let mut buttons: Vec<(String, crate::keymap::Action, bool)> = Vec::new();
-    let shown = |pred: &dyn Fn(&crate::layout::View) -> bool| space.tab().is_some_and(|tab| tab.find(pred).is_some());
     if app.has_git(root) {
         let n = app.change_count(root).filter(|n| *n > 0).map(|n| format!(" {n}")).unwrap_or_default();
-        let on = shown(&|v| matches!(v, crate::layout::View::Changes { .. }));
+        let on = matches!(panel, Some(crate::layout::View::Changes { .. }));
         buttons.push((format!(" d changes{n} "), crate::keymap::Action::OpenChanges, on));
     }
-    let on = shown(&|v| matches!(v, crate::layout::View::Files));
+    let on = panel == Some(crate::layout::View::Files);
     buttons.push((" f files ".to_string(), crate::keymap::Action::OpenFiles, on));
     let mut right = Vec::new();
     if let Some(sel) = app.selected.clone().filter(|s| !s.is_project()) {
@@ -888,7 +845,7 @@ fn tab_strip(f: &mut Frame, area: Rect, app: &mut App, root: &str) {
         app.hits.push((Rect { x: bx, y: area.y, width: wd, height: 1 }, Hit::Action(*action)));
         bx += wd + 1;
     }
-    f.render_widget(Paragraph::new(lr(spans, all, area.width as usize)).style(Style::new().bg(t.panel)), area);
+    f.render_widget(Paragraph::new(lr(vec![], all, area.width as usize)).style(Style::new().bg(t.panel)), area);
 }
 
 /// What a leaf's frame says: what it shows and how it's doing.
@@ -936,16 +893,14 @@ fn leaf_title(app: &App, view: &crate::layout::View, focused: bool) -> Vec<Span<
     v
 }
 
-#[allow(clippy::too_many_arguments)]
 fn draw_leaf(
     f: &mut Frame,
     r: Rect,
     app: &mut App,
     root: &str,
-    leaf: u64,
+    part: crate::layout::Part,
     view: &crate::layout::View,
     focused: bool,
-    zoomed: bool,
 ) {
     use crate::layout::View;
     let t = theme::get();
@@ -955,17 +910,15 @@ fn draw_leaf(
         .border_style(fg(border))
         .title(Line::from(crate::ui::fit_spans(leaf_title(app, view, focused), r.width.saturating_sub(4) as usize)));
     if focused && app.typing && view.is_terminal() {
-        // Typing here: how to get the keys back, and split it.
-        block = block.title_top(Line::from(sp(" ctrl-q, then | - C to split ", faint())).right_aligned());
-    } else if zoomed {
-        block = block.title_top(Line::from(sp(" zoomed · z ", faint())).right_aligned());
+        // Typing here: how to get the keys back.
+        block = block.title_top(Line::from(sp(" ctrl-q gives the keys back ", faint())).right_aligned());
     } else if focused
         && !app.typing
         && matches!(view, View::Pane { id } if app.pane(id).is_some_and(|p| p.is_running()))
     {
         block = block.title_top(Line::from(sp(" ⏎ type ", faint())).right_aligned());
     }
-    let panel = view.is_panel() && !zoomed;
+    let panel = view.is_panel();
     // Every pane and panel can be closed from its frame.
     let close = match view {
         View::Pane { id } => Some(Hit::Close(RowRef::Pane(id.clone()))),
@@ -977,7 +930,7 @@ fn draw_leaf(
     }
     let inner = block.inner(r);
     f.render_widget(block, r);
-    app.hits.push((r, Hit::Leaf(leaf)));
+    app.hits.push((r, Hit::Leaf(part)));
     if let Some(hit) = close {
         app.hits.push((Rect { x: r.right().saturating_sub(4), y: r.y, width: 3, height: 1 }, hit));
     }
@@ -1213,9 +1166,9 @@ fn prompt_box(f: &mut Frame, area: Rect, app: &mut App, s: &Session) -> u16 {
 const TIPS: &[&str] = &[
     "n jumps to the next agent that needs you",
     "right-click any row for what you can do with it",
-    "2 opens Changes: what this agent wrote, ready to commit",
+    "d opens Changes: what this agent wrote, ready to commit",
     "[ and ] jump between the prompts you sent",
-    "z zooms this view to the whole screen",
+    "f shows or hides the Files panel",
     "t picks one of twelve themes",
     "r on an ended session resumes it in a terminal here",
     "aulora send <session> \"…\" prompts a session from a script",
@@ -1552,11 +1505,7 @@ fn mode_bar(f: &mut Frame, area: Rect, app: &App) {
             pill("TERMINAL", t.accent),
             lbl(&format!("keys go to {name}")),
             key("ctrl-q"),
-            lbl("back to aulora, then"),
-            key("| -"),
-            lbl("split"),
-            key("C"),
-            lbl("Claude beside it"),
+            lbl("back to aulora"),
         ]);
     } else if app.commit_edit.is_some() {
         left.extend([

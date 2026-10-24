@@ -1051,29 +1051,23 @@ pub fn search(root_path: &str, query: &str) -> Vec<crate::files::Match> {
     out
 }
 
-/// Tiled layouts for the demo: Claude with its dev server and Changes in
-/// multibrain, Claude beside Files in aulora.
+/// Layouts for the demo: Claude with Changes in multibrain, Claude with
+/// Files in aulora.
 pub fn layouts() -> crate::layout::Layouts {
-    use crate::layout::{Dir, Layouts, View};
+    use crate::layout::{Layouts, Space, View};
     let mut l = Layouts::default();
-    let mb = root("multibrain");
-    let claude = l.new_tab(&mb, View::Pane { id: "5d2e19".into() });
-    let (changes, s1) = (l.id(), l.id());
-    let (server, s2) = (l.id(), l.id());
-    if let Some(tab) = l.space(&mb).tab_mut() {
-        tab.split(claude, Dir::Right, View::Changes { filter: Some(MB_BILLING.into()) }, changes, s1);
-        tab.split(claude, Dir::Down, View::Pane { id: "c8f310".into() }, server, s2);
-        tab.set_ratio(s1, 0.56);
-        tab.set_ratio(s2, 0.7);
-        tab.focus = claude;
-    }
-    let au = root("aulora");
-    let claude = l.new_tab(&au, View::Pane { id: "a41c07".into() });
-    let (files, s) = (l.id(), l.id());
-    if let Some(tab) = l.space(&au).tab_mut() {
-        tab.split(claude, Dir::Right, View::Files, files, s);
-        tab.set_ratio(s, 0.55);
-        tab.focus = claude;
-    }
+    l.spaces.insert(
+        root("multibrain"),
+        Space {
+            main: View::Pane { id: "5d2e19".into() },
+            panel: Some(View::Changes { filter: Some(MB_BILLING.into()) }),
+            ratio: 0.56,
+            ..Space::default()
+        },
+    );
+    l.spaces.insert(
+        root("aulora"),
+        Space { main: View::Pane { id: "a41c07".into() }, panel: Some(View::Files), ratio: 0.55, ..Space::default() },
+    );
     l
 }
