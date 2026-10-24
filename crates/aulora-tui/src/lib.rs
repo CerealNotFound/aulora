@@ -109,7 +109,21 @@ fn preselect(app: &mut App, select: Option<&str>, tab: Option<&str>) {
         }
     }
     if let Some(tab) = tab.and_then(parse_tab) {
-        app.set_tab(tab);
+        // `--tab` shows the view. Unlike `d` and `f`, it never hides the
+        // panel that already shows it. The selection is shown first, or
+        // showing it on the first frame would take the focus back.
+        use crate::layout::{Part, View};
+        app.follow_selection();
+        let shown = app.space().and_then(|s| s.panel.clone());
+        let already =
+            matches!((tab, &shown), (Tab::Files, Some(View::Files)) | (Tab::Changes, Some(View::Changes { .. })));
+        if already {
+            if let Some(space) = app.space_mut() {
+                space.focus = Part::Panel;
+            }
+        } else {
+            app.set_tab(tab);
+        }
         app.focus = Focus::Main;
     }
 }
@@ -710,6 +724,27 @@ mod tests {
             app.set_tab(Tab::Files);
             assert_eq!(views(app), [View::Conversation { session: s.clone() }], "pressed again, it closes");
         });
+    }
+
+    #[test]
+    fn tab_flag_shows_a_panel_that_is_already_there() {
+        use crate::layout::{Part, View};
+        frame(None, &|app| {
+            app.layouts = demo::layouts();
+            preselect(app, Some("a41c07"), Some("files"));
+            let space = app.space().unwrap();
+            assert_eq!((space.panel.clone(), space.focus), (Some(View::Files), Part::Panel), "shown, not hidden");
+            preselect(app, Some("a41c07"), Some("changes"));
+            assert!(matches!(app.space().unwrap().panel, Some(View::Changes { .. })));
+            preselect(app, Some("a41c07"), Some("changes"));
+            assert!(matches!(app.space().unwrap().panel, Some(View::Changes { .. })), "not switched to Files");
+        });
+        // The first frame keeps the focus on the panel.
+        let out = render(&demo_opts(Some("a41c07")), None, vec![], 150, 44, false, &|app| {
+            preselect(app, Some("a41c07"), Some("files"));
+        });
+        let footer = out.lines().last().unwrap_or_default();
+        assert!(footer.contains("search"), "the Files keys, not the terminal's: {footer}");
     }
 
     #[test]
