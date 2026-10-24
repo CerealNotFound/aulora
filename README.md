@@ -5,31 +5,49 @@
   <img alt="aulora" src="docs/brand/wordmark-light.svg" width="500">
 </picture>
 
-**Every Claude Code session across all your workspaces, on one screen.**
+**One terminal workspace for running Claude Code across all your projects.**
 
-See which ones are working, which ones finished, and which ones are waiting on you.
+See which agents are working, which finished, which are waiting on you, and what each one changed.
 
 </div>
 
-![aulora dashboard](docs/screenshots/overview.png)
+![An agent and the files it changed; then n jumps to an agent with a question, and to one that wants permission](docs/screenshots/demo.gif)
+
+<p align="center"><sub>Sample data from <code>aulora demo</code>.</sub></p>
+
+## Try it on sample data first
+
+```sh
+cargo install --git https://github.com/CerealNotFound/aulora aulora
+aulora demo
+```
+
+`aulora demo` opens the dashboard on sample sessions. It doesn't touch your Claude Code settings and doesn't start the background daemon, so nothing keeps running after you quit with <kbd>q</kbd>. `cargo uninstall aulora` removes it. When you want your real sessions in it, see [Install](#install).
 
 ## Why
 
-If you run Claude Code in several workspaces at once, you end up with a VS Code window per workspace and a few terminals in each. Claude finishes or stops to ask for permission, and you don't notice until you go looking. Then you have to remember what each session was doing.
+If you run Claude Code in several projects at once, you end up with a VS Code window per project, mostly just to hold Claude's terminal. Claude finishes or stops to ask for permission, and you don't notice until you go looking. Then you have to remember what each session was doing.
 
-aulora watches every session through Claude Code's hooks and shows them all in one terminal dashboard:
+aulora replaces those windows. Claude Code, your shells and your dev servers run in its panes, it keeps track of every session through Claude Code's hooks, and its Changes and Files views cover what you kept the editor open for. It's the only thing you need to run. It's a light wrapper: each pane runs the real `claude`, unchanged. Everything stays on your machine, and it's open source, so you can make it yours with themes, layouts, or the code itself.
 
+A day with it looks like this:
+
+1. **Open each project once.** <kbd>Ctrl</kbd>+<kbd>O</kbd> (or `aulora open` in a folder) makes it a workspace. <kbd>C</kbd> starts Claude there, <kbd>c</kbd> a shell for your dev server.
+2. **Work in one, let the others run.** The sidebar shows every agent's state. When one asks a question or wants permission, it turns red and <kbd>n</kbd> takes you to it, ready to answer.
+3. **Review before you move on.** <kbd>d</kbd> shows what changed, with a dot for the agent that wrote each change. Stage, commit and push from the same panel.
+
+What's in it:
+
+- **Run Claude and your shells inside it.** <kbd>C</kbd> starts Claude Code in a pane and <kbd>c</kbd> starts a shell. The daemon owns these terminals, so they keep running when you close the dashboard, and `aulora attach` puts any of them in another terminal. A Claude session in a pane shows its live status right above its screen.
 - **One thing at a time, with your files beside it.** Select an agent in the sidebar and the main area shows it: its terminal, or its conversation. <kbd>f</kbd> and <kbd>d</kbd> show Files and Changes in a panel on the right; drag its edge to resize it.
-- **What needs you.** Permission prompts, questions (`AskUserQuestion`) and plans waiting for review show in amber at the top, with what Claude is asking for.
+- **What needs you.** Permission prompts, questions (`AskUserQuestion`) and plans waiting for review turn the agent red in the sidebar, with what Claude is asking for, and the bottom bar counts them.
 - **What's happening where.** One tree: each workspace with its branch and git status, and under it every agent running there. Every agent is a terminal. Sessions that have ended open again with `claude --resume`, in the folder they ran in. Sessions running in another app (VS Code, Ghostty) show their whole conversation, scrollable and searchable, with every tool call.
 - **What changed, and who changed it.** The Changes tab is VS Code's Source Control view: staged and unstaged files in a tree, a syntax-highlighted diff with changed words marked, and a colored dot for the Claude session that wrote each change, read from its transcript. Select an agent to see only what it wrote. <kbd>space</kbd> stages, <kbd>c</kbd> commits, <kbd>P</kbd> pushes, <kbd>o</kbd> opens the editor at the change.
 - **Read the code without VS Code.** The Files tab is a gitignore-aware tree with git status and who-wrote-it dots, a highlighted file view with change marks in the gutter, <kbd>Ctrl</kbd>+<kbd>P</kbd> to find any file by name, and <kbd>/</kbd> to search contents with ripgrep's engine. <kbd>e</kbd> opens the file in your terminal editor in a pane, at the line you're on.
-- **Run Claude and your shells inside it.** <kbd>C</kbd> starts Claude Code in a pane and <kbd>c</kbd> starts a shell. The daemon owns these terminals, so they keep running when you close the dashboard, and `aulora attach` puts any of them in another terminal. A Claude session in a pane shows its live status right above its screen.
 - **Paste images into Claude.** In a Claude pane, Ctrl-V pastes the clipboard's image as in Claude Code, and so does Cmd-V when the clipboard holds only an image. In the prompt box for a VS Code session, Ctrl-V saves the image and attaches it by path.
-- **Prompt sessions running in VS Code.** With the aulora extension (`aulora vscode install`), a session running in a VS Code or Cursor terminal gets a prompt box in aulora. What you write is typed into that terminal, so it shows up there as if you'd typed it, in the same session. aulora won't send while Claude is waiting on a permission prompt, where the keys would answer the dialog instead.
-- **Jump straight there.** <kbd>⏎</kbd> opens the workspace in your editor, and VS Code brings that workspace's window to the front. <kbd>n</kbd> cycles through the sessions that need you.
+- **Jump straight there.** <kbd>n</kbd> cycles through the sessions that need you. For the rare file that needs a closer look, <kbd>⏎</kbd> opens the workspace in your editor, and VS Code brings that workspace's window to the front.
 
-It works with Claude Code running anywhere: VS Code, Cursor, Ghostty, iTerm, tmux. aulora shows which app each session runs in.
+Sessions you start somewhere else, like a VS Code or Ghostty terminal, show up too. With the aulora extension (`aulora vscode install`), you can prompt a session running in a VS Code or Cursor terminal from aulora. What you write is typed into that terminal, as if you'd typed it there. aulora won't send while Claude is waiting on a permission prompt, where the keys would answer the dialog instead.
 
 ## Screenshots
 
@@ -49,11 +67,16 @@ Requires Rust 1.95+ and Claude Code with hooks support.
 
 ```sh
 cargo install --git https://github.com/CerealNotFound/aulora aulora
-aulora hooks install     # adds aulora's hooks to ~/.claude/settings.json (backed up first)
-aulora                   # open the dashboard
+aulora hooks install --dry-run   # print the hooks it would add, change nothing
+aulora hooks install             # add them to ~/.claude/settings.json
+aulora                           # open the dashboard
 ```
 
-Sessions show up as soon as they start or you send a prompt. To try the dashboard without touching your settings, run `aulora demo`.
+Sessions show up as soon as they start or you send a prompt. The hooks are how aulora hears about them, and they're built to stay out of the way:
+
+- `hooks install` copies `~/.claude/settings.json` to `settings.json.aulora-backup-<time>` before writing, and adds only aulora's own hooks. Your other hooks and settings stay as they are.
+- A hook never blocks Claude and never fails it. If aulora isn't running, it gives up at once and Claude carries on.
+- `aulora hooks uninstall` removes aulora's hooks and nothing else.
 
 ## Commands
 
