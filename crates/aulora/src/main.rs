@@ -124,7 +124,8 @@ enum Cmd {
     /// Open a folder as a workspace, like `code .`: start a shell (or Claude)
     /// there and show it in the dashboard.
     Open {
-        /// The folder; the current one if left out.
+        /// The folder; the current one if left out. A new folder in an
+        /// existing one is created.
         dir: Option<PathBuf>,
         /// Start Claude Code instead of a shell.
         #[arg(long)]
@@ -877,6 +878,12 @@ fn open(dir: Option<PathBuf>, claude: bool, no_ui: bool) -> Result<()> {
         Some(d) => d,
         None => std::env::current_dir()?,
     };
+    // A new folder in an existing one is made, as Ctrl-O does; a missing
+    // parent is more likely a typo.
+    if !dir.exists() && dir.parent().is_some_and(|p| p.as_os_str().is_empty() || p.is_dir()) {
+        std::fs::create_dir(&dir).with_context(|| format!("couldn't create {}", dir.display()))?;
+        eprintln!("created {}", dir.display());
+    }
     let dir = dir.canonicalize().with_context(|| format!("{} does not exist", dir.display()))?;
     if !dir.is_dir() {
         bail!("{} is not a folder", dir.display());
