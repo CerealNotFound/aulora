@@ -572,7 +572,7 @@ pub fn finder(f: &mut Frame, area: Rect, app: &mut App) {
         iw,
     )];
     let hint = match mode {
-        Mode::Projects => " ⏎ open with a shell · ⇥ open with Claude · type a path to open any folder",
+        Mode::Projects => " ⏎ open with a shell · ⇥ open with Claude · type a path to open or create a folder",
         _ if fi.query.is_empty() => " files · # workspaces · @ agents · > actions",
         _ => "",
     };
@@ -588,6 +588,7 @@ pub fn finder(f: &mut Frame, area: Rect, app: &mut App) {
             Pick::File(p) => (p.rfind('/').map_or(0, |x| x + 1), ""),
             Pick::Project(_) => (0, "● "),
             Pick::Folder(_) => (0, "○ "),
+            Pick::NewFolder(_) => (0, "+ "),
             Pick::Agent(_) => (0, "◆ "),
             Pick::Action(_) => (0, "› "),
         };

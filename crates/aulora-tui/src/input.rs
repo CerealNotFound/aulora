@@ -1320,6 +1320,17 @@ fn finder_outcome(app: &mut App, out: crate::finder::Outcome, opts: &Options, ct
             open_project(app, opts, ctx, &path, claude);
             false
         }
+        crate::finder::Outcome::Create(path, claude) => {
+            let shown = aulora_core::paths::tildify(&path);
+            if app.conn == Conn::Demo {
+                app.toast(format!("Would create {shown} (demo)"));
+            } else if let Err(e) = std::fs::create_dir(&path) {
+                app.error(format!("Couldn't create {shown}: {e}"));
+            } else {
+                open_project(app, opts, ctx, &path, claude);
+            }
+            false
+        }
     }
 }
 

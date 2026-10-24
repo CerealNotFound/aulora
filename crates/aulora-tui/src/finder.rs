@@ -18,6 +18,9 @@ pub enum Pick {
     Project(String),
     /// A folder on disk to open as a project.
     Folder(String),
+    /// A typed folder that doesn't exist yet, in one that does: made,
+    /// then opened.
+    NewFolder(String),
     Agent(RowRef),
     Action(Action),
 }
@@ -67,6 +70,26 @@ pub enum Outcome {
     Run(Action),
     /// Open a folder as a project, with Claude when true.
     Open(String, bool),
+    /// Make the folder first, then open it.
+    Create(String, bool),
+}
+
+/// The folder a typed path names, if the query is a path, and whether it
+/// exists: one to open, or one to make if only its parent exists. Asking
+/// for the parent keeps a typo higher up from making stray folders.
+fn typed_folder(query: &str) -> Option<(String, bool)> {
+    let typed = query.trim();
+    if !(typed.starts_with('/') || typed.starts_with('~')) {
+        return None;
+    }
+    let path = crate::files::expand_home(typed);
+    if std::path::Path::new(&path).is_dir() {
+        return Some((path, true));
+    }
+    let path = path.trim_end_matches('/');
+    let p = std::path::Path::new(path);
+    let makeable = !p.exists() && p.parent().is_some_and(|d| d.is_dir());
+    makeable.then(|| (path.to_string(), false))
 }
 
 pub struct Finder {
@@ -194,18 +217,15 @@ impl App {
             Mode::Projects => {
                 let mut v = Vec::new();
                 let mut seen = std::collections::HashSet::new();
-                // A typed path opens even if no scan found it.
-                let typed = query.trim();
-                if typed.starts_with('/') || typed.starts_with('~') {
-                    let path = crate::files::expand_home(typed);
-                    if std::path::Path::new(&path).is_dir() {
-                        seen.insert(path.clone());
-                        v.push((
-                            Pick::Folder(path.clone()),
-                            aulora_core::paths::tildify(&path),
-                            "open this folder".into(),
-                        ));
-                    }
+                // A typed path opens even if no scan found it, or is made
+                // if it doesn't exist yet.
+                if let Some((path, exists)) = typed_folder(query) {
+                    seen.insert(path.clone());
+                    let text = aulora_core::paths::tildify(&path);
+                    v.push(match exists {
+                        true => (Pick::Folder(path), text, "open this folder".into()),
+                        false => (Pick::NewFolder(path), text, "create this folder".into()),
+                    });
                 }
                 let open: Vec<(String, String)> = self
                     .projects()
@@ -305,6 +325,7 @@ impl App {
                         self.select(RowRef::Project(root));
                     }
                     Pick::Project(root) | Pick::Folder(root) => return Some(Outcome::Open(root, with_claude)),
+                    Pick::NewFolder(path) => return Some(Outcome::Create(path, with_claude)),
                     Pick::Agent(r) => {
                         self.select(r);
                         self.focus = crate::app::Focus::Main;
@@ -358,5 +379,20 @@ mod tests {
         assert_eq!(Mode::of("@bill", true), (Mode::Agents, "bill"));
         assert_eq!(Mode::of("ui.rs", true), (Mode::Files, "ui.rs"));
         assert_eq!(Mode::of("ui.rs", false), (Mode::Projects, "ui.rs"), "no project selected: projects");
+    }
+
+    #[test]
+    fn a_typed_path_opens_or_makes_a_folder() {
+        let base = std::env::temp_dir().join(format!("aulora-typed-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let base = base.to_string_lossy().to_string();
+        assert_eq!(typed_folder(&base), Some((base.clone(), true)));
+        let new = format!("{base}/fresh");
+        assert_eq!(typed_folder(&format!("{new}/")), Some((new, false)), "without the slash");
+        assert_eq!(typed_folder(&format!("{base}/no/deeper")), None, "its parent must exist");
+        std::fs::write(format!("{base}/file"), "").unwrap();
+        assert_eq!(typed_folder(&format!("{base}/file")), None, "a file isn't a folder");
+        assert_eq!(typed_folder("fresh"), None, "only paths");
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }
