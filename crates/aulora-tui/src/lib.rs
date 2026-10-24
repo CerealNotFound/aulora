@@ -748,6 +748,39 @@ mod tests {
     }
 
     #[test]
+    fn a_workspaces_agents_are_its_tabs() {
+        let out = frame(Some("5d2e19"), &|_| {});
+        let top = out.lines().next().unwrap_or_default();
+        assert!(top.contains("Credit billing") && top.contains("dev server"), "{top}");
+        frame(Some("5d2e19"), &|app| {
+            app.layouts = demo::layouts();
+            let root = app.selected_root().unwrap();
+            let tabs = app.tabs(&root);
+            assert_eq!(tabs.len(), app.agents_in(&root).len(), "one per agent in the workspace");
+            let at = |app: &App| tabs.iter().position(|r| Some(r) == app.selected.as_ref()).unwrap();
+            app.follow_selection();
+            let first = at(app);
+            app.cycle_tab(1);
+            assert_eq!(at(app), (first + 1) % tabs.len(), "}} goes to the next tab");
+            app.follow_selection();
+            assert_eq!(app.shown_tab().as_ref(), app.selected.as_ref(), "and shows it");
+            app.cycle_tab(-1);
+            assert_eq!(at(app), first, "{{ comes back");
+            for _ in 0..tabs.len() {
+                app.follow_selection();
+                app.cycle_tab(1);
+            }
+            assert_eq!(at(app), first, "round the end and back to the start");
+            // Activity reorders the sidebar, not the tabs.
+            let last = tabs.last().unwrap().clone();
+            let RowRef::Pane(id) = &last else { return };
+            let now = app.now;
+            app.snap.as_mut().unwrap().panes.iter_mut().find(|p| &p.id == id).unwrap().last_output_at = now;
+            assert_eq!(app.tabs(&root), tabs);
+        });
+    }
+
+    #[test]
     fn a_paste_never_disappears() {
         use crate::app::Focus;
         frame(None, &|app| {

@@ -805,8 +805,9 @@ fn main(f: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-/// Changes and Files buttons above the main area, and how the selected
-/// agent is doing.
+/// Above the main area: the workspace's agents as tabs, `+` for a new
+/// one, then the Changes and Files buttons and how the selected agent is
+/// doing.
 fn top_bar(f: &mut Frame, area: Rect, app: &mut App, root: &str) {
     let t = theme::get();
     let now = app.now;
@@ -845,7 +846,82 @@ fn top_bar(f: &mut Frame, area: Rect, app: &mut App, root: &str) {
         app.hits.push((Rect { x: bx, y: area.y, width: wd, height: 1 }, Hit::Action(*action)));
         bx += wd + 1;
     }
-    f.render_widget(Paragraph::new(lr(vec![], all, area.width as usize)).style(Style::new().bg(t.panel)), area);
+    let budget = area.width.saturating_sub(total + 1) as usize;
+    let left = agent_tabs(app, area, root, budget);
+    f.render_widget(Paragraph::new(lr(left, all, area.width as usize)).style(Style::new().bg(t.panel)), area);
+}
+
+/// The workspace's agents as tabs, the shown one highlighted (VS Code's
+/// open editors). When they don't all fit, the ones around the shown tab
+/// do, with `‹n` and `n›` counting the rest.
+fn agent_tabs(app: &mut App, area: Rect, root: &str, budget: usize) -> Vec<Span<'static>> {
+    let t = theme::get();
+    let tabs = app.tabs(root);
+    let shown = app.shown_tab();
+    let labels: Vec<(String, Status)> = tabs
+        .iter()
+        .map(|r| {
+            let status = app.status(r);
+            let glyph = if status == Status::Working { spinner(app.now) } else { status_glyph(status) };
+            (format!(" {glyph} {} ", fit(&app.title(r), 24)), status)
+        })
+        .collect();
+    let widths: Vec<usize> = labels.iter().map(|(l, _)| w(l) + 1).collect();
+    let n = tabs.len();
+    let active = shown.as_ref().and_then(|s| tabs.iter().position(|r| r == s));
+    // Room for `+`, and for the counts when some tabs are left out.
+    let budget = budget.saturating_sub(4);
+    let fits = |a: usize, b: usize| {
+        widths[a..b].iter().sum::<usize>() + if a > 0 { 5 } else { 0 } + if b < n { 5 } else { 0 } <= budget
+    };
+    let (mut start, mut end) = (0, active.map_or(0, |i| i + 1));
+    while start + 1 < end && !fits(start, end) {
+        start += 1;
+    }
+    while end < n && fits(start, end + 1) {
+        end += 1;
+    }
+    // Each piece: its text, its style, and what a click on it does. A
+    // tab's glyph keeps its state's color, except on the highlighted tab.
+    let gap = Style::new().bg(t.panel);
+    let mut pieces: Vec<(String, Style, Option<Hit>)> = Vec::new();
+    if start > 0 {
+        pieces.push((format!(" ‹{start} "), faint().bg(t.panel), Some(Hit::Action(crate::keymap::Action::PrevTab))));
+    }
+    for i in start..end {
+        let (label, status) = &labels[i];
+        let on = Some(i) == active;
+        let style = if on {
+            Style::new().bg(t.accent).fg(on_fill()).add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().bg(t.select).fg(t.dim)
+        };
+        let split = label.char_indices().nth(2).map_or(label.len(), |(b, _)| b);
+        let (glyph, name) = label.split_at(split);
+        let hit = Some(Hit::AgentTab(tabs[i].clone()));
+        pieces.push((glyph.to_string(), if on { style } else { style.fg(status_color(*status)) }, hit.clone()));
+        pieces.push((name.to_string(), style, hit));
+        pieces.push((" ".into(), gap, None));
+    }
+    if end < n {
+        pieces.push((
+            format!(" {}› ", n - end),
+            faint().bg(t.panel),
+            Some(Hit::Action(crate::keymap::Action::NextTab)),
+        ));
+    }
+    pieces.push((" + ".into(), bold(t.accent).bg(t.panel), Some(Hit::NewMenu)));
+    let mut x = area.x;
+    let mut spans = Vec::new();
+    for (text, style, hit) in pieces {
+        let wd = w(&text) as u16;
+        if let Some(hit) = hit {
+            app.hits.push((Rect { x, y: area.y, width: wd, height: 1 }, hit));
+        }
+        x += wd;
+        spans.push(sp(text, style));
+    }
+    spans
 }
 
 /// What a leaf's frame says: what it shows and how it's doing.

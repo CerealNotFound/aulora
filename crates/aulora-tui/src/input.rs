@@ -305,6 +305,8 @@ pub fn perform(app: &mut App, action: Action, opts: &Options, ctx: &Ctx) -> bool
             }
         }
         Action::CloseLeaf => close_leaf(app, opts),
+        Action::PrevTab => app.cycle_tab(-1),
+        Action::NextTab => app.cycle_tab(1),
         Action::Open => open(app, opts, ctx),
         Action::Back => {
             app.focus = Focus::Sidebar;
@@ -1928,7 +1930,7 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
             return;
         }
         let target = match &hit {
-            Hit::Row(r) | Hit::Close(r) => Some(r.clone()),
+            Hit::Row(r) | Hit::Close(r) | Hit::AgentTab(r) => Some(r.clone()),
             Hit::Add(root) => Some(RowRef::Project(root.clone())),
             Hit::Terminal(_) | Hit::Conversation(_) | Hit::Main | Hit::Leaf(_) => app.selected.clone(),
             _ => None,
@@ -2159,7 +2161,9 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                             MenuItem::NewShell(root),
                             MenuItem::Run(Action::OpenProject, "Open a workspace…  ctrl-o"),
                         ];
-                        open_menu(app, col, row.saturating_sub(5), items);
+                        // Above the sidebar's `new`; below the tabs' `+`.
+                        let y = if row < 5 { row + 1 } else { row - 5 };
+                        open_menu(app, col, y, items);
                     }
                 }
                 Hit::AppMenu => {
@@ -2191,6 +2195,10 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                     }
                 }
                 Hit::PanelEdge => app.dragging = true,
+                Hit::AgentTab(r) => {
+                    app.select(r);
+                    app.focus = Focus::Main;
+                }
                 Hit::Terminal(id) => {
                     let wants_mouse = app
                         .terms

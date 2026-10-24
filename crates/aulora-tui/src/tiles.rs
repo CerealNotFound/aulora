@@ -117,6 +117,39 @@ impl App {
         }
     }
 
+    /// The tab of what the main view shows: a conversation shown from its
+    /// pane is that pane's tab.
+    pub fn shown_tab(&self) -> Option<RowRef> {
+        match self.space()?.main.clone() {
+            View::Pane { id } => Some(RowRef::Pane(id)),
+            View::Conversation { session } => {
+                let pane = self
+                    .session(&session)
+                    .and_then(|s| s.terminal.pane_id.clone())
+                    .filter(|p| self.pane(p).is_some())
+                    .or_else(|| self.resumed_in(&session).map(|p| p.id.clone()));
+                Some(pane.map_or(RowRef::Session(session), RowRef::Pane))
+            }
+            _ => None,
+        }
+    }
+
+    /// `{` and `}`: the previous or next tab in this workspace.
+    pub fn cycle_tab(&mut self, delta: i32) {
+        let Some(root) = self.space_root() else { return };
+        let tabs = self.tabs(&root);
+        if tabs.is_empty() {
+            return;
+        }
+        let n = tabs.len() as i32;
+        let next = match self.shown_tab().and_then(|t| tabs.iter().position(|r| *r == t)) {
+            Some(i) => (i as i32 + delta).rem_euclid(n),
+            None if delta > 0 => 0,
+            None => n - 1,
+        };
+        self.select(tabs[next as usize].clone());
+    }
+
     /// Point the sidebar at what the main view shows.
     pub fn sync_selection(&mut self) {
         let row = match self.space().map(|s| s.main.clone()) {

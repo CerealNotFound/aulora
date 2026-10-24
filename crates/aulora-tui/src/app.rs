@@ -107,6 +107,8 @@ pub enum Hit {
     AnswerRow(usize),
     /// The border between the main view and the panel.
     PanelEdge,
+    /// An agent's tab above the main area.
+    AgentTab(RowRef),
     Terminal(String),
     Conversation(String),
     Sidebar,
@@ -696,6 +698,14 @@ impl App {
 
     /// A project's agents, the most recently active first. The projects
     /// themselves only move when you move them (J and K).
+    /// A workspace's agents as tabs above the main area, in the order
+    /// they started, so a tab stays where it is (VS Code's open editors).
+    pub fn tabs(&self, root: &str) -> Vec<RowRef> {
+        let mut a = self.agents_in(root);
+        a.sort_by_key(|x| (self.started(x), self.title(x)));
+        a
+    }
+
     pub fn agents_sorted(&self, root: &str) -> Vec<RowRef> {
         let mut a = self.agents_in(root);
         a.sort_by_key(|x| (std::cmp::Reverse(self.active_at(x)), self.started(x), self.title(x)));
