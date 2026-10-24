@@ -64,7 +64,20 @@ impl Demo {
             Some("Cursor") => "cursor",
             _ => "iterm",
         };
-        let env = HookEnvelope { v: 1, at, payload: trim_payload(p), env: env_for(app) };
+        // A session in one of aulora's panes reports from that pane, as
+        // its real hooks do, so it stays linked to it.
+        let env = match s.terminal.pane_id.clone() {
+            Some(pane) => HookEnv {
+                term_program: Some("aulora".into()),
+                bundle_id: None,
+                pane_id: Some(pane),
+                project_dir: None,
+                tmux: false,
+                claude_pid: None,
+            },
+            None => env_for(app),
+        };
+        let env = HookEnvelope { v: 1, at, payload: trim_payload(p), env };
         let feed = apply_hook(s, &env);
         if let Some(proj) = self.snap.projects.iter_mut().find(|p| p.root == s.project_root) {
             proj.last_activity = proj.last_activity.max(at);
@@ -1070,4 +1083,20 @@ pub fn layouts() -> crate::layout::Layouts {
         Space { main: View::Pane { id: "a41c07".into() }, panel: Some(View::Files), ratio: 0.55, ..Space::default() },
     );
     l
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sessions_in_panes_stay_in_them_as_the_script_runs() {
+        let mut d = Demo::new();
+        for i in 1..40 {
+            d.tick(d.next_step + i);
+        }
+        let pane = |id: &str| d.snap.sessions.iter().find(|s| s.id == id).and_then(|s| s.terminal.pane_id.clone());
+        assert_eq!(pane("3f1d9a20-5b6c-4e1f-9d2a-8b7c6e5f4a31").as_deref(), Some("5d2e19"));
+        assert_eq!(pane("e8d9964f-fda5-46e8-a6fd-94ace0fd4a1f").as_deref(), Some("a41c07"));
+    }
 }
