@@ -74,22 +74,48 @@ pub enum Outcome {
     Create(String, bool),
 }
 
-/// The folder a typed path names, if the query is a path, and whether it
-/// exists: one to open, or one to make if only its parent exists. Asking
-/// for the parent keeps a typo higher up from making stray folders.
-fn typed_folder(query: &str) -> Option<(String, bool)> {
+/// The folders a typed path names, and whether each exists: one to open,
+/// or one to make if only the folder it goes in exists. Asking for that
+/// keeps a typo higher up from making stray folders.
+///
+/// A full path (`/…`, `~/…`) names one folder. A shorter one with a slash,
+/// like `projects/new`, goes in each folder aulora knows of, or one
+/// above it, that ends in `projects`, or in `~/projects`: the folders the
+/// list already finds when you type that.
+fn typed_folders(query: &str, known: &[String], home: &str) -> Vec<(String, bool)> {
+    use std::path::Path;
     let typed = query.trim();
-    if !(typed.starts_with('/') || typed.starts_with('~')) {
-        return None;
+    let one = |path: &str| -> Option<(String, bool)> {
+        if Path::new(path).is_dir() {
+            return Some((path.to_string(), true));
+        }
+        let path = path.trim_end_matches('/');
+        let p = Path::new(path);
+        let makeable = !p.exists() && p.parent().is_some_and(|d| d.is_dir());
+        makeable.then(|| (path.to_string(), false))
+    };
+    if typed.starts_with('/') || typed.starts_with('~') {
+        return one(&crate::files::expand_home(typed)).into_iter().collect();
     }
-    let path = crate::files::expand_home(typed);
-    if std::path::Path::new(&path).is_dir() {
-        return Some((path, true));
+    let Some((parent, name)) = typed.trim_end_matches('/').rsplit_once('/') else { return vec![] };
+    let odd = |c: &str| c.is_empty() || c == "." || c == "..";
+    if home.is_empty() || odd(name) || parent.split('/').any(odd) {
+        return vec![];
     }
-    let path = path.trim_end_matches('/');
-    let p = std::path::Path::new(path);
-    let makeable = !p.exists() && p.parent().is_some_and(|d| d.is_dir());
-    makeable.then(|| (path.to_string(), false))
+    let suffix = format!("/{parent}");
+    let mut dirs = std::collections::BTreeSet::from([format!("{home}{suffix}")]);
+    for k in known {
+        for a in Path::new(k).ancestors() {
+            let a = a.to_string_lossy();
+            if a.len() <= home.len() || !a.starts_with(home) {
+                break;
+            }
+            if a.ends_with(&suffix) {
+                dirs.insert(a.into_owned());
+            }
+        }
+    }
+    dirs.iter().filter(|d| Path::new(d).is_dir()).filter_map(|d| one(&format!("{d}/{name}"))).collect()
 }
 
 pub struct Finder {
@@ -217,16 +243,6 @@ impl App {
             Mode::Projects => {
                 let mut v = Vec::new();
                 let mut seen = std::collections::HashSet::new();
-                // A typed path opens even if no scan found it, or is made
-                // if it doesn't exist yet.
-                if let Some((path, exists)) = typed_folder(query) {
-                    seen.insert(path.clone());
-                    let text = aulora_core::paths::tildify(&path);
-                    v.push(match exists {
-                        true => (Pick::Folder(path), text, "open this folder".into()),
-                        false => (Pick::NewFolder(path), text, "create this folder".into()),
-                    });
-                }
                 let open: Vec<(String, String)> = self
                     .projects()
                     .iter()
@@ -235,6 +251,28 @@ impl App {
                         _ => None,
                     })
                     .collect();
+                // Recent projects from the last week's sessions.
+                let recent: Vec<String> =
+                    self.snap.iter().flat_map(|s| s.projects.iter().map(|p| p.root.clone())).collect();
+                // A typed path opens even if no scan found it, or is made
+                // if it doesn't exist yet.
+                let known: Vec<String> = (open.iter().map(|(r, _)| r).chain(&recent))
+                    .chain(self.folders.iter().flatten())
+                    .cloned()
+                    .collect();
+                let home = std::env::var("HOME").unwrap_or_default();
+                for (path, exists) in typed_folders(query, &known, &home) {
+                    // An open workspace keeps its own row, below.
+                    if open.iter().any(|(r, _)| *r == path) {
+                        continue;
+                    }
+                    seen.insert(path.clone());
+                    let text = aulora_core::paths::tildify(&path);
+                    v.push(match exists {
+                        true => (Pick::Folder(path), text, "open this folder".into()),
+                        false => (Pick::NewFolder(path), text, "create this folder".into()),
+                    });
+                }
                 for (root, name) in open {
                     if seen.insert(root.clone()) {
                         v.push((
@@ -244,9 +282,6 @@ impl App {
                         ));
                     }
                 }
-                // Recent projects from the last week's sessions.
-                let recent: Vec<String> =
-                    self.snap.iter().flat_map(|s| s.projects.iter().map(|p| p.root.clone())).collect();
                 for root in recent {
                     if seen.insert(root.clone()) {
                         v.push((Pick::Folder(root.clone()), aulora_core::paths::tildify(&root), "recent".into()));
@@ -386,13 +421,40 @@ mod tests {
         let base = std::env::temp_dir().join(format!("aulora-typed-{}", std::process::id()));
         std::fs::create_dir_all(&base).unwrap();
         let base = base.to_string_lossy().to_string();
-        assert_eq!(typed_folder(&base), Some((base.clone(), true)));
+        let full = |q: &str| typed_folders(q, &[], "/nowhere");
+        assert_eq!(full(&base), vec![(base.clone(), true)]);
         let new = format!("{base}/fresh");
-        assert_eq!(typed_folder(&format!("{new}/")), Some((new, false)), "without the slash");
-        assert_eq!(typed_folder(&format!("{base}/no/deeper")), None, "its parent must exist");
+        assert_eq!(full(&format!("{new}/")), vec![(new, false)], "without the slash");
+        assert_eq!(full(&format!("{base}/no/deeper")), vec![], "its parent must exist");
         std::fs::write(format!("{base}/file"), "").unwrap();
-        assert_eq!(typed_folder(&format!("{base}/file")), None, "a file isn't a folder");
-        assert_eq!(typed_folder("fresh"), None, "only paths");
+        assert_eq!(full(&format!("{base}/file")), vec![], "a file isn't a folder");
+        assert_eq!(full("fresh"), vec![], "a bare name isn't a path");
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_short_path_goes_in_the_folders_it_names() {
+        let home = std::env::temp_dir().join(format!("aulora-short-{}", std::process::id()));
+        let home = home.to_string_lossy().to_string();
+        for d in ["Documents/projects/aulora", "work/projects", "Documents/projects/aulora/old", "notes"] {
+            std::fs::create_dir_all(format!("{home}/{d}")).unwrap();
+        }
+        // The scan found a repository in there; ~/work/projects only by its name.
+        let known = vec![format!("{home}/Documents/projects/aulora")];
+        let short = |q: &str| typed_folders(q, &known, &home);
+        assert_eq!(short("projects/new"), vec![(format!("{home}/Documents/projects/new"), false)]);
+        assert_eq!(short("work/projects/new/"), vec![(format!("{home}/work/projects/new"), false)]);
+        assert_eq!(short("projects/aulora"), vec![(format!("{home}/Documents/projects/aulora"), true)]);
+        assert_eq!(short("aulora/old"), vec![(format!("{home}/Documents/projects/aulora/old"), true)]);
+        assert_eq!(short("notes/today"), vec![(format!("{home}/notes/today"), false)], "straight under home");
+        assert_eq!(short("nothere/new"), vec![], "no such folder");
+        assert_eq!(short("projects/new/deeper"), vec![], "its parent must exist");
+        assert_eq!(short("projects/"), vec![], "no name yet");
+        assert_eq!(short("../new"), vec![]);
+        std::fs::create_dir_all(format!("{home}/x/projects")).unwrap();
+        let known = vec![format!("{home}/Documents/projects/aulora"), format!("{home}/x/projects")];
+        let both = typed_folders("projects/new", &known, &home);
+        assert_eq!(both.len(), 2, "every folder by that name: {both:?}");
+        std::fs::remove_dir_all(&home).unwrap();
     }
 }
