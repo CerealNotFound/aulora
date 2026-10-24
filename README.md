@@ -121,7 +121,7 @@ aulora follows Herdr: a sidebar with each **workspace** and the **agents** runni
 | <kbd>m</kbd> | Menu for the selection (same as right-click) |
 | <kbd>x</kbd> | Kill a pane (asks first), close an exited one, or dismiss an ended session |
 | <kbd>Ctrl</kbd>+<kbd>P</kbd> | Find anything: files, `#` workspaces, `@` agents, `>` actions |
-| <kbd>Ctrl</kbd>+<kbd>O</kbd> | Open a workspace: a folder found on disk, a recent one, or any path. Type a path that doesn't exist yet to create the folder. |
+| <kbd>Ctrl</kbd>+<kbd>O</kbd> | Open a workspace: a folder found on disk, a recent one, or any path. Type a path that doesn't exist yet to create the folder; a short one like `projects/new` goes in the `projects` folder it finds. |
 | <kbd>O</kbd> | Show the file or workspace in Finder |
 | <kbd>/</kbd> | Filter the sidebar; search a conversation |
 | <kbd>h</kbd> / <kbd>e</kbd> | Show past sessions / ended sessions |
