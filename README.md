@@ -94,7 +94,7 @@ Sessions show up as soon as they start or you send a prompt. The hooks are how a
 | `aulora ls [--json]` | List panes. |
 | `aulora attach PANE` | Put a pane in this terminal, like `tmux attach`. <kbd>Ctrl</kbd>+<kbd>Q</kbd> detaches. |
 | `aulora kill\|restart\|close PANE` | Stop a pane, start its program again, or remove it. |
-| `aulora open [DIR] [--claude]` | Open a folder as a workspace, like `code .`: a shell (or Claude) there, shown in the dashboard. |
+| `aulora open [DIR] [--claude]` | Open a folder as a workspace, like `code .`: a shell (or Claude) there, shown in the dashboard. A new folder is created if the one it goes in exists. |
 | `aulora focus` | Bring the dashboard's terminal window to the front, or open one. Bind it to a global key with macOS Shortcuts or Raycast. |
 | `aulora keys` | Show what your terminal sends for each key, to check Option, Shift-Enter and friends. |
 | `aulora send TARGET TEXT…` | Type a prompt into a session (in a pane, or in VS Code with the extension), or a command into a pane, and press Enter. Reads stdin when no text is given. |
@@ -121,7 +121,7 @@ aulora follows Herdr: a sidebar with each **workspace** and the **agents** runni
 | <kbd>m</kbd> | Menu for the selection (same as right-click) |
 | <kbd>x</kbd> | Kill a pane (asks first), close an exited one, or dismiss an ended session |
 | <kbd>Ctrl</kbd>+<kbd>P</kbd> | Find anything: files, `#` workspaces, `@` agents, `>` actions |
-| <kbd>Ctrl</kbd>+<kbd>O</kbd> | Open a workspace: a folder found on disk, a recent one, or any path |
+| <kbd>Ctrl</kbd>+<kbd>O</kbd> | Open a workspace: a folder found on disk, a recent one, or any path. Type a path that doesn't exist yet to create the folder. |
 | <kbd>O</kbd> | Show the file or workspace in Finder |
 | <kbd>/</kbd> | Filter the sidebar; search a conversation |
 | <kbd>h</kbd> / <kbd>e</kbd> | Show past sessions / ended sessions |
