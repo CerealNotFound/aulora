@@ -22,12 +22,15 @@ def col(c, default): return default if c is None else (tuple(c) if isinstance(c,
 font = ImageFont.truetype("/System/Library/Fonts/Menlo.ttc", 26); bold = ImageFont.truetype("/System/Library/Fonts/Menlo.ttc", 26, index=1)
 braille = ImageFont.truetype("/System/Library/Fonts/Apple Braille.ttf", 28)
 symbols = ImageFont.truetype("/System/Library/Fonts/Apple Symbols.ttf", 26)
+# Glyphs none of the fonts have, drawn as the nearest one they do.
+MISSING = {"⏵": "▸"}
 cw, ch = 16, 32
 img = Image.new("RGB", (len(rows[0]) * cw, len(rows) * ch), term_bg); d = ImageDraw.Draw(img)
 for y, row in enumerate(rows):
     for x, (sym, fg, bg, b) in enumerate(row):
         bgc = col(bg, term_bg)
         if bgc != term_bg: d.rectangle([x*cw, y*ch, (x+1)*cw, (y+1)*ch], fill=bgc)
+        sym = MISSING.get(sym, sym)
         if sym and sym != " ":
             o = ord(sym[0])
             f = braille if 0x2800 <= o <= 0x28FF else (symbols if (0x2190 <= o <= 0x23FF and o not in (0x2190, 0x2191, 0x2192, 0x2193)) else (bold if b else font))
