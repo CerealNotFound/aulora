@@ -39,7 +39,7 @@ A day with it looks like this:
 What's in it:
 
 - **Run Claude and your shells inside it.** <kbd>C</kbd> starts Claude Code in a pane and <kbd>c</kbd> starts a shell. The daemon owns these terminals, so they keep running when you close the dashboard, and `aulora attach` puts any of them in another terminal. A Claude session in a pane shows its live status right above its screen.
-- **One thing at a time, with your files beside it.** Select an agent in the sidebar and the main area shows it: its terminal, or its conversation. <kbd>f</kbd> and <kbd>d</kbd> show Files and Changes in a panel on the right; drag its edge to resize it.
+- **One thing at a time, with your files beside it.** Select an agent in the sidebar and the main area shows it: its terminal, or its conversation. The workspace's agents sit in tabs along the top, as open files do in VS Code; click one or press <kbd>{</kbd> <kbd>}</kbd> to switch. <kbd>f</kbd> and <kbd>d</kbd> show Files and Changes in a panel on the right; drag its edge to resize it.
 - **What needs you.** Permission prompts, questions (`AskUserQuestion`) and plans waiting for review turn the agent red in the sidebar, with what Claude is asking for, and the bottom bar counts them.
 - **What's happening where.** One tree: each workspace with its branch and git status, and under it every agent running there. Every agent is a terminal. Sessions that have ended open again with `claude --resume`, in the folder they ran in. Sessions running in another app (VS Code, Ghostty) show their whole conversation, scrollable and searchable, with every tool call.
 - **What changed, and who changed it.** The Changes tab is VS Code's Source Control view: staged and unstaged files in a tree, a syntax-highlighted diff with changed words marked, and a colored dot for the Claude session that wrote each change, read from its transcript. Select an agent to see only what it wrote. <kbd>space</kbd> stages, <kbd>c</kbd> commits, <kbd>P</kbd> pushes, <kbd>o</kbd> opens the editor at the change.
@@ -111,6 +111,7 @@ aulora follows Herdr: a sidebar with each **workspace** and the **agents** runni
 | <kbd>↑</kbd> <kbd>↓</kbd> / <kbd>j</kbd> <kbd>k</kbd> | Move in the sidebar; scroll a line in the main area |
 | <kbd>⏎</kbd> | Open: type into a pane, resume an ended session, expand a tool call |
 | <kbd>⇥</kbd> / <kbd>⌥</kbd>+<kbd>←</kbd> <kbd>→</kbd> | Move between the sidebar, the main view and the panel |
+| <kbd>{</kbd> <kbd>}</kbd> | Previous / next tab: the agents in this workspace |
 | <kbd>d</kbd> <kbd>f</kbd> | Show Changes, Files in the panel on the right |
 | <kbd><</kbd> <kbd>></kbd> | Make the panel wider, narrower (or drag its edge) |
 | <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Leave a terminal you're typing into (press it again to send Ctrl-Q to the program) |
