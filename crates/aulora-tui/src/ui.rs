@@ -852,8 +852,9 @@ fn top_bar(f: &mut Frame, area: Rect, app: &mut App, root: &str) {
 }
 
 /// The workspace's agents as tabs, the shown one highlighted (VS Code's
-/// open editors). When they don't all fit, the ones around the shown tab
-/// do, with `‹n` and `n›` counting the rest.
+/// open editors). When they don't all fit, the strip scrolls: the wheel
+/// over it, or `‹n` and `n›`, which count the tabs out of view. Showing
+/// another tab brings it into view.
 fn agent_tabs(app: &mut App, area: Rect, root: &str, budget: usize) -> Vec<Span<'static>> {
     let t = theme::get();
     let tabs = app.tabs(root);
@@ -874,19 +875,36 @@ fn agent_tabs(app: &mut App, area: Rect, root: &str, budget: usize) -> Vec<Span<
     let fits = |a: usize, b: usize| {
         widths[a..b].iter().sum::<usize>() + if a > 0 { 5 } else { 0 } + if b < n { 5 } else { 0 } <= budget
     };
-    let (mut start, mut end) = (0, active.map_or(0, |i| i + 1));
-    while start + 1 < end && !fits(start, end) {
-        start += 1;
+    let same = app.tab_scroll.0 == root;
+    let mut start = if same { app.tab_scroll.1.min(n.saturating_sub(1)) } else { 0 };
+    if let Some(a) = active
+        && (!same || app.tab_revealed != shown)
+    {
+        start = start.min(a);
+        while start < a && !fits(start, a + 1) {
+            start += 1;
+        }
     }
+    // Never scrolled past the end: earlier tabs fill any room left.
+    while start > 0 && fits(start - 1, n) {
+        start -= 1;
+    }
+    let mut end = start;
     while end < n && fits(start, end + 1) {
         end += 1;
     }
+    let end = if end == start { (start + 1).min(n) } else { end };
+    app.tab_scroll = (root.to_string(), start);
+    app.tab_revealed = shown.clone();
+    // The whole strip takes the wheel; the tabs on it take clicks.
+    let strip = budget.saturating_add(4).min(area.width as usize) as u16;
+    app.hits.push((Rect { width: strip, ..area }, Hit::TabBar));
     // Each piece: its text, its style, and what a click on it does. A
     // tab's glyph keeps its state's color, except on the highlighted tab.
     let gap = Style::new().bg(t.panel);
     let mut pieces: Vec<(String, Style, Option<Hit>)> = Vec::new();
     if start > 0 {
-        pieces.push((format!(" ‹{start} "), faint().bg(t.panel), Some(Hit::Action(crate::keymap::Action::PrevTab))));
+        pieces.push((format!(" ‹{start} "), faint().bg(t.panel), Some(Hit::TabScroll(-1))));
     }
     for i in start..end {
         let (label, status) = &labels[i];
@@ -904,11 +922,7 @@ fn agent_tabs(app: &mut App, area: Rect, root: &str, budget: usize) -> Vec<Span<
         pieces.push((" ".into(), gap, None));
     }
     if end < n {
-        pieces.push((
-            format!(" {}› ", n - end),
-            faint().bg(t.panel),
-            Some(Hit::Action(crate::keymap::Action::NextTab)),
-        ));
+        pieces.push((format!(" {}› ", n - end), faint().bg(t.panel), Some(Hit::TabScroll(1))));
     }
     pieces.push((" + ".into(), bold(t.accent).bg(t.panel), Some(Hit::NewMenu)));
     let mut x = area.x;

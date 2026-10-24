@@ -1943,6 +1943,12 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
         return;
     }
     match ev.kind {
+        // Sideways scrolling (a trackpad, Shift-wheel in some terminals).
+        MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight
+            if matches!(hit, Hit::AgentTab(_) | Hit::TabBar | Hit::TabScroll(_)) =>
+        {
+            app.scroll_tabs(if ev.kind == MouseEventKind::ScrollLeft { -1 } else { 1 });
+        }
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
             let dir: i8 = if ev.kind == MouseEventKind::ScrollUp { -1 } else { 1 };
             let lines = input.wheel.feed(dir);
@@ -1988,6 +1994,8 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                 Hit::Row(_) | Hit::Sidebar | Hit::Close(_) | Hit::Add(_) => {
                     app.sidebar_scroll = (app.sidebar_scroll as isize + lines).max(0) as usize;
                 }
+                // A tab at a time, whatever the wheel's speed.
+                Hit::AgentTab(_) | Hit::TabBar | Hit::TabScroll(_) => app.scroll_tabs(lines.signum()),
                 _ => {}
             }
         }
@@ -2199,6 +2207,8 @@ pub fn on_mouse(app: &mut App, ev: MouseEvent, opts: &Options, ctx: &Ctx, input:
                     app.select(r);
                     app.focus = Focus::Main;
                 }
+                Hit::TabScroll(d) => app.scroll_tabs(d as isize),
+                Hit::TabBar => {}
                 Hit::Terminal(id) => {
                     let wants_mouse = app
                         .terms

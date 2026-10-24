@@ -134,6 +134,16 @@ impl App {
         }
     }
 
+    /// Scroll the tabs without changing which one is shown (the wheel,
+    /// `‹n` and `n›`). Drawing keeps it in range.
+    pub fn scroll_tabs(&mut self, delta: isize) {
+        let Some(root) = self.space_root() else { return };
+        if self.tab_scroll.0 != root {
+            self.tab_scroll = (root, 0);
+        }
+        self.tab_scroll.1 = (self.tab_scroll.1 as isize + delta).max(0) as usize;
+    }
+
     /// `{` and `}`: the previous or next tab in this workspace.
     pub fn cycle_tab(&mut self, delta: i32) {
         let Some(root) = self.space_root() else { return };

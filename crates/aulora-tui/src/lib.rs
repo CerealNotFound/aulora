@@ -781,6 +781,26 @@ mod tests {
     }
 
     #[test]
+    fn the_tabs_scroll_without_changing_the_shown_agent() {
+        let at = |prep: &dyn Fn(&mut App)| render(&demo_opts(Some("5d2e19")), None, vec![], 110, 12, false, prep);
+        // Too narrow for every tab: the shown one is brought into view.
+        let out = at(&|_| {});
+        let top = out.lines().next().unwrap_or_default();
+        assert!(top.contains("Credit billing") && top.contains("‹1"), "{top}");
+        // Scrolled back to the first tab by hand, the strip stays there.
+        let out = at(&|app| {
+            app.layouts = demo::layouts();
+            app.follow_selection();
+            app.tab_revealed = app.shown_tab();
+            app.scroll_tabs(-5);
+        });
+        let mut lines = out.lines();
+        let top = lines.next().unwrap_or_default();
+        assert!(top.contains("dev server") && !top.contains("Credit billing") && top.contains("2›"), "{top}");
+        assert!(lines.next().unwrap_or_default().contains("Credit billing"), "still showing the same agent");
+    }
+
+    #[test]
     fn a_paste_never_disappears() {
         use crate::app::Focus;
         frame(None, &|app| {

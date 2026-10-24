@@ -109,6 +109,10 @@ pub enum Hit {
     PanelEdge,
     /// An agent's tab above the main area.
     AgentTab(RowRef),
+    /// The strip of tabs, for the wheel.
+    TabBar,
+    /// `‹n` or `n›`: scroll the tabs one way.
+    TabScroll(i8),
     Terminal(String),
     Conversation(String),
     Sidebar,
@@ -232,6 +236,11 @@ pub struct App {
     pub main_rect: ratatui::layout::Rect,
     /// The panel's edge is being dragged.
     pub dragging: bool,
+    /// The workspace whose tabs are scrolled, and its first tab in view.
+    pub tab_scroll: (String, usize),
+    /// The tab last brought into view; the strip only jumps to the shown
+    /// tab when that changes, so scrolling it by hand sticks.
+    pub tab_revealed: Option<RowRef>,
     /// Panes just placed, kept even before the daemon lists them.
     pub fresh_panes: Vec<(String, Ms)>,
     /// The sidebar row the main area last followed.
@@ -373,6 +382,8 @@ impl App {
             part_rects: Vec::new(),
             main_rect: ratatui::layout::Rect::default(),
             dragging: false,
+            tab_scroll: (String::new(), 0),
+            tab_revealed: None,
             fresh_panes: Vec::new(),
             shown_row: None,
             leaf_focused: false,
