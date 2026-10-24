@@ -29,11 +29,11 @@ aulora should feel like **home**: familiar from the first minute because it beha
 - **The workspace is where new things start.** With a workspace or any of its agents selected, `C`, `c`, the `+` on the workspace row and the menu's *New Claude here* / *New shell here* start in that workspace's folder.
 - **Every agent is a terminal.** An agent aulora runs shows its live terminal. A session that has ended (or a past one, `h`) opens as a terminal running `claude --resume <id>` in the folder it ran in, so you continue it rather than read it. A session still running somewhere else (VS Code, Ghostty) shows its conversation read-only, with `r` to fork it here (`claude --resume <id> --fork-session`): resuming it outright would put two processes on one transcript.
 - **Closing** is a `×` on the hovered or selected row (VS Code's editor tabs), `x`, or the menu. Killing a running pane asks first; closing an exited pane or dismissing an ended session doesn't.
-- **Main area: tiled panes** (Herdr, zellij, tmux). Each workspace has tabs, shown as pills across the top with `+` for a new one; each tab is a layout of panes split side by side or one above the other. A pane is a terminal (Claude, a shell, a dev server, your editor) or one of aulora's views: Changes, Files, a session's conversation, the workspace overview. Everything stays on screen together, so nothing hides behind a tab.
-- **Focus is a frame.** Every pane has a thin rounded frame with its name and state in it; only the focused one is in the accent color (zellij's frames, Herdr's focus color). Tab and Shift-Tab go sidebar → each pane → sidebar, Option-arrows move to the pane in that direction, and a click focuses what it lands on.
-- **The sidebar and the panes follow each other.** Selecting an agent focuses its pane (in whatever tab it's in); focusing a pane selects its row. Selecting a session that runs elsewhere opens its conversation as a pane.
-- **Where new things go.** `|` and `-` split the focused pane with a new shell to the right or below, `C` puts Claude beside it, `T` (or `+`) opens a new tab. `d` and `f` show Changes and Files: they take the focused pane's place if it's a view, or open beside it if it's a terminal, since views never cover terminals. Panes started elsewhere (the command line, before a layout existed) get a tab of their own.
-- **Sizing.** Drag the border between two panes, or `<` `>` to shrink or grow the focused one, `=` to even them out, `z` to zoom one pane to the whole area and back. Layouts are saved in `~/.aulora/layouts.json`, so they come back when you reopen the dashboard; panes that are gone drop out.
+- **Main area: the selection, and a panel.** The main area shows what the sidebar selected: an agent's terminal, a session's conversation, or the workspace overview. Changes and Files show in a panel down the right edge. There are no splits and no tabs: tiled panes in tabs per workspace (Herdr, zellij) were tried and dropped on 2026-10-24. The tabs repeated the sidebar, and splits were hard to get out of and showed up when they weren't wanted (`f` on a conversation brought back the terminals split beside it).
+- **Focus is a frame.** The main view and the panel each have a thin rounded frame with their name and state in it; only the focused one is in the accent color (zellij's frames, Herdr's focus color). Tab and Shift-Tab go sidebar → main view → panel → sidebar, Option-Left and Option-Right do the same in place, and a click focuses what it lands on.
+- **The sidebar and the main view follow each other.** Selecting an agent shows it; selecting a workspace shows what it showed last. Selecting a session that runs elsewhere shows its conversation.
+- **Where new things go.** `c` and `C` start a shell or Claude in the selected workspace and show it. `d` and `f` show Changes and Files in the panel; `f` again hides it, everywhere.
+- **Sizing.** Drag the panel's edge, or `<` `>` to make it wider or narrower. Each workspace's view and panel are saved in `~/.aulora/layouts.json`, so they come back when you reopen the dashboard; a pane that's gone gives way to the overview.
 - There is no Activity tab: events appear in the conversation where they happened (Claude Code's own transcript does this).
 - **Rows** are two lines: `● name · detail` then an indented second line, tokens joined by ` · `. When space runs out, whole tokens drop before text is cut with `…` (Herdr).
 - **Narrow terminals** (< 90 columns): the sidebar collapses to glyphs and counts, and focus shows one region at a time (Herdr's compact sidebar, lazygit's portrait mode).
@@ -67,13 +67,10 @@ One keymap table drives key handling, the footer hints and the `?` help, so they
 | Key | Action | Precedent |
 |---|---|---|
 | `↑` `↓` / `j` `k` | move in the focused list, or scroll by line | everywhere |
-| `⇥` / `⇧⇥` | next / previous pane, the sidebar included | lazygit panels |
-| `⌥←↑↓→` | the pane in that direction | zellij `Alt+arrows` |
-| `1`–`9`, `{` `}` | go to a workspace tab; previous / next tab | Herdr `prefix+1..9` |
-| `\|` `-` | split: a new shell to the right, below | tmux `%` `"`, zellij |
-| `T` | a new tab | Herdr `prefix+c` |
-| `d` `f` | show Changes, Files beside this pane | VS Code's sidebar views |
-| `<` `>` `=` | shrink, grow, even out panes | tmux `resize-pane` |
+| `⇥` / `⇧⇥` | next / previous: sidebar, main view, panel | lazygit panels |
+| `⌥←` `⌥→` | the same, left or right | zellij `Alt+arrows` |
+| `d` `f` | show Changes, Files in the panel | VS Code's sidebar views |
+| `<` `>` | make the panel wider, narrower | tmux `resize-pane` |
 | `⏎` | open: type into a pane, focus a view, expand an item | |
 | `Ctrl-Q` | leave a terminal | claude-squad |
 | `Ctrl-P` | find anything: files; `#` workspaces and folders, `@` agents, `>` actions | VS Code's quick open and command palette |
@@ -81,7 +78,6 @@ One keymap table drives key handling, the footer hints and the `?` help, so they
 | `/` | search the focused view | less, vim, lazygit |
 | `n` | next thing that needs you (outside search) | Herdr `prefix+o` |
 | `c` / `C` | new shell / new Claude pane in this workspace | tmux `c` |
-| `z` | zoom the focused pane, and back | tmux, Herdr `prefix+z` |
 | `e` | edit the selected file in a terminal editor pane | lazygit `e` |
 | `o` | open in VS Code at the line | lazygit `o` |
 | `x` | close a pane; a running terminal asks first | k9s |
@@ -96,7 +92,7 @@ The footer shows 5–7 hints for the focused region and `? more`, shortening lab
 
 ## Mouse
 
-- Mouse capture is on (Herdr, zellij). Click focuses and selects; clicking a selected row (or double-clicking) opens it; clicking a tab switches to it.
+- Mouse capture is on (Herdr, zellij). Click focuses and selects; clicking a selected row (or double-clicking) opens it.
 - Links (`http://`, `https://`) anywhere on screen underline when the pointer is over them, and a click opens them in the browser. Cmd-click works the same way: terminals don't pass Cmd to programs, so it arrives as a click (iTerm2, VS Code and Terminal.app all do this). A program in a pane that reads the mouse still gets the click while you're typing into it.
 - Drag the border between two panes to resize them.
 - Hovering a row shows its button: `×` on agents, `+` on workspaces (VS Code's tabs and explorer). Only the hovered or selected row shows one, so the list stays calm.

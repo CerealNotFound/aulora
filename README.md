@@ -19,7 +19,7 @@ If you run Claude Code in several workspaces at once, you end up with a VS Code 
 
 aulora watches every session through Claude Code's hooks and shows them all in one terminal dashboard:
 
-- **Everything on screen at once.** Like Herdr and tmux, each workspace's tab is a layout of split panes: Claude, your shells and dev server, your editor, and aulora's own views (Changes, Files, a session's conversation) side by side. <kbd>|</kbd> and <kbd>-</kbd> split, <kbd>d</kbd> and <kbd>f</kbd> open Changes and Files beside the focused pane, drag a border to resize, <kbd>z</kbd> zooms one pane. Layouts come back when you reopen aulora.
+- **One thing at a time, with your files beside it.** Select an agent in the sidebar and the main area shows it: its terminal, or its conversation. <kbd>f</kbd> and <kbd>d</kbd> show Files and Changes in a panel on the right; drag its edge to resize it.
 - **What needs you.** Permission prompts, questions (`AskUserQuestion`) and plans waiting for review show in amber at the top, with what Claude is asking for.
 - **What's happening where.** One tree: each workspace with its branch and git status, and under it every agent running there. Every agent is a terminal. Sessions that have ended open again with `claude --resume`, in the folder they ran in. Sessions running in another app (VS Code, Ghostty) show their whole conversation, scrollable and searchable, with every tool call.
 - **What changed, and who changed it.** The Changes tab is VS Code's Source Control view: staged and unstaged files in a tree, a syntax-highlighted diff with changed words marked, and a colored dot for the Claude session that wrote each change, read from its transcript. Select an agent to see only what it wrote. <kbd>space</kbd> stages, <kbd>c</kbd> commits, <kbd>P</kbd> pushes, <kbd>o</kbd> opens the editor at the change.
@@ -81,26 +81,23 @@ Sessions show up as soon as they start or you send a prompt. To try the dashboar
 
 ### Keys
 
-aulora follows Herdr: a sidebar with each **workspace** and the **agents** running in it (Claude panes, shells, Claude sessions elsewhere), and a main area with tabs. The mouse works everywhere: click to select or focus, wheel to scroll whatever is under the pointer, click a pane to type into it, drag a border to resize, click (or Cmd-click) a link to open it, <kbd>×</kbd> to close, right-click for a menu.
+aulora follows Herdr: a sidebar with each **workspace** and the **agents** running in it (Claude panes, shells, Claude sessions elsewhere), and a main area that shows the selected one. The mouse works everywhere: click to select or focus, wheel to scroll whatever is under the pointer, click a pane to type into it, drag the panel's edge to resize it, click (or Cmd-click) a link to open it, <kbd>×</kbd> to close, right-click for a menu.
 
 | Key | Action |
 |---|---|
 | <kbd>↑</kbd> <kbd>↓</kbd> / <kbd>j</kbd> <kbd>k</kbd> | Move in the sidebar; scroll a line in the main area |
 | <kbd>⏎</kbd> | Open: type into a pane, resume an ended session, expand a tool call |
-| <kbd>⇥</kbd> / <kbd>⌥</kbd>+arrows | Next pane / the pane in that direction |
-| <kbd>\|</kbd> <kbd>-</kbd> | Split: a new shell to the right, below |
-| <kbd>d</kbd> <kbd>f</kbd> | Show Changes, Files beside this pane |
-| <kbd>T</kbd>, <kbd>1</kbd>–<kbd>9</kbd> | New tab; go to a tab |
-| <kbd><</kbd> <kbd>></kbd> <kbd>=</kbd> | Shrink, grow, even out panes (or drag a border) |
+| <kbd>⇥</kbd> / <kbd>⌥</kbd>+<kbd>←</kbd> <kbd>→</kbd> | Move between the sidebar, the main view and the panel |
+| <kbd>d</kbd> <kbd>f</kbd> | Show Changes, Files in the panel on the right |
+| <kbd><</kbd> <kbd>></kbd> | Make the panel wider, narrower (or drag its edge) |
 | <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Leave a terminal you're typing into (press it again to send Ctrl-Q to the program) |
-| <kbd>c</kbd> / <kbd>C</kbd> | New shell / new Claude Code pane beside the focused one |
+| <kbd>c</kbd> / <kbd>C</kbd> | New shell / new Claude Code pane in the selected workspace |
 | <kbd>n</kbd> | Jump to the next agent that needs you |
 | <kbd>r</kbd> | Restart an exited pane; resume a session in a new terminal |
 | <kbd>m</kbd> | Menu for the selection (same as right-click) |
 | <kbd>x</kbd> | Kill a pane (asks first), close an exited one, or dismiss an ended session |
 | <kbd>Ctrl</kbd>+<kbd>P</kbd> | Find anything: files, `#` workspaces, `@` agents, `>` actions |
 | <kbd>Ctrl</kbd>+<kbd>O</kbd> | Open a workspace: a folder found on disk, a recent one, or any path |
-| <kbd>z</kbd> | Zoom the focused pane |
 | <kbd>O</kbd> | Show the file or workspace in Finder |
 | <kbd>/</kbd> | Filter the sidebar; search a conversation |
 | <kbd>h</kbd> / <kbd>e</kbd> | Show past sessions / ended sessions |
