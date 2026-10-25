@@ -182,7 +182,7 @@ fn stream_loop(socket: PathBuf, rx: mpsc::Receiver<ClientMsg>, incoming: Sender<
         };
         // Restore what this client had before the connection dropped.
         for (id, size) in &attached {
-            write(&ClientMsg::Attach { pane_id: id.clone() });
+            write(&ClientMsg::Attach { pane_id: id.clone(), terminal: false });
             if let Some(r) = size {
                 write(r);
             }
@@ -205,7 +205,7 @@ fn stream_loop(socket: PathBuf, rx: mpsc::Receiver<ClientMsg>, incoming: Sender<
 
 fn track(msg: &ClientMsg, attached: &mut HashMap<String, Option<ClientMsg>>) {
     match msg {
-        ClientMsg::Attach { pane_id } => {
+        ClientMsg::Attach { pane_id, .. } => {
             attached.entry(pane_id.clone()).or_insert(None);
         }
         ClientMsg::Detach { pane_id } => {

@@ -392,7 +392,7 @@ fn request_snapshot() -> Result<Snapshot> {
 fn fetch_screen(pane_id: &str) -> Result<(String, u16, u16, Vec<u8>)> {
     let mut s = UnixStream::connect(paths::socket()).context("the aulora daemon is not running")?;
     s.set_read_timeout(Some(Duration::from_secs(3)))?;
-    let mut line = serde_json::to_string(&ClientMsg::Attach { pane_id: pane_id.to_string() })?;
+    let mut line = serde_json::to_string(&ClientMsg::Attach { pane_id: pane_id.to_string(), terminal: false })?;
     line.push('\n');
     s.write_all(line.as_bytes())?;
     let mut reader = std::io::BufReader::new(s);

@@ -495,7 +495,7 @@ fn sync_attach(app: &mut App, ctx: &mut Ctx) {
             app.terms.remove(&id);
         }
         ctx.sent_size.remove(&id);
-        ctx.send(ClientMsg::Attach { pane_id: id.clone() });
+        ctx.send(ClientMsg::Attach { pane_id: id.clone(), terminal: false });
         app.attached.insert(id, generation);
     }
 }

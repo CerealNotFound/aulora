@@ -679,7 +679,9 @@ async fn send(w: &mut tokio::net::unix::OwnedWriteHalf, msg: &ServerMsg) -> Resu
 }
 
 /// Stream one pane to a client until it exits or the client detaches.
-async fn forward(p: Arc<Proc>, pane_id: String, out: mpsc::Sender<ServerMsg>) {
+async fn forward(p: Arc<Proc>, pane_id: String, out: mpsc::Sender<ServerMsg>, terminal: bool) {
+    // While a real terminal shows the pane, it answers the program's questions.
+    let _answering = terminal.then(|| p.terminal_attached());
     loop {
         let (screen, cols, rows, mut rx) = p.attach();
         let msg = ServerMsg::PaneScreen { pane_id: pane_id.clone(), cols, rows, data: proto::encode(&screen) };
@@ -810,10 +812,10 @@ async fn handle_conn(shared: Arc<Shared>, stream: UnixStream) -> Result<()> {
                     ClientMsg::ClosePane { pane_id } => {
                         if shared.close_pane(&pane_id) { ack } else { err(anyhow::anyhow!("no pane {pane_id}")) }
                     }
-                    ClientMsg::Attach { pane_id } => match shared.proc_(&pane_id) {
+                    ClientMsg::Attach { pane_id, terminal } => match shared.proc_(&pane_id) {
                         Some(p) => {
                             if let Some(old) = attached.remove(&pane_id) { old.abort(); }
-                            attached.insert(pane_id.clone(), tokio::spawn(forward(p, pane_id, out.clone())));
+                            attached.insert(pane_id.clone(), tokio::spawn(forward(p, pane_id, out.clone(), terminal)));
                             None
                         }
                         None => err(anyhow::anyhow!("no pane {pane_id}")),

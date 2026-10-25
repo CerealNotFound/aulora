@@ -38,7 +38,7 @@ pub fn attach(socket: &Path, pane_id: &str, label: &str) -> Result<()> {
     let reader = stream.try_clone()?;
     let writer = Arc::new(Mutex::new(stream));
     let (cols, rows) = terminal::size().unwrap_or((120, 36));
-    send(&writer, &ClientMsg::Attach { pane_id: pane_id.to_string() })?;
+    send(&writer, &ClientMsg::Attach { pane_id: pane_id.to_string(), terminal: true })?;
     send(&writer, &ClientMsg::Resize { pane_id: pane_id.to_string(), cols, rows })?;
 
     // Wait for the first screen before taking over the terminal, so a bad

@@ -7,7 +7,7 @@
 
 use std::io::{Read, Write};
 use std::num::NonZeroU16;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
 use anyhow::{Context, Result};
@@ -70,6 +70,8 @@ struct Signals {
     title: Option<String>,
     bell: bool,
     marks: Vec<Mark>,
+    /// Answers to the program's questions about the terminal.
+    replies: Vec<u8>,
 }
 
 impl vt100::Callbacks for Signals {
@@ -81,6 +83,27 @@ impl vt100::Callbacks for Signals {
     }
     fn unhandled_osc(&mut self, _: &mut vt100::Screen, params: &[&[u8]]) {
         self.marks.extend(Mark::parse(params));
+    }
+    fn unhandled_csi(
+        &mut self,
+        screen: &mut vt100::Screen,
+        i1: Option<u8>,
+        i2: Option<u8>,
+        params: &[&[u16]],
+        c: char,
+    ) {
+        let only = |n: u16| params.iter().all(|p| p.iter().all(|v| *v == n));
+        match (i1, i2, c) {
+            // Primary device attributes: a VT220 with colour. fish waits
+            // for this, ten seconds, before its first prompt.
+            (None, None, 'c') if only(0) => self.replies.extend_from_slice(b"\x1b[?62;22c"),
+            // Where's the cursor?
+            (None, None, 'n') if params == [&[6]] => {
+                let (row, col) = screen.cursor_position();
+                self.replies.extend_from_slice(format!("\x1b[{};{}R", row + 1, col + 1).as_bytes());
+            }
+            _ => {}
+        }
     }
 }
 
@@ -158,6 +181,17 @@ pub struct Proc {
     pub last_output: AtomicI64,
     pub bytes_out: AtomicU64,
     shell: Mutex<ShellState>,
+    /// Real terminals showing the pane right now.
+    terminals: Arc<AtomicUsize>,
+}
+
+/// Counts a real terminal as showing a pane until dropped.
+pub struct TerminalAttached(Arc<AtomicUsize>);
+
+impl Drop for TerminalAttached {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// A signal's number from its description, as strsignal gives it.
@@ -253,15 +287,23 @@ fn wire(
                     let quiet = now - out.last_output.swap(now, Ordering::Relaxed) > 1_500;
                     out.bytes_out.fetch_add(n as u64, Ordering::Relaxed);
                     let chunk: Arc<[u8]> = Arc::from(&buf[..n]);
-                    let (bell, marks) = {
+                    let (bell, marks, replies) = {
                         // Parse and publish under one lock so attach() never sees
                         // a screen that disagrees with the stream that follows it.
                         let mut term = out.term.lock().unwrap();
                         term.process(&chunk);
                         let _ = out.tx.send(PaneEvent::Output(chunk));
                         let signals = term.callbacks_mut();
-                        (std::mem::take(&mut signals.bell), std::mem::take(&mut signals.marks))
+                        (
+                            std::mem::take(&mut signals.bell),
+                            std::mem::take(&mut signals.marks),
+                            std::mem::take(&mut signals.replies),
+                        )
                     };
+                    // Nothing else will answer: no real terminal shows the pane.
+                    if !replies.is_empty() && out.terminals.load(Ordering::SeqCst) == 0 {
+                        let _ = out.input.send(replies);
+                    }
                     let command_changed = out.note(&marks, now);
                     if quiet || bell || command_changed {
                         on_wake();
@@ -344,6 +386,7 @@ impl Proc {
             last_output: AtomicI64::new(now_ms()),
             bytes_out: AtomicU64::new(0),
             shell: Mutex::new(ShellState::default()),
+            terminals: Arc::new(AtomicUsize::new(0)),
         });
 
         wire(&proc_, &spec.id, reader, writer, input_rx, on_wake)?;
@@ -420,6 +463,7 @@ impl Proc {
             last_output: AtomicI64::new(now_ms()),
             bytes_out: AtomicU64::new(0),
             shell: Mutex::new(ShellState::default()),
+            terminals: Arc::new(AtomicUsize::new(0)),
         });
         let (Some(reader), Some(writer), Some((_, pid))) = (reader, writer, running) else {
             return Ok(proc_);
@@ -530,6 +574,12 @@ impl Proc {
         self.last_output.load(Ordering::Relaxed)
     }
 
+    /// Count a real terminal as showing the pane while the guard lives.
+    pub fn terminal_attached(&self) -> TerminalAttached {
+        self.terminals.fetch_add(1, Ordering::SeqCst);
+        TerminalAttached(self.terminals.clone())
+    }
+
     /// What the pane's shell is doing with its last command, when it says.
     pub fn command(&self) -> Option<ShellCommand> {
         self.shell.lock().unwrap().command()
@@ -613,6 +663,45 @@ mod tests {
         let exit = rx.recv_timeout(Duration::from_secs(10)).unwrap();
         assert_eq!(exit.code, 128 + 9);
         assert!(exit.signal.is_some());
+    }
+
+    #[test]
+    fn answers_the_programs_questions_unless_a_terminal_does() {
+        let p = Proc::spawn(&spec(PaneKind::Shell, &[]), |_| {}, || {}).unwrap();
+        p.write(b"printf '\\033[c'; read -rs -d c r; echo \"da=${r#?}\"\r".to_vec());
+        assert!(wait_for(&p, "da=[?62;22"), "screen was: {:?}", p.text());
+        p.kill();
+
+        let p = Proc::spawn(&spec(PaneKind::Shell, &[]), |_| {}, || {}).unwrap();
+        let shown = p.terminal_attached();
+        p.write(b"printf '\\033[c'; read -rs -t 1 -d c r; echo \"none=${#r}\"\r".to_vec());
+        assert!(wait_for(&p, "none=0"), "a real terminal answers instead: {:?}", p.text());
+        drop(shown);
+        p.kill();
+    }
+
+    #[test]
+    fn fish_starts_without_waiting_for_the_terminal() {
+        let Some(fish) = ["/opt/homebrew/bin/fish", "/usr/local/bin/fish", "/usr/bin/fish"]
+            .into_iter()
+            .find(|f| std::path::Path::new(f).exists())
+        else {
+            return;
+        };
+        let home = std::env::temp_dir().join(format!("aulora-fish-start-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        let mut spec = spec(PaneKind::Shell, &[]);
+        spec.shell = Some(fish.into());
+        let dir = home.to_string_lossy().to_string();
+        spec.env = vec![("XDG_CONFIG_HOME".into(), dir.clone()), ("XDG_DATA_HOME".into(), dir)];
+        let p = Proc::spawn(&spec, |_| {}, || {}).unwrap();
+        let start = Instant::now();
+        p.write(b"echo fish-is-up\r".to_vec());
+        assert!(wait_until(|| p.text().lines().any(|l| l.trim() == "fish-is-up")), "screen was: {:?}", p.text());
+        assert!(start.elapsed() < Duration::from_secs(5), "took {:?}", start.elapsed());
+        assert!(!p.text().contains("could not read response"), "screen was: {:?}", p.text());
+        p.kill();
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

@@ -63,6 +63,12 @@ pub enum ClientMsg {
     /// Stream a pane: `PaneScreen` now, then `PaneOutput` as it arrives.
     Attach {
         pane_id: String,
+        /// The client shows the stream in a real terminal, which answers
+        /// the program's questions (what terminal is this, where's the
+        /// cursor). The dashboard draws panes itself and says false, and
+        /// then the daemon answers them.
+        #[serde(default = "yes")]
+        terminal: bool,
     },
     Detach {
         pane_id: String,
