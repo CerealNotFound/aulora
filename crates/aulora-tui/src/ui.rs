@@ -526,6 +526,10 @@ fn agent_detail(app: &App, r: &RowRef) -> Vec<Span<'static>> {
             Some(Pane { exit: Some(e), .. }) => {
                 vec![sp(format!("exited with code {}", e.code), fg(t.red)), sp(" · r restart · x close", faint())]
             }
+            Some(p) if app.unseen_command_exit(&p.id).is_some() => {
+                let code = app.unseen_command_exit(&p.id).map(|e| e.code).unwrap_or_default();
+                vec![sp(format!("exited with code {code}"), fg(t.red))]
+            }
             Some(p) => {
                 let what = p.title.clone().unwrap_or_else(|| match p.kind {
                     PaneKind::Command => p.args.join(" "),
@@ -1948,6 +1952,25 @@ mod tests {
         let spans = agent_detail(&app, &RowRef::Pane(id));
         assert_eq!(spans[0].content, "exited with code 0");
         assert_eq!(spans[0].style.fg, Some(theme::get().red));
+    }
+
+    #[test]
+    fn a_command_that_ended_in_a_shell_is_red_until_you_look() {
+        let mut app = App::new(Conn::Demo, true, String::new());
+        let mut snap = crate::demo::Demo::new().snap;
+        let dev = snap.panes.iter_mut().find(|p| p.kind == PaneKind::Command).unwrap();
+        dev.command_exit = Some(CommandExit { code: 0, at: 5 });
+        let id = dev.id.clone();
+        app.set_snapshot(snap);
+        let row = RowRef::Pane(id.clone());
+        let spans = agent_detail(&app, &row);
+        assert_eq!(spans[0].content, "exited with code 0");
+        assert_eq!(spans[0].style.fg, Some(theme::get().red));
+
+        app.selected = Some(row.clone());
+        app.mark_seen();
+        assert!(app.unseen_command_exit(&id).is_none());
+        assert_ne!(agent_detail(&app, &row)[0].content, "exited with code 0", "seen, it's a shell again");
     }
 
     #[test]

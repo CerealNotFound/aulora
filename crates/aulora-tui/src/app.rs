@@ -608,8 +608,23 @@ impl App {
         }
     }
 
-    /// Mark what's on screen as seen, so "done" settles into "idle".
+    /// How the last command in a pane's shell ended, if that happened
+    /// since you last had the pane selected.
+    pub fn unseen_command_exit(&self, pane_id: &str) -> Option<&CommandExit> {
+        let p = self.pane(pane_id).filter(|p| p.is_running())?;
+        let e = p.command_exit.as_ref()?;
+        (self.seen.get(pane_id).copied().unwrap_or(0) < e.at).then_some(e)
+    }
+
+    /// Mark what's on screen as seen, so "done" settles into "idle" and a
+    /// command's exit stops being news.
     pub fn mark_seen(&mut self) {
+        if let Some(RowRef::Pane(id)) = self.selected.clone()
+            && self.unseen_command_exit(&id).is_some()
+        {
+            self.seen.insert(id, self.now);
+            self.seen_dirty = true;
+        }
         if let Some(id) = self.selected_session_id()
             && let Some(s) = self.session(&id)
             && self.session_status(s) == Status::Done
