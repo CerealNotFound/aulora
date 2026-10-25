@@ -44,6 +44,8 @@ pub enum Status {
     /// Finished a turn you haven't looked at.
     Done,
     Working,
+    /// A command, like a dev server, running in a pane's shell.
+    Running,
     /// Finished and seen, or waiting for a first prompt.
     Idle,
     /// Not running.
@@ -56,6 +58,7 @@ impl Status {
             Status::Blocked => "blocked",
             Status::Done => "done",
             Status::Working => "working",
+            Status::Running => "running",
             Status::Idle => "idle",
             Status::Ended => "ended",
         }
@@ -314,6 +317,9 @@ pub struct App {
     pub selection: Option<crate::select::Selection>,
     /// Where you are in the question picker of a session waiting on you.
     pub picker: Option<crate::picker::Picker>,
+    /// The selected row and when it was selected, to tell a command
+    /// that ended in front of you from one that ended behind your back.
+    pub selected_since: Option<(RowRef, Ms)>,
     /// The last frame as drawn, before the selection was painted, to copy from.
     pub frame: Option<ratatui::buffer::Buffer>,
 }
@@ -427,6 +433,7 @@ impl App {
             confirm: None,
             selection: None,
             picker: None,
+            selected_since: None,
             frame: None,
         }
     }
@@ -567,11 +574,20 @@ impl App {
             RowRef::Session(id) => self.session(id).map(|s| self.session_status(s)).unwrap_or(Status::Ended),
             RowRef::Pane(id) => {
                 let Some(p) = self.pane(id) else { return Status::Ended };
+                // Its program ended: red until it's closed or restarted.
                 if !p.is_running() {
-                    return Status::Ended;
+                    return Status::Blocked;
                 }
-                match self.pane_session(id).filter(|s| s.state.is_live()) {
-                    Some(s) => self.session_status(s),
+                if let Some(s) = self.pane_session(id).filter(|s| s.state.is_live()) {
+                    return self.session_status(s);
+                }
+                if self.failed_command(id).is_some() {
+                    return Status::Blocked;
+                }
+                match p.command {
+                    Some(ShellCommand::Running { .. }) => Status::Running,
+                    Some(ShellCommand::Ended { .. }) => Status::Idle,
+                    // A shell that doesn't say: going by its output.
                     None if self.now - p.last_output_at < 2_000 => Status::Working,
                     None => Status::Idle,
                 }
@@ -608,21 +624,29 @@ impl App {
         }
     }
 
-    /// How the last command in a pane's shell ended, if that happened
-    /// since you last had the pane selected.
-    pub fn unseen_command_exit(&self, pane_id: &str) -> Option<u32> {
+    /// The code a pane's last command ended with, when it failed or
+    /// ended while you had another row selected (a dev server that
+    /// stopped, even quietly with 0). It stays until the shell runs
+    /// something else.
+    pub fn failed_command(&self, pane_id: &str) -> Option<u32> {
         let p = self.pane(pane_id).filter(|p| p.is_running())?;
         let Some(ShellCommand::Ended { code, at }) = p.command else { return None };
-        (self.seen.get(pane_id).copied().unwrap_or(0) < at).then_some(code)
+        let watched = self.seen.get(pane_id).is_some_and(|s| *s >= at);
+        (code != 0 || !watched).then_some(code)
     }
 
-    /// Mark what's on screen as seen, so "done" settles into "idle" and a
-    /// command's exit stops being news.
+    /// Mark what's on screen as seen, so "done" settles into "idle", and
+    /// note a command that ends in the pane you have selected.
     pub fn mark_seen(&mut self) {
-        if let Some(RowRef::Pane(id)) = self.selected.clone()
-            && self.unseen_command_exit(&id).is_some()
+        if self.selected_since.as_ref().map(|(r, _)| r) != self.selected.as_ref() {
+            self.selected_since = self.selected.clone().map(|r| (r, self.now));
+        }
+        if let Some((RowRef::Pane(id), since)) = &self.selected_since
+            && let Some(ShellCommand::Ended { at, .. }) = self.pane(id).and_then(|p| p.command.clone())
+            && at >= *since
+            && self.seen.get(id) != Some(&at)
         {
-            self.seen.insert(id, self.now);
+            self.seen.insert(id.clone(), at);
             self.seen_dirty = true;
         }
         if let Some(id) = self.selected_session_id()

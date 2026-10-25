@@ -845,7 +845,10 @@ fn close(app: &mut App, opts: &Options, row: RowRef) {
             } else if p.is_running() {
                 let what = match app.status(&RowRef::Pane(id.clone())) {
                     Status::Working => "It is working right now; whatever it's doing stops.",
-                    Status::Blocked => "It is waiting for you; whatever it was doing stops.",
+                    Status::Running => "A command is running in it; it stops.",
+                    Status::Blocked if app.pane_session(&id).is_some_and(|s| s.state.is_live()) => {
+                        "It is waiting for you; whatever it was doing stops."
+                    }
                     _ if p.kind == PaneKind::Command => {
                         "What runs in it stops (unsaved changes in an editor are lost)."
                     }

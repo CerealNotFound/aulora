@@ -204,7 +204,7 @@ pub fn status_color(s: Status) -> Color {
     match s {
         Status::Blocked => t.red,
         Status::Done => t.cyan,
-        Status::Working => t.yellow,
+        Status::Working | Status::Running => t.yellow,
         Status::Idle => t.green,
         Status::Ended => t.faint,
     }
@@ -526,8 +526,8 @@ fn agent_detail(app: &App, r: &RowRef) -> Vec<Span<'static>> {
             Some(Pane { exit: Some(e), .. }) => {
                 vec![sp(format!("exited with code {}", e.code), fg(t.red)), sp(" · r restart · x close", faint())]
             }
-            Some(p) if app.unseen_command_exit(&p.id).is_some() => {
-                let code = app.unseen_command_exit(&p.id).unwrap_or_default();
+            Some(p) if app.failed_command(&p.id).is_some() => {
+                let code = app.failed_command(&p.id).unwrap_or_default();
                 vec![sp(format!("exited with code {code}"), fg(t.red))]
             }
             Some(p) => {
@@ -1955,22 +1955,43 @@ mod tests {
     }
 
     #[test]
-    fn a_command_that_ended_in_a_shell_is_red_until_you_look() {
+    fn a_shell_pane_is_yellow_running_red_when_it_failed_green_waiting() {
         let mut app = App::new(Conn::Demo, true, String::new());
         let mut snap = crate::demo::Demo::new().snap;
-        let dev = snap.panes.iter_mut().find(|p| p.kind == PaneKind::Command).unwrap();
-        dev.command = Some(ShellCommand::Ended { code: 0, at: 5 });
-        let id = dev.id.clone();
-        app.set_snapshot(snap);
+        let id = snap.panes.iter().find(|p| p.kind == PaneKind::Command).unwrap().id.clone();
+        let set = |app: &mut App, snap: &mut Snapshot, command: ShellCommand| {
+            snap.panes.iter_mut().find(|p| p.id == id).unwrap().command = Some(command);
+            app.set_snapshot(snap.clone());
+            app.mark_seen();
+        };
         let row = RowRef::Pane(id.clone());
+        app.now = 1_000;
+
+        set(&mut app, &mut snap, ShellCommand::Running { since: 900 });
+        assert_eq!(app.status(&row), Status::Running);
+
+        // Ended quietly while you were elsewhere: red, and it stays red.
+        set(&mut app, &mut snap, ShellCommand::Ended { code: 0, at: 1_100 });
+        assert_eq!(app.status(&row), Status::Blocked);
         let spans = agent_detail(&app, &row);
         assert_eq!(spans[0].content, "exited with code 0");
         assert_eq!(spans[0].style.fg, Some(theme::get().red));
-
         app.selected = Some(row.clone());
+        app.now = 2_000;
         app.mark_seen();
-        assert!(app.unseen_command_exit(&id).is_none());
-        assert_ne!(agent_detail(&app, &row)[0].content, "exited with code 0", "seen, it's a shell again");
+        assert_eq!(app.status(&row), Status::Blocked, "looking at it doesn't make it fine");
+
+        // Run it again from there: yellow. It ends fine in front of you: green.
+        set(&mut app, &mut snap, ShellCommand::Running { since: 2_100 });
+        assert_eq!(app.status(&row), Status::Running);
+        set(&mut app, &mut snap, ShellCommand::Ended { code: 0, at: 2_200 });
+        assert_eq!(app.status(&row), Status::Idle);
+        assert_ne!(agent_detail(&app, &row)[0].content, "exited with code 0");
+
+        // An error is red even in front of you.
+        set(&mut app, &mut snap, ShellCommand::Ended { code: 1, at: 2_300 });
+        assert_eq!(app.status(&row), Status::Blocked);
+        assert_eq!(agent_detail(&app, &row)[0].content, "exited with code 1");
     }
 
     #[test]
