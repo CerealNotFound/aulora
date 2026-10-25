@@ -524,10 +524,10 @@ fn agent_detail(app: &App, r: &RowRef) -> Vec<Span<'static>> {
     match r {
         RowRef::Pane(id) => match app.pane(id) {
             Some(Pane { exit: Some(e), .. }) => {
-                vec![sp(crate::app::ending(e.code).0, fg(t.red)), sp(" · r restart · x close", faint())]
+                vec![sp(crate::app::ending(Some(e.code)).0, fg(t.red)), sp(" · r restart · x close", faint())]
             }
             Some(p) if app.failed_command(&p.id).is_some() => {
-                let code = app.failed_command(&p.id).unwrap_or_default();
+                let code = app.failed_command(&p.id).flatten();
                 vec![sp(crate::app::ending(code).0, fg(t.red))]
             }
             Some(p) if matches!(p.command, Some(ShellCommand::Paused { .. })) => {
@@ -967,10 +967,7 @@ fn leaf_title(app: &App, view: &crate::layout::View, focused: bool) -> Vec<Span<
                 v.push(sp(format!(" · {}", short_model(&m)), faint()));
             }
             if let Some(p) = app.pane(id).filter(|p| p.exit.is_some()) {
-                v.push(sp(
-                    format!(" · {}", crate::app::ending(p.exit.as_ref().map(|e| e.code).unwrap_or(0)).0),
-                    fg(t.red),
-                ));
+                v.push(sp(format!(" · {}", crate::app::ending(p.exit.as_ref().map(|e| e.code)).0), fg(t.red)));
             }
         }
         View::Changes { filter } => {
@@ -1127,7 +1124,7 @@ fn pane_view(f: &mut Frame, area: Rect, app: &mut App, id: &str) {
         f.render_widget(Paragraph::new(Line::from(sp(msg, pill))), r);
     }
     if let Some(e) = app.pane(id).and_then(|p| p.exit.clone()) {
-        let msg = format!(" {} · r restart · x close ", crate::app::ending(e.code).0);
+        let msg = format!(" {} · r restart · x close ", crate::app::ending(Some(e.code)).0);
         let wd = (w(&msg) as u16).min(term_area.width);
         let r = Rect { x: term_area.x, y: term_area.y + term_area.height.saturating_sub(1), width: wd, height: 1 };
         f.render_widget(Paragraph::new(Line::from(sp(msg, pill))), r);
@@ -1980,7 +1977,7 @@ mod tests {
         assert_eq!(app.status(&row), Status::Running);
 
         // Ended quietly while you were elsewhere: red, and it stays red.
-        set(&mut app, &mut snap, ShellCommand::Ended { code: 0, at: 1_100 });
+        set(&mut app, &mut snap, ShellCommand::Ended { code: Some(0), at: 1_100 });
         assert_eq!(app.status(&row), Status::Blocked);
         let spans = agent_detail(&app, &row);
         assert_eq!(spans[0].content, "exited with code 0");
@@ -1993,12 +1990,12 @@ mod tests {
         // Run it again from there: yellow. It ends fine in front of you: green.
         set(&mut app, &mut snap, ShellCommand::Running { since: 2_100, background: false });
         assert_eq!(app.status(&row), Status::Running);
-        set(&mut app, &mut snap, ShellCommand::Ended { code: 0, at: 2_200 });
+        set(&mut app, &mut snap, ShellCommand::Ended { code: Some(0), at: 2_200 });
         assert_eq!(app.status(&row), Status::Idle);
         assert_ne!(agent_detail(&app, &row)[0].content, "exited with code 0");
 
         // An error is red even in front of you.
-        set(&mut app, &mut snap, ShellCommand::Ended { code: 1, at: 2_300 });
+        set(&mut app, &mut snap, ShellCommand::Ended { code: Some(1), at: 2_300 });
         assert_eq!(app.status(&row), Status::Blocked);
         assert_eq!(agent_detail(&app, &row)[0].content, "exited with code 1");
     }
@@ -2008,7 +2005,7 @@ mod tests {
         let mut app = App::new(Conn::Demo, true, String::new());
         let mut snap = crate::demo::Demo::new().snap;
         let dev = snap.panes.iter_mut().find(|p| p.kind == PaneKind::Command).unwrap();
-        dev.command = Some(ShellCommand::Ended { code: 0, at: 5_000 });
+        dev.command = Some(ShellCommand::Ended { code: Some(0), at: 5_000 });
         let id = dev.id.clone();
         app.set_snapshot(snap);
         // You had another row selected when it stopped.
@@ -2029,14 +2026,15 @@ mod tests {
     #[test]
     fn says_how_a_program_ended_in_words() {
         use crate::app::ending;
-        assert_eq!(ending(0), ("exited with code 0".into(), false));
-        assert_eq!(ending(3), ("exited with code 3".into(), true));
-        assert_eq!(ending(130), ("stopped with Ctrl-C".into(), false), "you stopped it");
-        assert_eq!(ending(137), ("killed".into(), true));
-        assert_eq!(ending(143), ("terminated".into(), true));
-        assert_eq!(ending(128 + libc::SIGSEGV as u32), ("crashed (SIGSEGV)".into(), true));
-        assert_eq!(ending(128 + libc::SIGUSR1 as u32), ("killed by SIGUSR1".into(), true));
-        assert_eq!(ending(255), ("exited with code 255".into(), true), "not a signal");
+        assert_eq!(ending(Some(0)), ("exited with code 0".into(), false));
+        assert_eq!(ending(Some(3)), ("exited with code 3".into(), true));
+        assert_eq!(ending(Some(130)), ("stopped with Ctrl-C".into(), false), "you stopped it");
+        assert_eq!(ending(Some(137)), ("killed".into(), true));
+        assert_eq!(ending(Some(143)), ("terminated".into(), true));
+        assert_eq!(ending(Some(128 + libc::SIGSEGV as u32)), ("crashed (SIGSEGV)".into(), true));
+        assert_eq!(ending(Some(128 + libc::SIGUSR1 as u32)), ("killed by SIGUSR1".into(), true));
+        assert_eq!(ending(Some(255)), ("exited with code 255".into(), true), "not a signal");
+        assert_eq!(ending(None), ("ended".into(), true), "how, the shell didn't say");
     }
 
     #[test]
@@ -2051,8 +2049,8 @@ mod tests {
             app.mark_seen();
             (app.status(&row), agent_detail(&app, &row)[0].content.to_string())
         };
-        assert_eq!(show(ShellCommand::Ended { code: 130, at: 5 }).0, Status::Idle, "Ctrl-C is a clean stop");
-        assert_eq!(show(ShellCommand::Ended { code: 137, at: 6 }), (Status::Blocked, "killed".into()));
+        assert_eq!(show(ShellCommand::Ended { code: Some(130), at: 5 }).0, Status::Idle, "Ctrl-C is a clean stop");
+        assert_eq!(show(ShellCommand::Ended { code: Some(137), at: 6 }), (Status::Blocked, "killed".into()));
         assert_eq!(show(ShellCommand::Paused { since: 7 }), (Status::Running, "paused".into()));
         assert_eq!(
             show(ShellCommand::Running { since: 8, background: true }),

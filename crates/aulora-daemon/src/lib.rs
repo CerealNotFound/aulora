@@ -8,8 +8,8 @@ pub mod hub;
 pub mod notify;
 pub mod procs;
 pub mod pty;
+pub mod shell;
 pub mod store;
-pub mod zsh;
 
 use std::collections::HashMap;
 use std::fs::OpenOptions;

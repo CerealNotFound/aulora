@@ -1,8 +1,8 @@
-//! zsh integration for panes: zsh starts with ZDOTDIR pointing at
-//! aulora's own startup files, which load yours and then add two hooks
-//! that say when each command starts and how it ended (OSC 133, as VS
-//! Code and iTerm2 use). That's how aulora knows a dev server exited
-//! while its shell stays open.
+//! Shell integration for panes. zsh, bash and fish start with aulora's
+//! own startup files, which load yours and then say when each command
+//! starts and how it ended (OSC 133, as VS Code and iTerm2 use), and how
+//! many jobs run in the background or are paused. That's how aulora
+//! knows a dev server exited while its shell stays open.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -10,25 +10,70 @@ use std::sync::OnceLock;
 use aulora_core::model::{Ms, ShellCommand};
 
 const FILES: &[(&str, &str)] = &[
-    (".zshenv", include_str!("zsh/zshenv")),
-    (".zprofile", include_str!("zsh/zprofile")),
-    (".zshrc", include_str!("zsh/zshrc")),
+    ("zsh/.zshenv", include_str!("shell/zsh/zshenv")),
+    ("zsh/.zprofile", include_str!("shell/zsh/zprofile")),
+    ("zsh/.zshrc", include_str!("shell/zsh/zshrc")),
+    ("bash/bashrc", include_str!("shell/bash/bashrc")),
+    ("fish/aulora.fish", include_str!("shell/fish/aulora.fish")),
 ];
 
-pub fn is_zsh(shell: &str) -> bool {
-    Path::new(shell).file_name().is_some_and(|n| n == "zsh")
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Zsh,
+    Bash,
+    Fish,
 }
 
-/// The folder with aulora's zsh startup files, written once per daemon.
-/// None when it can't be written; panes then run zsh as it is.
-pub fn dir() -> Option<&'static Path> {
-    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
-    DIR.get_or_init(|| {
-        let dir = aulora_core::paths::home().join("shell").join("zsh");
-        match write(&dir) {
-            Ok(()) => Some(dir),
+impl Kind {
+    pub fn of(shell: &str) -> Option<Kind> {
+        match Path::new(shell).file_name()?.to_str()? {
+            "zsh" => Some(Kind::Zsh),
+            "bash" => Some(Kind::Bash),
+            "fish" => Some(Kind::Fish),
+            _ => None,
+        }
+    }
+}
+
+/// aulora's startup files for a shell.
+#[derive(Debug, Clone, Copy)]
+pub struct Integration {
+    pub kind: Kind,
+    root: &'static Path,
+}
+
+impl Integration {
+    /// For this shell, when it's one aulora knows and the files could be
+    /// written; otherwise the shell runs as it is.
+    pub fn of(shell: &str) -> Option<Integration> {
+        Some(Integration { kind: Kind::of(shell)?, root: root()? })
+    }
+
+    /// ZDOTDIR for zsh.
+    pub fn zdotdir(&self) -> PathBuf {
+        self.root.join("zsh")
+    }
+
+    /// The file bash reads with --init-file.
+    pub fn bashrc(&self) -> PathBuf {
+        self.root.join("bash").join("bashrc")
+    }
+
+    /// The file fish sources at start.
+    pub fn fish_script(&self) -> PathBuf {
+        self.root.join("fish").join("aulora.fish")
+    }
+}
+
+/// The folder with aulora's startup files, written once per daemon.
+fn root() -> Option<&'static Path> {
+    static ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        let root = aulora_core::paths::home().join("shell");
+        match write(&root) {
+            Ok(()) => Some(root),
             Err(e) => {
-                tracing::warn!("couldn't write zsh integration to {}: {e}", dir.display());
+                tracing::warn!("couldn't write the shell integration to {}: {e}", root.display());
                 None
             }
         }
@@ -36,10 +81,12 @@ pub fn dir() -> Option<&'static Path> {
     .as_deref()
 }
 
-fn write(dir: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
+fn write(root: &Path) -> std::io::Result<()> {
     for (name, text) in FILES {
-        let path = dir.join(name);
+        let path = root.join(name);
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
         if std::fs::read_to_string(&path).ok().as_deref() != Some(text) {
             std::fs::write(&path, text)?;
         }
@@ -51,6 +98,8 @@ fn write(dir: &Path) -> std::io::Result<()> {
 /// of aulora's own (`OSC aulora;…`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mark {
+    /// A prompt is drawn.
+    Prompt,
     /// A command started.
     Started,
     /// The command ended with this code.
@@ -66,6 +115,7 @@ impl Mark {
     pub fn parse(params: &[&[u8]]) -> Option<Mark> {
         let num = |b: &[u8]| std::str::from_utf8(b).ok()?.trim().parse::<u32>().ok();
         match params {
+            [b"133", b"A", ..] => Some(Mark::Prompt),
             [b"133", b"C", ..] => Some(Mark::Started),
             [b"133", b"D", code, ..] => num(code).map(Mark::Ended),
             [b"aulora", b"jobs", running, paused] => Some(Mark::Jobs { running: num(running)?, paused: num(paused)? }),
@@ -82,7 +132,11 @@ pub struct ShellState {
     /// Since when a command runs in front.
     running: Option<Ms>,
     /// How the last command or job ended.
-    ended: Option<(u32, Ms)>,
+    ended: Option<(Option<u32>, Ms)>,
+    /// A job's end was reported since the jobs were last counted.
+    job_ended: bool,
+    /// When a job last ended.
+    job_ended_at: Option<Ms>,
     jobs: u32,
     jobs_since: Ms,
     paused: u32,
@@ -95,10 +149,20 @@ impl ShellState {
         match mark {
             Mark::Started => self.running = Some(now),
             Mark::Ended(code) => {
-                self.running = None;
-                self.ended = Some((code, now));
+                // A job that died while this ran (say, the `kill` that
+                // killed it) says more than how this went.
+                let since = self.running.take();
+                if !since.is_some_and(|since| self.job_ended_at.is_some_and(|at| at >= since)) {
+                    self.ended = Some((Some(code), now));
+                }
             }
             Mark::Jobs { running, paused } => {
+                // A job went without the shell saying how (bash 5 forgets a
+                // paused job's status once it's reported killed).
+                if running + paused < self.jobs + self.paused && !self.job_ended {
+                    self.ended = Some((None, now));
+                }
+                self.job_ended = false;
                 if running > 0 && self.jobs == 0 {
                     self.jobs_since = now;
                 }
@@ -107,7 +171,18 @@ impl ShellState {
                 }
                 (self.jobs, self.paused) = (running, paused);
             }
-            Mark::JobEnded(code) => self.ended = Some((code, now)),
+            Mark::JobEnded(code) => {
+                self.ended = Some((Some(code), now));
+                self.job_ended = true;
+                self.job_ended_at = Some(now);
+                // One fewer, until the shell next counts.
+                if self.jobs > 0 {
+                    self.jobs -= 1;
+                } else {
+                    self.paused = self.paused.saturating_sub(1);
+                }
+            }
+            Mark::Prompt => {}
         }
     }
 
@@ -149,14 +224,17 @@ mod tests {
 
     #[test]
     fn reads_the_marks() {
-        assert_eq!(Mark::parse(&[b"133", b"A"]), None, "prompts don't matter here");
+        assert_eq!(Mark::parse(&[b"133", b"A", b"click_events=1"]), Some(Mark::Prompt));
         assert_eq!(Mark::parse(&[b"133", b"C"]), Some(Mark::Started));
         assert_eq!(Mark::parse(&[b"133", b"D", b"3"]), Some(Mark::Ended(3)));
         assert_eq!(Mark::parse(&[b"133", b"D"]), None, "no code, nothing to say");
         assert_eq!(Mark::parse(&[b"aulora", b"jobs", b"1", b"0"]), Some(Mark::Jobs { running: 1, paused: 0 }));
         assert_eq!(Mark::parse(&[b"aulora", b"job-ended", b"137"]), Some(Mark::JobEnded(137)));
         assert_eq!(Mark::parse(&[b"2", b"title"]), None);
-        assert!(is_zsh("/bin/zsh") && is_zsh("zsh") && !is_zsh("/bin/bash"));
+        assert_eq!(Kind::of("/bin/zsh"), Some(Kind::Zsh));
+        assert_eq!(Kind::of("/opt/homebrew/bin/bash"), Some(Kind::Bash));
+        assert_eq!(Kind::of("fish"), Some(Kind::Fish));
+        assert_eq!(Kind::of("/bin/sh"), None);
     }
 
     #[test]
@@ -189,7 +267,22 @@ mod tests {
         // It's killed.
         s.note(Mark::JobEnded(137), 6);
         s.note(jobs(0, 0), 6);
-        assert_eq!(s.command(), Some(ShellCommand::Ended { code: 137, at: 6 }));
+        assert_eq!(s.command(), Some(ShellCommand::Ended { code: Some(137), at: 6 }));
+
+        // Killed by a command: the job's end is what counts.
+        s.note(jobs(1, 0), 7);
+        s.note(Mark::Started, 7);
+        s.note(Mark::JobEnded(137), 7);
+        s.note(Mark::Ended(0), 7);
+        s.note(jobs(0, 0), 7);
+        assert_eq!(s.command(), Some(ShellCommand::Ended { code: Some(137), at: 7 }));
+
+        // Paused, then gone without a word: it ended, how unknown.
+        s.note(jobs(0, 1), 7);
+        s.note(Mark::Started, 8);
+        s.note(Mark::Ended(0), 8);
+        s.note(jobs(0, 0), 8);
+        assert_eq!(s.command(), Some(ShellCommand::Ended { code: None, at: 8 }));
 
         for c in [s.command(), Some(ShellCommand::Paused { since: 9 }), None] {
             assert_eq!(ShellState::resume(c.clone()).command(), c);

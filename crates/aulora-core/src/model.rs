@@ -442,8 +442,9 @@ pub enum ShellCommand {
     },
     /// A job is paused (Ctrl-Z); `fg` brings it back.
     Paused { since: Ms },
-    /// The last command or job ended with this code.
-    Ended { code: u32, at: Ms },
+    /// The last command or job ended with this code; None when it ended
+    /// without the shell saying how.
+    Ended { code: Option<u32>, at: Ms },
 }
 
 /// A terminal whose process is owned by the daemon.

@@ -15,7 +15,7 @@ use aulora_core::model::{Ms, PaneExit, PaneKind, ShellCommand, now_ms};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::sync::broadcast;
 
-use crate::zsh::{self, Mark, ShellState};
+use crate::shell::{Integration, Kind, Mark, ShellState};
 
 const SCROLLBACK: usize = 5_000;
 const CHANNEL: usize = 1_024;
@@ -57,6 +57,7 @@ const STRIP_ENV: &[&str] = &[
     "AULORA_RUN",
     "AULORA_ZDOTDIR",
     "AULORA_USER_ZDOTDIR",
+    "AULORA_BASH_LOGIN",
 ];
 
 #[derive(Debug, Clone)]
@@ -183,6 +184,8 @@ pub struct Proc {
     shell: Mutex<ShellState>,
     /// Real terminals showing the pane right now.
     terminals: Arc<AtomicUsize>,
+    /// The shell has drawn a prompt.
+    prompted: std::sync::atomic::AtomicBool,
 }
 
 /// Counts a real terminal as showing a pane until dropped.
@@ -229,28 +232,47 @@ fn quote(s: &str) -> String {
     }
 }
 
+/// fish's quoting.
+fn fish_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
+}
+
 /// The argv for a pane. Everything runs under the user's login shell so
-/// PATH and other profile settings match a normal terminal. `zdotdir` is
-/// aulora's zsh integration, when the shell is zsh: a command is then
-/// typed at the shell's first prompt (AULORA_RUN, see `command_line`).
-pub fn argv(sh: &str, kind: PaneKind, args: &[String], zdotdir: Option<&std::path::Path>) -> Vec<String> {
-    let sh = sh.to_string();
-    // The shell to fall back to when a program exits, like a normal terminal.
-    let fallback = match zdotdir {
-        Some(dir) => format!("ZDOTDIR={} exec {} -l", quote(&dir.to_string_lossy()), quote(&sh)),
-        None => format!("exec {} -l", quote(&sh)),
+/// PATH and other profile settings match a normal terminal, with aulora's
+/// integration when it has one for the shell. A command is then typed
+/// at the shell's first prompt, the way you'd type it.
+pub fn argv(sh: &str, kind: PaneKind, args: &[String], integration: Option<Integration>) -> Vec<String> {
+    let q = quote(sh);
+    // The shell as it starts in a pane, and the same started again when
+    // a program exits, like a normal terminal.
+    let (start, fallback): (Vec<String>, String) = match integration {
+        Some(i) => match i.kind {
+            Kind::Zsh => {
+                let zdotdir = quote(&i.zdotdir().to_string_lossy());
+                (vec![sh.into(), "-l".into()], format!("ZDOTDIR={zdotdir} exec {q} -l"))
+            }
+            Kind::Bash => {
+                let rc = i.bashrc().to_string_lossy().to_string();
+                let fallback = format!("exec {q} --init-file {} -i", quote(&rc));
+                (vec![sh.into(), "--init-file".into(), rc, "-i".into()], fallback)
+            }
+            Kind::Fish => {
+                let source = format!("source {}", fish_quote(&i.fish_script().to_string_lossy()));
+                let fallback = format!("exec {q} -l -C {}", quote(&source));
+                (vec![sh.into(), "-l".into(), "-C".into(), source], fallback)
+            }
+        },
+        None => (vec![sh.into(), "-l".into()], format!("exec {q} -l")),
     };
+    let then = |first: String| vec![sh.into(), "-l".into(), "-i".into(), "-c".into(), format!("{first}; {fallback}")];
     match kind {
-        PaneKind::Shell => vec![sh, "-l".into()],
+        PaneKind::Shell => start,
         PaneKind::Claude => {
             let extra: Vec<String> = args.iter().map(|a| quote(a)).collect();
-            let claude = if extra.is_empty() { "claude".to_string() } else { format!("claude {}", extra.join(" ")) };
-            vec![sh, "-l".into(), "-i".into(), "-c".into(), format!("{claude}; {fallback}")]
+            then(if extra.is_empty() { "claude".to_string() } else { format!("claude {}", extra.join(" ")) })
         }
-        PaneKind::Command if zdotdir.is_some() => vec![sh, "-l".into()],
-        PaneKind::Command => {
-            vec![sh, "-l".into(), "-i".into(), "-c".into(), format!("{}; {fallback}", command_line(args))]
-        }
+        PaneKind::Command if integration.is_some() => start,
+        PaneKind::Command => then(command_line(args)),
     }
 }
 
@@ -327,8 +349,8 @@ impl Proc {
         let pair = native_pty_system().openpty(size).context("opening a pseudo-terminal")?;
 
         let sh = spec.shell.clone().unwrap_or_else(user_shell);
-        let zdotdir = if zsh::is_zsh(&sh) { zsh::dir() } else { None };
-        let argv = argv(&sh, spec.kind, &spec.args, zdotdir);
+        let integration = Integration::of(&sh);
+        let argv = argv(&sh, spec.kind, &spec.args, integration);
         let mut cmd = CommandBuilder::new(&argv[0]);
         cmd.args(&argv[1..]);
         cmd.cwd(&spec.cwd);
@@ -345,18 +367,24 @@ impl Proc {
         cmd.env("TERM_PROGRAM", "aulora");
         cmd.env("TERM_PROGRAM_VERSION", aulora_core::VERSION);
         cmd.env("AULORA_PANE_ID", &spec.id);
-        if let Some(dir) = zdotdir {
-            // Your own ZDOTDIR, if you have one, is where the integration
-            // finds your startup files.
-            match std::env::var_os("ZDOTDIR").filter(|z| !z.is_empty() && std::path::Path::new(z) != dir) {
-                Some(z) => cmd.env("AULORA_USER_ZDOTDIR", z),
-                None => cmd.env_remove("AULORA_USER_ZDOTDIR"),
+        match integration.map(|i| (i.kind, i)) {
+            Some((Kind::Zsh, i)) => {
+                let dir = i.zdotdir();
+                // Your own ZDOTDIR, if you have one, is where the integration
+                // finds your startup files.
+                match std::env::var_os("ZDOTDIR").filter(|z| !z.is_empty() && std::path::Path::new(z) != dir) {
+                    Some(z) => cmd.env("AULORA_USER_ZDOTDIR", z),
+                    None => cmd.env_remove("AULORA_USER_ZDOTDIR"),
+                }
+                cmd.env("ZDOTDIR", &dir);
+                cmd.env("AULORA_ZDOTDIR", &dir);
+                if spec.kind == PaneKind::Command {
+                    cmd.env("AULORA_RUN", command_line(&spec.args));
+                }
             }
-            cmd.env("ZDOTDIR", dir);
-            cmd.env("AULORA_ZDOTDIR", dir);
-            if spec.kind == PaneKind::Command {
-                cmd.env("AULORA_RUN", command_line(&spec.args));
-            }
+            // A login shell, as panes are, reading your profile.
+            Some((Kind::Bash, _)) => cmd.env("AULORA_BASH_LOGIN", "1"),
+            _ => {}
         }
         for (k, v) in &spec.env {
             cmd.env(k, v);
@@ -387,9 +415,13 @@ impl Proc {
             bytes_out: AtomicU64::new(0),
             shell: Mutex::new(ShellState::default()),
             terminals: Arc::new(AtomicUsize::new(0)),
+            prompted: std::sync::atomic::AtomicBool::new(false),
         });
 
         wire(&proc_, &spec.id, reader, writer, input_rx, on_wake)?;
+        if spec.kind == PaneKind::Command && integration.is_some_and(|i| i.kind != Kind::Zsh) {
+            proc_.type_when_ready(format!("{}\r", command_line(&spec.args)));
+        }
 
         let done = proc_.clone();
         let mut child = child;
@@ -464,6 +496,7 @@ impl Proc {
             bytes_out: AtomicU64::new(0),
             shell: Mutex::new(ShellState::default()),
             terminals: Arc::new(AtomicUsize::new(0)),
+            prompted: std::sync::atomic::AtomicBool::new(false),
         });
         let (Some(reader), Some(writer), Some((_, pid))) = (reader, writer, running) else {
             return Ok(proc_);
@@ -574,6 +607,32 @@ impl Proc {
         self.last_output.load(Ordering::Relaxed)
     }
 
+    /// Type `text` once the shell waits for input: it has drawn a prompt
+    /// and reads keys one by one (typed earlier, the terminal would echo
+    /// it before the prompt). zsh does this itself, see its .zshrc.
+    fn type_when_ready(self: &Arc<Self>, text: String) {
+        let p = self.clone();
+        let _ = std::thread::Builder::new().name("pane-type".into()).spawn(move || {
+            let start = std::time::Instant::now();
+            while start.elapsed() < std::time::Duration::from_secs(10) {
+                if p.prompted.load(Ordering::SeqCst) && p.reads_keys() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            p.write(text.into_bytes());
+        });
+    }
+
+    /// Whether the program reads keys as they're pressed (a line editor
+    /// at its prompt), not lines.
+    fn reads_keys(&self) -> bool {
+        let Some(fd) = self.master.lock().unwrap().raw_fd() else { return false };
+        // SAFETY: tcgetattr only writes into `t`.
+        let mut t: libc::termios = unsafe { std::mem::zeroed() };
+        unsafe { libc::tcgetattr(fd, &mut t) == 0 && t.c_lflag & libc::ICANON == 0 }
+    }
+
     /// Count a real terminal as showing the pane while the guard lives.
     pub fn terminal_attached(&self) -> TerminalAttached {
         self.terminals.fetch_add(1, Ordering::SeqCst);
@@ -594,6 +653,9 @@ impl Proc {
     fn note(&self, marks: &[Mark], now: Ms) -> bool {
         if marks.is_empty() {
             return false;
+        }
+        if marks.contains(&Mark::Prompt) {
+            self.prompted.store(true, Ordering::SeqCst);
         }
         let mut shell = self.shell.lock().unwrap();
         let before = shell.command();
@@ -734,7 +796,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let p = Proc::spawn(&spec, move |e| tx.send(e).unwrap(), || {}).unwrap();
         let code = || match p.command() {
-            Some(ShellCommand::Ended { code, .. }) => Some(code),
+            Some(ShellCommand::Ended { code, .. }) => code,
             _ => None,
         };
         assert!(wait_until(|| code() == Some(3)), "screen was: {:?}", p.text());
@@ -766,7 +828,7 @@ mod tests {
         let p = Proc::spawn(&spec, move |e| tx.send(e).unwrap(), || {}).unwrap();
         assert!(wait_until(|| matches!(p.command(), Some(ShellCommand::Running { .. }))), "screen: {:?}", p.text());
         assert!(
-            wait_until(|| matches!(p.command(), Some(ShellCommand::Ended { code: 0, .. }))),
+            wait_until(|| matches!(p.command(), Some(ShellCommand::Ended { code: Some(0), .. }))),
             "screen: {:?}",
             p.text()
         );
@@ -791,16 +853,104 @@ mod tests {
 
         p.write(b"sh -c 'sleep 1; exit 3' &\r".to_vec());
         assert!(is(&|c| matches!(c, ShellCommand::Running { background: true, .. })), "screen: {:?}", p.text());
-        assert!(is(&|c| matches!(c, ShellCommand::Ended { code: 3, .. })), "screen: {:?}", p.text());
+        assert!(is(&|c| matches!(c, ShellCommand::Ended { code: Some(3), .. })), "screen: {:?}", p.text());
 
         p.write(b"sleep 30\r".to_vec());
         assert!(is(&|c| matches!(c, ShellCommand::Running { background: false, .. })));
         p.write(b"\x1a".to_vec());
         assert!(is(&|c| matches!(c, ShellCommand::Paused { .. })), "screen: {:?}", p.text());
         p.write(b"kill -9 %1\r".to_vec());
-        assert!(is(&|c| matches!(c, ShellCommand::Ended { code: 137, .. })), "screen: {:?}", p.text());
+        assert!(is(&|c| matches!(c, ShellCommand::Ended { code: Some(137), .. })), "screen: {:?}", p.text());
         p.kill();
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The bash and fish here, to test aulora's integration with.
+    fn bash_and_fish() -> Vec<&'static str> {
+        ["/bin/bash", "/usr/bin/bash", "/opt/homebrew/bin/bash", "/usr/local/bin/bash"]
+            .into_iter()
+            .chain(["/opt/homebrew/bin/fish", "/usr/local/bin/fish", "/usr/bin/fish"])
+            .filter(|s| std::path::Path::new(s).exists())
+            .collect()
+    }
+
+    /// A pane running `shell` with aulora's integration and none of your
+    /// own startup files.
+    fn bare(shell: &str, kind: PaneKind, args: &[&str]) -> (Spec, std::path::PathBuf) {
+        let name = shell.replace('/', "-");
+        let home = std::env::temp_dir().join(format!("aulora-test{name}-{:?}", std::thread::current().id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let h = home.to_string_lossy().to_string();
+        let mut s = spec(kind, args);
+        s.shell = Some(shell.into());
+        s.env = ["HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "AULORA_USER_ZDOTDIR"]
+            .into_iter()
+            .map(|k| (k.to_string(), h.clone()))
+            .collect();
+        (s, home)
+    }
+
+    #[test]
+    fn bash_and_fish_keep_a_command_panes_shell_and_say_how_it_ended() {
+        for sh in bash_and_fish() {
+            let (spec, home) = bare(sh, PaneKind::Command, &["sh", "-c", "echo listening on :3000; sleep 0.3; exit 3"]);
+            let (tx, rx) = mpsc::channel();
+            let p = Proc::spawn(&spec, move |e| tx.send(e).unwrap(), || {}).unwrap();
+            let ended = |code: u32| {
+                wait_until(|| matches!(p.command(), Some(ShellCommand::Ended { code: Some(c), .. }) if c == code))
+            };
+            let served = || p.text().lines().filter(|l| l.trim() == "listening on :3000").count();
+            assert!(ended(3), "{sh}: {:?} {:?}", p.command(), p.text());
+            assert_eq!(served(), 1, "{sh}: {:?}", p.text());
+
+            // Up, Enter: the same command again, from the shell's history.
+            p.write(b"\x1b[A\r".to_vec());
+            assert!(wait_until(|| served() == 2), "{sh}: {:?}", p.text());
+            p.write(b"true\r".to_vec());
+            assert!(ended(0), "{sh}: {:?} {:?}", p.command(), p.text());
+            assert!(rx.try_recv().is_err(), "{sh}: the shell is still open");
+            p.kill();
+            let _ = std::fs::remove_dir_all(&home);
+        }
+    }
+
+    #[test]
+    fn bash_and_fish_say_when_jobs_run_behind_the_prompt_are_paused_and_end() {
+        for sh in bash_and_fish() {
+            let (spec, home) = bare(sh, PaneKind::Shell, &[]);
+            let p = Proc::spawn(&spec, |_| {}, || {}).unwrap();
+            let is = |want: &dyn Fn(&ShellCommand) -> bool| wait_until(|| p.command().as_ref().is_some_and(want));
+            assert!(wait_until(|| p.reads_keys() && p.prompted.load(Ordering::SeqCst)), "{sh}: {:?}", p.text());
+
+            p.write(b"sh -c 'sleep 1; exit 4' &\r".to_vec());
+            assert!(is(&|c| matches!(c, ShellCommand::Running { background: true, .. })), "{sh}: {:?}", p.text());
+            if sh.ends_with("bash") {
+                // bash only says at its next prompt.
+                std::thread::sleep(Duration::from_millis(1500));
+                p.write(b"\r".to_vec());
+            }
+            assert!(
+                is(&|c| matches!(c, ShellCommand::Ended { code: Some(4), .. })),
+                "{sh}: {:?} {:?}",
+                p.command(),
+                p.text()
+            );
+
+            p.write(b"sleep 30\r".to_vec());
+            assert!(is(&|c| matches!(c, ShellCommand::Running { background: false, .. })), "{sh}: {:?}", p.text());
+            p.write(b"\x1a".to_vec());
+            assert!(is(&|c| matches!(c, ShellCommand::Paused { .. })), "{sh}: {:?} {:?}", p.command(), p.text());
+            p.write(b"kill -9 %1\r".to_vec());
+            assert!(
+                is(&|c| matches!(c, ShellCommand::Ended { code: Some(137) | None, .. })),
+                "{sh}: {:?} {:?}",
+                p.command(),
+                p.text()
+            );
+            p.kill();
+            let _ = std::fs::remove_dir_all(&home);
+        }
     }
 
     #[test]
@@ -865,9 +1015,28 @@ mod tests {
         let a = argv("/bin/zsh", PaneKind::Claude, &["--resume".into(), "abc def".into()], None);
         assert_eq!(a[1..4], ["-l", "-i", "-c"]);
         assert_eq!(a[4], "claude --resume 'abc def'; exec /bin/zsh -l");
-        let dir = std::path::Path::new("/a/zsh dir");
-        let a = argv("/bin/zsh", PaneKind::Claude, &[], Some(dir));
-        assert_eq!(a[4], "claude; ZDOTDIR='/a/zsh dir' exec /bin/zsh -l", "the shell after it is integrated too");
-        assert_eq!(argv("/bin/zsh", PaneKind::Command, &["pnpm".into(), "dev".into()], Some(dir)), ["/bin/zsh", "-l"]);
+        let dev = ["pnpm".to_string(), "dev".to_string()];
+        assert_eq!(argv("/bin/sh", PaneKind::Command, &dev, None)[4], "pnpm dev; exec /bin/sh -l");
+
+        let zsh = Integration::of("/bin/zsh").unwrap();
+        let zdotdir = zsh.zdotdir().to_string_lossy().to_string();
+        let a = argv("/bin/zsh", PaneKind::Claude, &[], Some(zsh));
+        assert_eq!(a[4], format!("claude; ZDOTDIR={} exec /bin/zsh -l", quote(&zdotdir)), "integrated after it too");
+        assert_eq!(argv("/bin/zsh", PaneKind::Command, &dev, Some(zsh)), ["/bin/zsh", "-l"]);
+
+        let bash = Integration::of("/usr/bin/bash").unwrap();
+        let rc = bash.bashrc().to_string_lossy().to_string();
+        assert_eq!(
+            argv("/usr/bin/bash", PaneKind::Command, &dev, Some(bash)),
+            ["/usr/bin/bash", "--init-file", &rc, "-i"]
+        );
+        let a = argv("/usr/bin/bash", PaneKind::Claude, &[], Some(bash));
+        assert_eq!(a[4], format!("claude; exec /usr/bin/bash --init-file {} -i", quote(&rc)));
+
+        let fish = Integration::of("/usr/bin/fish").unwrap();
+        let a = argv("/usr/bin/fish", PaneKind::Shell, &[], Some(fish));
+        assert_eq!(a[..3], ["/usr/bin/fish", "-l", "-C"]);
+        assert!(a[3].starts_with("source '") && a[3].ends_with("aulora.fish'"));
+        assert_eq!(fish_quote("it's a \\ path"), "'it\\'s a \\\\ path'");
     }
 }

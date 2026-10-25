@@ -326,7 +326,8 @@ pub struct App {
 
 /// How a program ended, in words, and whether something went wrong.
 /// Codes above 128 are signals, the way shells report them.
-pub fn ending(code: u32) -> (String, bool) {
+pub fn ending(code: Option<u32>) -> (String, bool) {
+    let Some(code) = code else { return ("ended".into(), true) };
     let Some(n) = code.checked_sub(128).filter(|n| (1..32).contains(n)).map(|n| n as i32) else {
         return (format!("exited with code {code}"), code != 0);
     };
@@ -669,12 +670,12 @@ impl App {
     /// ended while you had another row selected (a dev server that
     /// stopped, even quietly with 0). It stays until the shell runs
     /// something else.
-    pub fn failed_command(&self, pane_id: &str) -> Option<u32> {
+    pub fn failed_command(&self, pane_id: &str) -> Option<Option<u32>> {
         let p = self.pane(pane_id).filter(|p| p.is_running())?;
         let Some(ShellCommand::Ended { code, at }) = p.command else { return None };
         let watched = self.seen.get(pane_id).is_some_and(|s| *s >= at);
         // Ctrl-C is you stopping it: fine.
-        (ending(code).1 || (code == 0 && !watched)).then_some(code)
+        (ending(code).1 || (code == Some(0) && !watched)).then_some(code)
     }
 
     /// Mark what's on screen as seen, so "done" settles into "idle", and

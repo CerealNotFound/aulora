@@ -1,0 +1,122 @@
+# aulora's shell integration for bash. aulora starts bash with
+# --init-file pointing here. This loads your own startup files as bash
+# would, then says when each command starts and how it ended (OSC 133,
+# as VS Code and iTerm2 do), and how many jobs run in the background or
+# are paused, so aulora can show a dev server that exited.
+
+if [[ -n ${AULORA_BASH_LOGIN-} ]]; then
+  unset AULORA_BASH_LOGIN
+  [[ -r /etc/profile ]] && . /etc/profile
+  for __aulora_f in ~/.bash_profile ~/.bash_login ~/.profile; do
+    if [[ -r $__aulora_f ]]; then
+      . "$__aulora_f"
+      break
+    fi
+  done
+  unset __aulora_f
+elif [[ -r ~/.bashrc ]]; then
+  . ~/.bashrc
+fi
+
+__aulora_ran=
+__aulora_at_prompt=
+__aulora_job_pids=" "
+
+__aulora_jobs() {
+  local running stopped pid
+  running=($(builtin jobs -rp))
+  stopped=($(builtin jobs -sp))
+  for pid in $(builtin jobs -p); do
+    [[ $__aulora_job_pids == *" $pid "* ]] || __aulora_job_pids="$__aulora_job_pids$pid "
+  done
+  builtin printf '\e]aulora;jobs;%d;%d\a' ${#running[@]} ${#stopped[@]}
+}
+
+# A job ended: how. bash still has its status until it's reported.
+__aulora_check_jobs() {
+  local pid code left=" "
+  for pid in $__aulora_job_pids; do
+    if builtin kill -0 "$pid" 2>/dev/null; then
+      left="$left$pid "
+    else
+      builtin wait "$pid" 2>/dev/null
+      code=$?
+      (( code != 127 )) && builtin printf '\e]aulora;job-ended;%d\a' "$code"
+    fi
+  done
+  __aulora_job_pids=$left
+}
+
+__aulora_precmd() {
+  local code=$?
+  if [[ -n $__aulora_ran ]]; then
+    __aulora_ran=
+    builtin printf '\e]133;D;%s\a' "$code"
+  fi
+  [[ $__aulora_job_pids != " " ]] && __aulora_check_jobs
+  __aulora_jobs
+  return $code
+}
+
+__aulora_prompt_ready() {
+  local code=$?
+  __aulora_at_prompt=1
+  builtin printf '\e]133;A\a'
+  return $code
+}
+
+__aulora_preexec() {
+  [[ -n $__aulora_at_prompt ]] || return 0
+  __aulora_at_prompt=
+  # An empty line, or a job ending: just the prompt again.
+  [[ $BASH_COMMAND == __aulora_precmd* || $BASH_COMMAND == __aulora_chld* ]] && {
+    __aulora_at_prompt=1
+    [[ $BASH_COMMAND == __aulora_precmd* ]] && __aulora_at_prompt=
+    return 0
+  }
+  __aulora_ran=1
+  builtin printf '\e]133;C\a'
+}
+
+if [[ -n ${bash_preexec_imported-}${__bp_imported-} ]]; then
+  # bash-preexec owns the DEBUG trap and PROMPT_COMMAND; join it.
+  __aulora_bp_preexec() { __aulora_ran=1; builtin printf '\e]133;C\a'; }
+  __aulora_bp_precmd() { __aulora_precmd; __aulora_prompt_ready; }
+  preexec_functions+=(__aulora_bp_preexec)
+  precmd_functions=(__aulora_bp_precmd "${precmd_functions[@]}")
+else
+  __aulora_user_debug=$(builtin trap -p DEBUG)
+  __aulora_user_debug=${__aulora_user_debug#trap -- \'}
+  __aulora_user_debug=${__aulora_user_debug%\' DEBUG}
+  __aulora_debug() {
+    __aulora_preexec
+    [[ -n $__aulora_user_debug ]] && builtin eval "$__aulora_user_debug"
+    return 0
+  }
+  builtin trap '__aulora_debug' DEBUG
+  if [[ $(builtin declare -p PROMPT_COMMAND 2>/dev/null) == "declare -a"* ]]; then
+    PROMPT_COMMAND=(__aulora_precmd "${PROMPT_COMMAND[@]}" __aulora_prompt_ready)
+  else
+    __aulora_pc=${PROMPT_COMMAND-}
+    while [[ $__aulora_pc == *[\;[:space:]] ]]; do __aulora_pc=${__aulora_pc%?}; done
+    PROMPT_COMMAND="__aulora_precmd${__aulora_pc:+; $__aulora_pc}; __aulora_prompt_ready"
+    unset __aulora_pc
+  fi
+fi
+
+# A background job that ends while bash waits for input.
+__aulora_user_chld=$(builtin trap -p CHLD)
+__aulora_user_chld=${__aulora_user_chld#trap -- \'}
+__aulora_user_chld=${__aulora_user_chld%\' SIGCHLD}
+__aulora_user_chld=${__aulora_user_chld%\' CHLD}
+__aulora_chld() {
+  [[ -n $__aulora_at_prompt && $__aulora_job_pids != " " ]] && {
+    __aulora_check_jobs
+    __aulora_jobs
+  }
+  [[ -n $__aulora_user_chld ]] && builtin eval "$__aulora_user_chld"
+  return 0
+}
+builtin trap '__aulora_chld' CHLD
+# Report a job's end when it ends, not at the next prompt.
+builtin set -b
