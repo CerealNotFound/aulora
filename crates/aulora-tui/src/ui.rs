@@ -1995,6 +1995,29 @@ mod tests {
     }
 
     #[test]
+    fn a_dev_server_that_died_without_an_error_is_red() {
+        let mut app = App::new(Conn::Demo, true, String::new());
+        let mut snap = crate::demo::Demo::new().snap;
+        let dev = snap.panes.iter_mut().find(|p| p.kind == PaneKind::Command).unwrap();
+        dev.command = Some(ShellCommand::Ended { code: 0, at: 5_000 });
+        let id = dev.id.clone();
+        app.set_snapshot(snap);
+        // You had another row selected when it stopped.
+        app.selected = app.rows().into_iter().find(|r| *r != RowRef::Pane(id.clone()));
+        app.now = 1_000;
+        app.mark_seen();
+        app.now = 6_000;
+        app.mark_seen();
+
+        let row = RowRef::Pane(id);
+        assert_eq!(app.status(&row), Status::Blocked);
+        assert_eq!(status_color(app.status(&row)), theme::get().red, "a red dot");
+        let spans = agent_detail(&app, &row);
+        assert_eq!(spans[0].content, "exited with code 0");
+        assert_eq!(spans[0].style.fg, Some(theme::get().red), "and red words");
+    }
+
+    #[test]
     fn helpers() {
         assert_eq!(fit("abcdef", 4), "abc…");
         let l = lr(vec![sp("left side text", text())], vec![sp("R", text())], 10);
