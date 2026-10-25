@@ -25,3 +25,19 @@ __aulora_preexec() {
 typeset -ga precmd_functions preexec_functions
 precmd_functions=(__aulora_precmd ${precmd_functions:#__aulora_precmd})
 preexec_functions+=(__aulora_preexec)
+
+# A pane started with a command types it at the first prompt, so it's
+# in your history and the shell is still there when it ends.
+if [[ -n ${AULORA_RUN-} ]]; then
+  typeset -g __aulora_run=$AULORA_RUN
+  unset AULORA_RUN
+  __aulora_run_once() {
+    add-zle-hook-widget -d line-init __aulora_run_once
+    BUFFER=$__aulora_run
+    unset __aulora_run
+    zle .accept-line
+  }
+  autoload -Uz add-zle-hook-widget
+  zle -N __aulora_run_once
+  add-zle-hook-widget line-init __aulora_run_once
+fi

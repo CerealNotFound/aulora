@@ -54,6 +54,7 @@ const STRIP_ENV: &[&str] = &[
     "WEZTERM_PANE",
     "KITTY_WINDOW_ID",
     "AULORA_PANE_ID",
+    "AULORA_RUN",
     "AULORA_ZDOTDIR",
     "AULORA_USER_ZDOTDIR",
 ];
@@ -185,7 +186,8 @@ fn quote(s: &str) -> String {
 
 /// The argv for a pane. Everything runs under the user's login shell so
 /// PATH and other profile settings match a normal terminal. `zdotdir` is
-/// aulora's zsh integration, when the shell is zsh.
+/// aulora's zsh integration, when the shell is zsh: a command is then
+/// typed at the shell's first prompt (AULORA_RUN, see `command_line`).
 pub fn argv(sh: &str, kind: PaneKind, args: &[String], zdotdir: Option<&std::path::Path>) -> Vec<String> {
     let sh = sh.to_string();
     // The shell to fall back to when a program exits, like a normal terminal.
@@ -200,11 +202,14 @@ pub fn argv(sh: &str, kind: PaneKind, args: &[String], zdotdir: Option<&std::pat
             let claude = if extra.is_empty() { "claude".to_string() } else { format!("claude {}", extra.join(" ")) };
             vec![sh, "-l".into(), "-i".into(), "-c".into(), format!("{claude}; {fallback}")]
         }
-        PaneKind::Command => vec![sh, "-l".into(), "-c".into(), command_line(args)],
+        PaneKind::Command if zdotdir.is_some() => vec![sh, "-l".into()],
+        PaneKind::Command => {
+            vec![sh, "-l".into(), "-i".into(), "-c".into(), format!("{}; {fallback}", command_line(args))]
+        }
     }
 }
 
-/// A command pane's command line.
+/// A command pane's command as it's typed at the prompt.
 pub fn command_line(args: &[String]) -> String {
     args.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ")
 }
@@ -296,6 +301,9 @@ impl Proc {
             }
             cmd.env("ZDOTDIR", dir);
             cmd.env("AULORA_ZDOTDIR", dir);
+            if spec.kind == PaneKind::Command {
+                cmd.env("AULORA_RUN", command_line(&spec.args));
+            }
         }
         for (k, v) in &spec.env {
             cmd.env(k, v);
@@ -579,19 +587,34 @@ mod tests {
     }
 
     #[test]
-    fn zsh_says_how_each_command_ended() {
+    fn a_command_pane_drops_back_to_its_shell() {
+        let (tx, rx) = mpsc::channel();
+        let p = Proc::spawn(
+            &spec(PaneKind::Command, &["sh", "-c", "printf served; exit 4"]),
+            move |e| tx.send(e).unwrap(),
+            || {},
+        )
+        .unwrap();
+        assert!(wait_for(&p, "served"), "screen was: {:?}", p.text());
+        p.write(b"echo still here\r".to_vec());
+        assert!(wait_for(&p, "still here"), "screen was: {:?}", p.text());
+        assert!(rx.try_recv().is_err(), "the pane is still open");
+        p.kill();
+    }
+
+    #[test]
+    fn zsh_says_how_each_command_ended_and_keeps_it_in_history() {
         if !std::path::Path::new("/bin/zsh").exists() {
             return;
         }
         // An empty ZDOTDIR of your own: none of your startup files.
         let home = std::env::temp_dir().join(format!("aulora-zsh-test-{}", std::process::id()));
         std::fs::create_dir_all(&home).unwrap();
-        let mut spec = spec(PaneKind::Shell, &[]);
+        let mut spec = spec(PaneKind::Command, &["sh", "-c", "printf served; exit 3"]);
         spec.shell = Some("/bin/zsh".into());
         spec.env = vec![("AULORA_USER_ZDOTDIR".into(), home.to_string_lossy().to_string())];
         let (tx, rx) = mpsc::channel();
         let p = Proc::spawn(&spec, move |e| tx.send(e).unwrap(), || {}).unwrap();
-        p.write(b"sh -c 'printf served; exit 3'\r".to_vec());
         let code = || p.command_exit().map(|e| e.code);
         assert!(wait_until(|| code() == Some(3)), "screen was: {:?}", p.text());
         assert!(p.text().contains("served"));
@@ -673,5 +696,6 @@ mod tests {
         let dir = std::path::Path::new("/a/zsh dir");
         let a = argv("/bin/zsh", PaneKind::Claude, &[], Some(dir));
         assert_eq!(a[4], "claude; ZDOTDIR='/a/zsh dir' exec /bin/zsh -l", "the shell after it is integrated too");
+        assert_eq!(argv("/bin/zsh", PaneKind::Command, &["pnpm".into(), "dev".into()], Some(dir)), ["/bin/zsh", "-l"]);
     }
 }
