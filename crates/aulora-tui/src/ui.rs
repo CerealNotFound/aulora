@@ -524,11 +524,11 @@ fn agent_detail(app: &App, r: &RowRef) -> Vec<Span<'static>> {
     match r {
         RowRef::Pane(id) => match app.pane(id) {
             Some(Pane { exit: Some(e), .. }) => {
-                vec![sp(crate::app::ending(Some(e.code)).0, fg(t.red)), sp(" · r restart · x close", faint())]
+                vec![sp(aulora_core::util::ending(Some(e.code)).0, fg(t.red)), sp(" · r restart · x close", faint())]
             }
             Some(p) if app.failed_command(&p.id).is_some_and(|code| code != Some(0)) => {
                 let code = app.failed_command(&p.id).flatten();
-                vec![sp(crate::app::ending(code).0, fg(t.red))]
+                vec![sp(aulora_core::util::ending(code).0, fg(t.red))]
             }
             Some(p) if matches!(p.command, Some(ShellCommand::Paused { .. })) => {
                 vec![sp("paused", fg(t.yellow)), sp(" · fg resumes it", faint())]
@@ -543,7 +543,7 @@ fn agent_detail(app: &App, r: &RowRef) -> Vec<Span<'static>> {
             Some(Pane { server_stopped: Some(s), .. }) => {
                 vec![sp(format!("{} on {} stopped", s.name, ports(&s.ports)), fg(t.red))]
             }
-            Some(p) if app.failed_command(&p.id).is_some() => vec![sp(crate::app::ending(Some(0)).0, fg(t.red))],
+            Some(p) if app.failed_command(&p.id).is_some() => vec![sp(aulora_core::util::ending(Some(0)).0, fg(t.red))],
             Some(p) => {
                 let what = p.title.clone().unwrap_or_else(|| match p.kind {
                     PaneKind::Command => p.args.join(" "),
@@ -980,7 +980,7 @@ fn leaf_title(app: &App, view: &crate::layout::View, focused: bool) -> Vec<Span<
                 v.push(sp(format!(" · {}", short_model(&m)), faint()));
             }
             if let Some(p) = app.pane(id).filter(|p| p.exit.is_some()) {
-                v.push(sp(format!(" · {}", crate::app::ending(p.exit.as_ref().map(|e| e.code)).0), fg(t.red)));
+                v.push(sp(format!(" · {}", aulora_core::util::ending(p.exit.as_ref().map(|e| e.code)).0), fg(t.red)));
             }
         }
         View::Changes { filter } => {
@@ -1137,7 +1137,7 @@ fn pane_view(f: &mut Frame, area: Rect, app: &mut App, id: &str) {
         f.render_widget(Paragraph::new(Line::from(sp(msg, pill))), r);
     }
     if let Some(e) = app.pane(id).and_then(|p| p.exit.clone()) {
-        let msg = format!(" {} · r restart · x close ", crate::app::ending(Some(e.code)).0);
+        let msg = format!(" {} · r restart · x close ", aulora_core::util::ending(Some(e.code)).0);
         let wd = (w(&msg) as u16).min(term_area.width);
         let r = Rect { x: term_area.x, y: term_area.y + term_area.height.saturating_sub(1), width: wd, height: 1 };
         f.render_widget(Paragraph::new(Line::from(sp(msg, pill))), r);
@@ -2038,7 +2038,7 @@ mod tests {
 
     #[test]
     fn says_how_a_program_ended_in_words() {
-        use crate::app::ending;
+        use aulora_core::util::ending;
         assert_eq!(ending(Some(0)), ("exited with code 0".into(), false));
         assert_eq!(ending(Some(3)), ("exited with code 3".into(), true));
         assert_eq!(ending(Some(130)), ("stopped with Ctrl-C".into(), false), "you stopped it");

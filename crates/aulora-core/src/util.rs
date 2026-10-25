@@ -145,6 +145,48 @@ pub fn parse_iso_ms(s: &str) -> Option<Ms> {
     Some(((days * 86_400 + h * 3_600 + mi * 60 + sec - offset_min * 60) * 1_000) + ms)
 }
 
+/// How a program ended, in words, and whether something went wrong.
+/// Codes above 128 are signals, the way shells report them.
+pub fn ending(code: Option<u32>) -> (String, bool) {
+    let Some(code) = code else { return ("ended".into(), true) };
+    let Some(n) = code.checked_sub(128).filter(|n| (1..32).contains(n)).map(|n| n as i32) else {
+        return (format!("exited with code {code}"), code != 0);
+    };
+    let name = SIGNALS.iter().find(|(s, _)| *s == n).map(|(_, name)| name.to_string());
+    let name = name.unwrap_or_else(|| format!("signal {n}"));
+    match n {
+        libc::SIGINT => ("stopped with Ctrl-C".into(), false),
+        libc::SIGKILL => ("killed".into(), true),
+        libc::SIGTERM => ("terminated".into(), true),
+        libc::SIGHUP => ("hung up".into(), true),
+        libc::SIGSEGV | libc::SIGBUS | libc::SIGILL | libc::SIGFPE | libc::SIGABRT | libc::SIGTRAP | libc::SIGSYS => {
+            (format!("crashed ({name})"), true)
+        }
+        _ => (format!("killed by {name}"), true),
+    }
+}
+
+const SIGNALS: &[(i32, &str)] = &[
+    (libc::SIGHUP, "SIGHUP"),
+    (libc::SIGINT, "SIGINT"),
+    (libc::SIGQUIT, "SIGQUIT"),
+    (libc::SIGILL, "SIGILL"),
+    (libc::SIGTRAP, "SIGTRAP"),
+    (libc::SIGABRT, "SIGABRT"),
+    (libc::SIGBUS, "SIGBUS"),
+    (libc::SIGFPE, "SIGFPE"),
+    (libc::SIGKILL, "SIGKILL"),
+    (libc::SIGUSR1, "SIGUSR1"),
+    (libc::SIGSEGV, "SIGSEGV"),
+    (libc::SIGUSR2, "SIGUSR2"),
+    (libc::SIGPIPE, "SIGPIPE"),
+    (libc::SIGALRM, "SIGALRM"),
+    (libc::SIGTERM, "SIGTERM"),
+    (libc::SIGSYS, "SIGSYS"),
+    (libc::SIGXCPU, "SIGXCPU"),
+    (libc::SIGXFSZ, "SIGXFSZ"),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
