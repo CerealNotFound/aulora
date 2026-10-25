@@ -15,7 +15,7 @@ use aulora_core::model::{Ms, PaneExit, PaneKind, ShellCommand, now_ms};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::sync::broadcast;
 
-use crate::zsh::{self, Mark};
+use crate::zsh::{self, Mark, ShellState};
 
 const SCROLLBACK: usize = 5_000;
 const CHANNEL: usize = 1_024;
@@ -157,7 +157,7 @@ pub struct Proc {
     killer: Mutex<Killer>,
     pub last_output: AtomicI64,
     pub bytes_out: AtomicU64,
-    command: Mutex<Option<ShellCommand>>,
+    shell: Mutex<ShellState>,
 }
 
 fn nz(n: u16) -> NonZeroU16 {
@@ -332,7 +332,7 @@ impl Proc {
             killer: Mutex::new(Killer::Pty(killer)),
             last_output: AtomicI64::new(now_ms()),
             bytes_out: AtomicU64::new(0),
-            command: Mutex::new(None),
+            shell: Mutex::new(ShellState::default()),
         });
 
         wire(&proc_, &spec.id, reader, writer, input_rx, on_wake)?;
@@ -399,7 +399,7 @@ impl Proc {
             killer: Mutex::new(running.map(|(_, p)| Killer::Pid(p)).unwrap_or(Killer::Gone)),
             last_output: AtomicI64::new(now_ms()),
             bytes_out: AtomicU64::new(0),
-            command: Mutex::new(None),
+            shell: Mutex::new(ShellState::default()),
         });
         let (Some(reader), Some(writer), Some((_, pid))) = (reader, writer, running) else {
             return Ok(proc_);
@@ -512,25 +512,25 @@ impl Proc {
 
     /// What the pane's shell is doing with its last command, when it says.
     pub fn command(&self) -> Option<ShellCommand> {
-        self.command.lock().unwrap().clone()
+        self.shell.lock().unwrap().command()
     }
 
     /// Carry over what a replaced daemon knew.
     pub fn set_command(&self, command: Option<ShellCommand>) {
-        *self.command.lock().unwrap() = command;
+        *self.shell.lock().unwrap() = ShellState::resume(command);
     }
 
     /// Take in the shell's reports; true when the command state changed.
     fn note(&self, marks: &[Mark], now: Ms) -> bool {
-        let mut command = self.command.lock().unwrap();
-        let before = command.clone();
-        for m in marks {
-            *command = Some(match m {
-                Mark::Started => ShellCommand::Running { since: now },
-                Mark::Ended(code) => ShellCommand::Ended { code: *code, at: now },
-            });
+        if marks.is_empty() {
+            return false;
         }
-        *command != before
+        let mut shell = self.shell.lock().unwrap();
+        let before = shell.command();
+        for m in marks {
+            shell.note(*m, now);
+        }
+        shell.command() != before
     }
 }
 
@@ -653,6 +653,33 @@ mod tests {
         );
         assert!(p.text().contains("listening on :3000"));
         assert!(rx.try_recv().is_err(), "the shell is still open");
+        p.kill();
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn zsh_says_when_jobs_run_behind_the_prompt_are_paused_and_end() {
+        if !std::path::Path::new("/bin/zsh").exists() {
+            return;
+        }
+        let home = std::env::temp_dir().join(format!("aulora-zsh-jobs-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        let mut spec = spec(PaneKind::Shell, &[]);
+        spec.shell = Some("/bin/zsh".into());
+        spec.env = vec![("AULORA_USER_ZDOTDIR".into(), home.to_string_lossy().to_string())];
+        let p = Proc::spawn(&spec, |_| {}, || {}).unwrap();
+        let is = |want: &dyn Fn(&ShellCommand) -> bool| wait_until(|| p.command().as_ref().is_some_and(want));
+
+        p.write(b"sh -c 'sleep 1; exit 3' &\r".to_vec());
+        assert!(is(&|c| matches!(c, ShellCommand::Running { background: true, .. })), "screen: {:?}", p.text());
+        assert!(is(&|c| matches!(c, ShellCommand::Ended { code: 3, .. })), "screen: {:?}", p.text());
+
+        p.write(b"sleep 30\r".to_vec());
+        assert!(is(&|c| matches!(c, ShellCommand::Running { background: false, .. })));
+        p.write(b"\x1a".to_vec());
+        assert!(is(&|c| matches!(c, ShellCommand::Paused { .. })), "screen: {:?}", p.text());
+        p.write(b"kill -9 %1\r".to_vec());
+        assert!(is(&|c| matches!(c, ShellCommand::Ended { code: 137, .. })), "screen: {:?}", p.text());
         p.kill();
         let _ = std::fs::remove_dir_all(&home);
     }

@@ -585,7 +585,7 @@ impl App {
                     return Status::Blocked;
                 }
                 match p.command {
-                    Some(ShellCommand::Running { .. }) => Status::Running,
+                    Some(ShellCommand::Running { .. } | ShellCommand::Paused { .. }) => Status::Running,
                     Some(ShellCommand::Ended { .. }) => Status::Idle,
                     // A shell that doesn't say: going by its output.
                     None if self.now - p.last_output_at < 2_000 => Status::Working,

@@ -433,7 +433,16 @@ pub struct PaneExit {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ShellCommand {
-    Running { since: Ms },
+    /// A command runs: in front (`background` false), or only jobs
+    /// started with `&` while the shell waits for input.
+    Running {
+        since: Ms,
+        #[serde(default)]
+        background: bool,
+    },
+    /// A job is paused (Ctrl-Z); `fg` brings it back.
+    Paused { since: Ms },
+    /// The last command or job ended with this code.
     Ended { code: u32, at: Ms },
 }
 

@@ -1967,7 +1967,7 @@ mod tests {
         let row = RowRef::Pane(id.clone());
         app.now = 1_000;
 
-        set(&mut app, &mut snap, ShellCommand::Running { since: 900 });
+        set(&mut app, &mut snap, ShellCommand::Running { since: 900, background: false });
         assert_eq!(app.status(&row), Status::Running);
 
         // Ended quietly while you were elsewhere: red, and it stays red.
@@ -1982,7 +1982,7 @@ mod tests {
         assert_eq!(app.status(&row), Status::Blocked, "looking at it doesn't make it fine");
 
         // Run it again from there: yellow. It ends fine in front of you: green.
-        set(&mut app, &mut snap, ShellCommand::Running { since: 2_100 });
+        set(&mut app, &mut snap, ShellCommand::Running { since: 2_100, background: false });
         assert_eq!(app.status(&row), Status::Running);
         set(&mut app, &mut snap, ShellCommand::Ended { code: 0, at: 2_200 });
         assert_eq!(app.status(&row), Status::Idle);
