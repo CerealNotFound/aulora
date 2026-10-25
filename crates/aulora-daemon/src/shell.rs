@@ -125,6 +125,17 @@ impl Mark {
     }
 }
 
+/// How long a command must have run for its end to be news: failing
+/// after 10 s, or ending without a word after a minute (a dev server,
+/// not a build).
+const FAILED_RUN: Ms = 10_000;
+const CLEAN_RUN: Ms = 60_000;
+
+/// Ctrl-C, or a pause (Ctrl-Z and the like): you did it, or it isn't over.
+fn quiet_end(code: u32) -> bool {
+    [libc::SIGINT, libc::SIGTSTP, libc::SIGSTOP, libc::SIGTTIN, libc::SIGTTOU].iter().any(|s| code == 128 + *s as u32)
+}
+
 /// What a pane's shell has said so far, put together.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ShellState {
@@ -144,8 +155,13 @@ pub struct ShellState {
 }
 
 impl ShellState {
-    pub fn note(&mut self, mark: Mark, now: Ms) {
+    /// Take in a mark. Returns an ending worth a notification (its code,
+    /// None when unknown): a command that failed after running a while,
+    /// or ended quietly after a long run, like a dev server; any job that
+    /// ended. Not Ctrl-C, which is you, nor a pause.
+    pub fn note(&mut self, mark: Mark, now: Ms) -> Option<Option<u32>> {
         self.heard = true;
+        let news = |code: u32| (!quiet_end(code)).then_some(Some(code));
         match mark {
             Mark::Started => self.running = Some(now),
             Mark::Ended(code) => {
@@ -154,12 +170,17 @@ impl ShellState {
                 let since = self.running.take();
                 if !since.is_some_and(|since| self.job_ended_at.is_some_and(|at| at >= since)) {
                     self.ended = Some((Some(code), now));
+                    let ran = since.map(|since| now - since).unwrap_or(0);
+                    if ran >= if code == 0 { CLEAN_RUN } else { FAILED_RUN } {
+                        return news(code);
+                    }
                 }
             }
             Mark::Jobs { running, paused } => {
                 // A job went without the shell saying how (bash 5 forgets a
                 // paused job's status once it's reported killed).
-                if running + paused < self.jobs + self.paused && !self.job_ended {
+                let vanished = running + paused < self.jobs + self.paused && !self.job_ended;
+                if vanished {
                     self.ended = Some((None, now));
                 }
                 self.job_ended = false;
@@ -170,6 +191,9 @@ impl ShellState {
                     self.paused_since = now;
                 }
                 (self.jobs, self.paused) = (running, paused);
+                if vanished {
+                    return Some(None);
+                }
             }
             Mark::JobEnded(code) => {
                 self.ended = Some((Some(code), now));
@@ -181,9 +205,11 @@ impl ShellState {
                 } else {
                     self.paused = self.paused.saturating_sub(1);
                 }
+                return news(code);
             }
             Mark::Prompt => {}
         }
+        None
     }
 
     /// The state to show: what runs in front, else a paused job, else
@@ -235,6 +261,25 @@ mod tests {
         assert_eq!(Kind::of("/opt/homebrew/bin/bash"), Some(Kind::Bash));
         assert_eq!(Kind::of("fish"), Some(Kind::Fish));
         assert_eq!(Kind::of("/bin/sh"), None);
+    }
+
+    #[test]
+    fn says_which_endings_are_news() {
+        let mut s = ShellState::default();
+        let run = |s: &mut ShellState, ran: Ms, code: u32| {
+            s.note(Mark::Started, 1_000);
+            s.note(Mark::Ended(code), 1_000 + ran)
+        };
+        assert_eq!(run(&mut s, 2_000, 1), None, "a quick failure, in front of you");
+        assert_eq!(run(&mut s, 15_000, 1), Some(Some(1)), "a server that died");
+        assert_eq!(run(&mut s, 15_000, 0), None, "a build that finished");
+        assert_eq!(run(&mut s, 120_000, 0), Some(Some(0)), "a server that stopped without a word");
+        assert_eq!(run(&mut s, 120_000, 130), None, "Ctrl-C is you");
+        assert_eq!(run(&mut s, 120_000, 128 + libc::SIGTSTP as u32), None, "paused, not over");
+        s.note(Mark::Jobs { running: 1, paused: 0 }, 2_000);
+        assert_eq!(s.note(Mark::JobEnded(4), 3_000), Some(Some(4)), "any job that ends");
+        s.note(Mark::Jobs { running: 0, paused: 1 }, 4_000);
+        assert_eq!(s.note(Mark::Jobs { running: 0, paused: 0 }, 5_000), Some(None), "gone without a word");
     }
 
     #[test]

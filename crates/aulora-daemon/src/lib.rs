@@ -298,7 +298,7 @@ impl Shared {
             let id = h.pane.id.clone();
             let generation = h.pane.generation;
             let (on_exit, on_wake) = (Arc::downgrade(self), Arc::downgrade(self));
-            let exit_id = id.clone();
+            let (exit_id, wake_id) = (id.clone(), id.clone());
             let adopted = Proc::adopt(
                 &id,
                 h.fd,
@@ -316,6 +316,7 @@ impl Shared {
                 },
                 move || {
                     if let Some(s) = on_wake.upgrade() {
+                        s.announce(&wake_id);
                         s.changed();
                     }
                 },
@@ -408,13 +409,27 @@ impl Shared {
         self.changed();
     }
 
+    /// Tell you on the desktop how something in a pane ended, if that's
+    /// news (see `ShellState::note`).
+    fn announce(&self, pane_id: &str) {
+        let Some(news) = self.proc_(pane_id).and_then(|p| p.take_news().pop()) else { return };
+        let title = self
+            .hub
+            .lock()
+            .unwrap()
+            .panes
+            .get(pane_id)
+            .map(|p| format!("{} › {}", aulora_core::util::basename(&p.project_root), p.name));
+        self.notifier.needs_you(&format!("pane {pane_id}"), &title.unwrap_or_default(), &news);
+    }
+
     fn proc_(&self, id: &str) -> Option<Arc<Proc>> {
         self.procs.lock().unwrap().get(id).cloned()
     }
 
     fn start(self: &Arc<Self>, spec: &Spec, generation: u32) -> Result<Arc<Proc>> {
         let (on_exit, on_wake) = (Arc::downgrade(self), Arc::downgrade(self));
-        let id = spec.id.clone();
+        let (id, wake_id) = (spec.id.clone(), spec.id.clone());
         let proc_ = Proc::spawn(
             spec,
             move |exit| {
@@ -426,6 +441,7 @@ impl Shared {
             },
             move || {
                 if let Some(s) = on_wake.upgrade() {
+                    s.announce(&wake_id);
                     s.changed();
                 }
             },
@@ -1090,6 +1106,8 @@ async fn cwd_loop(shared: Arc<Shared>) {
 /// gone before the shell says so.
 async fn escaped_loop(shared: Arc<Shared>) {
     let mut escaped = procs::Escaped::default();
+    // Shells with no processes under them at the last scan.
+    let mut childless = std::collections::HashSet::new();
     loop {
         tokio::time::sleep(Duration::from_secs(2)).await;
         let panes: Vec<(String, u32)> = shared
@@ -1115,9 +1133,16 @@ async fn escaped_loop(shared: Arc<Shared>) {
         for (id, pid) in panes {
             let Some(p) = shared.proc_(&id) else { continue };
             changed |= p.set_servers(scan.servers.get(&id).cloned().unwrap_or_default(), now);
+            // Two scans in a row, so zsh and fish, which say how a job
+            // ended within a second, are heard first.
             if scan.children.get(&pid).copied().unwrap_or(0) == 0 {
-                changed |= p.jobs_gone(now);
+                if !childless.insert(id.clone()) {
+                    changed |= p.jobs_gone(now);
+                }
+            } else {
+                childless.remove(&id);
             }
+            shared.announce(&id);
         }
         if changed {
             shared.changed();

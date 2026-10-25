@@ -1,13 +1,13 @@
-//! A desktop notification when an agent starts needing you, so you hear
-//! about it with the dashboard closed. Off with `"notify": false` in
-//! ~/.aulora/config.json.
+//! A desktop notification when an agent starts needing you, or a dev
+//! server in a terminal stops, so you hear about it with the dashboard
+//! closed. Off with `"notify": false` in ~/.aulora/config.json.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 
 use aulora_core::model::{Ms, now_ms};
 
-/// The same session won't notify more often than this.
+/// The same session or terminal won't notify more often than this.
 const QUIET: Ms = 30_000;
 
 #[derive(Default)]

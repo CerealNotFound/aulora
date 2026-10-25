@@ -188,6 +188,8 @@ pub struct Proc {
     prompted: std::sync::atomic::AtomicBool,
     /// Servers the pane started that left its shell, and the last to stop.
     servers: Mutex<(Vec<Server>, Option<ServerStop>)>,
+    /// Endings to tell you about, in words, not yet told.
+    news: Mutex<Vec<String>>,
 }
 
 /// Counts a real terminal as showing a pane until dropped.
@@ -419,6 +421,7 @@ impl Proc {
             terminals: Arc::new(AtomicUsize::new(0)),
             prompted: std::sync::atomic::AtomicBool::new(false),
             servers: Mutex::new((Vec::new(), None)),
+            news: Mutex::new(Vec::new()),
         });
 
         wire(&proc_, &spec.id, reader, writer, input_rx, on_wake)?;
@@ -501,6 +504,7 @@ impl Proc {
             terminals: Arc::new(AtomicUsize::new(0)),
             prompted: std::sync::atomic::AtomicBool::new(false),
             servers: Mutex::new((Vec::new(), None)),
+            news: Mutex::new(Vec::new()),
         });
         let (Some(reader), Some(writer), Some((_, pid))) = (reader, writer, running) else {
             return Ok(proc_);
@@ -666,7 +670,9 @@ impl Proc {
         let mut shell = self.shell.lock().unwrap();
         let before = shell.command();
         for m in marks {
-            shell.note(*m, now);
+            if let Some(code) = shell.note(*m, now) {
+                self.news.lock().unwrap().push(aulora_core::util::ending(code).0);
+            }
         }
         shell.command() != before || cleared
     }
@@ -678,8 +684,10 @@ impl Proc {
         if s.0 == now {
             return false;
         }
-        if let Some(gone) = s.0.iter().find(|old| !now.iter().any(|n| n.pid == old.pid)) {
-            s.1 = Some(ServerStop { name: gone.name.clone(), ports: gone.ports.clone(), at });
+        if let Some(gone) = s.0.iter().find(|old| !now.iter().any(|n| n.pid == old.pid)).cloned() {
+            let ports: Vec<String> = gone.ports.iter().map(|p| format!(":{p}")).collect();
+            self.news.lock().unwrap().push(format!("{} on {} stopped", gone.name, ports.join(", ")));
+            s.1 = Some(ServerStop { name: gone.name, ports: gone.ports, at });
         }
         s.0 = now;
         true
@@ -703,8 +711,15 @@ impl Proc {
         if !matches!(before, Some(ShellCommand::Running { background: true, .. })) {
             return false;
         }
-        shell.note(Mark::Jobs { running: 0, paused: 0 }, now);
+        if let Some(code) = shell.note(Mark::Jobs { running: 0, paused: 0 }, now) {
+            self.news.lock().unwrap().push(aulora_core::util::ending(code).0);
+        }
         shell.command() != before
+    }
+
+    /// Endings to tell you about, since last asked.
+    pub fn take_news(&self) -> Vec<String> {
+        std::mem::take(&mut *self.news.lock().unwrap())
     }
 }
 
