@@ -947,6 +947,23 @@ impl App {
         true
     }
 
+    /// The workspaces of everything that needs you, for the alert line:
+    /// sessions waiting on you, oldest first, then red terminals (a dev
+    /// server that stopped).
+    pub fn needs_you(&self) -> Vec<String> {
+        let mut roots: Vec<String> = self.alerts().iter().map(|s| s.project_root.clone()).collect();
+        let mut red: Vec<(Ms, String)> = self
+            .agents()
+            .into_iter()
+            .filter(|r| matches!(r, RowRef::Pane(id) if self.pane_session(id).is_none_or(|s| !s.state.is_live())))
+            .filter(|r| self.status(r) == Status::Blocked)
+            .filter_map(|r| Some((self.since(&r), self.root_of(&r)?)))
+            .collect();
+        red.sort();
+        roots.extend(red.into_iter().map(|(_, root)| root));
+        roots
+    }
+
     /// Sessions that are blocked, oldest first, for the alert line.
     pub fn alerts(&self) -> Vec<&Session> {
         let Some(snap) = &self.snap else { return vec![] };

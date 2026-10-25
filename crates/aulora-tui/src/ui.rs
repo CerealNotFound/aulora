@@ -1683,9 +1683,9 @@ fn mode_bar(f: &mut Frame, area: Rect, app: &App) {
         }
     }
     let mut right = Vec::new();
-    let alerts = app.alerts();
-    if let Some(a) = alerts.first() {
-        right.push(sp(format!("● {} needs you ", basename(&a.project_root)), bold(t.red)));
+    let alerts = app.needs_you();
+    if let Some(root) = alerts.first() {
+        right.push(sp(format!("● {} needs you ", basename(root)), bold(t.red)));
         if alerts.len() > 1 {
             right.push(sp(format!("+{} ", alerts.len() - 1), fg(t.red)));
         }
@@ -2094,6 +2094,26 @@ mod tests {
         let spans = agent_detail(&app, &row);
         assert_eq!(spans[0].content, "node on :3000 stopped");
         assert_eq!(spans[0].style.fg, Some(theme::get().red));
+    }
+
+    #[test]
+    fn a_red_terminal_needs_you_and_n_goes_there() {
+        let mut app = App::new(Conn::Demo, true, String::new());
+        let mut snap = crate::demo::Demo::new().snap;
+        // Nothing else waits on you.
+        for s in &mut snap.sessions {
+            if matches!(s.state, SessionState::NeedsYou { .. }) {
+                s.state = SessionState::Idle;
+            }
+        }
+        let dev = snap.panes.iter_mut().find(|p| p.kind == PaneKind::Command).unwrap();
+        dev.command = Some(ShellCommand::Ended { code: Some(1), at: 5 });
+        let (id, root) = (dev.id.clone(), dev.project_root.clone());
+        app.set_snapshot(snap);
+        assert_eq!(app.needs_you(), vec![root], "in the alert line, bottom right");
+        app.selected = None;
+        assert!(app.next_attention());
+        assert_eq!(app.selected, Some(RowRef::Pane(id)), "n goes to it");
     }
 
     #[test]
