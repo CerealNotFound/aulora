@@ -626,6 +626,16 @@ impl App {
                 if self.failed_command(id).is_some() {
                     return Status::Blocked;
                 }
+                if matches!(p.command, Some(ShellCommand::Running { .. } | ShellCommand::Paused { .. })) {
+                    return Status::Running;
+                }
+                // Servers it started that left the shell: up, or stopped.
+                if !p.servers.is_empty() {
+                    return Status::Running;
+                }
+                if p.server_stopped.is_some() {
+                    return Status::Blocked;
+                }
                 match p.command {
                     Some(ShellCommand::Running { .. } | ShellCommand::Paused { .. }) => Status::Running,
                     Some(ShellCommand::Ended { .. }) => Status::Idle,

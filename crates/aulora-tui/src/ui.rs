@@ -536,6 +536,13 @@ fn agent_detail(app: &App, r: &RowRef) -> Vec<Span<'static>> {
             Some(p) if matches!(p.command, Some(ShellCommand::Running { background: true, .. })) => {
                 vec![sp("running in the background", faint())]
             }
+            Some(p) if !p.servers.is_empty() && !matches!(p.command, Some(ShellCommand::Running { .. })) => {
+                let s = &p.servers[0];
+                vec![sp(format!("{} on {} in the background", s.name, ports(&s.ports)), faint())]
+            }
+            Some(Pane { server_stopped: Some(s), .. }) => {
+                vec![sp(format!("{} on {} stopped", s.name, ports(&s.ports)), fg(t.red))]
+            }
             Some(p) => {
                 let what = p.title.clone().unwrap_or_else(|| match p.kind {
                     PaneKind::Command => p.args.join(" "),
@@ -547,6 +554,11 @@ fn agent_detail(app: &App, r: &RowRef) -> Vec<Span<'static>> {
         },
         _ => vec![],
     }
+}
+
+/// Ports as ":3000, :3001".
+fn ports(ports: &[u16]) -> String {
+    ports.iter().map(|p| format!(":{p}")).collect::<Vec<_>>().join(", ")
 }
 
 fn sidebar(f: &mut Frame, area: Rect, app: &mut App) {
@@ -2056,6 +2068,31 @@ mod tests {
             show(ShellCommand::Running { since: 8, background: true }),
             (Status::Running, "running in the background".into())
         );
+    }
+
+    #[test]
+    fn a_server_that_left_its_shell_is_yellow_then_red_when_it_stops() {
+        let mut app = App::new(Conn::Demo, true, String::new());
+        let mut snap = crate::demo::Demo::new().snap;
+        let id = snap.panes.iter().find(|p| p.kind == PaneKind::Command).unwrap().id.clone();
+        let row = RowRef::Pane(id.clone());
+        fn pane<'a>(snap: &'a mut Snapshot, id: &str) -> &'a mut Pane {
+            snap.panes.iter_mut().find(|p| p.id == id).unwrap()
+        }
+        pane(&mut snap, &id).command = Some(ShellCommand::Ended { code: Some(0), at: 1 });
+        pane(&mut snap, &id).servers = vec![Server { pid: 9, name: "node".into(), ports: vec![3000] }];
+        app.set_snapshot(snap.clone());
+        app.seen.insert(id.clone(), 1);
+        assert_eq!(app.status(&row), Status::Running);
+        assert_eq!(agent_detail(&app, &row)[0].content, "node on :3000 in the background");
+
+        pane(&mut snap, &id).servers.clear();
+        pane(&mut snap, &id).server_stopped = Some(ServerStop { name: "node".into(), ports: vec![3000], at: 2 });
+        app.set_snapshot(snap);
+        assert_eq!(app.status(&row), Status::Blocked);
+        let spans = agent_detail(&app, &row);
+        assert_eq!(spans[0].content, "node on :3000 stopped");
+        assert_eq!(spans[0].style.fg, Some(theme::get().red));
     }
 
     #[test]
