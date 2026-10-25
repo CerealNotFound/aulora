@@ -771,17 +771,20 @@ mod tests {
 
     #[test]
     fn answers_the_programs_questions_unless_a_terminal_does() {
-        let p = Proc::spawn(&spec(PaneKind::Shell, &[]), |_| {}, || {}).unwrap();
+        // bash: its `read` has -s and -d, which dash, Ubuntu's sh, hasn't.
+        let (spec, home) = bare("/bin/bash", PaneKind::Shell, &[]);
+        let p = Proc::spawn(&spec, |_| {}, || {}).unwrap();
         p.write(b"printf '\\033[c'; read -rs -d c r; echo \"da=${r#?}\"\r".to_vec());
         assert!(wait_for(&p, "da=[?62;22"), "screen was: {:?}", p.text());
         p.kill();
 
-        let p = Proc::spawn(&spec(PaneKind::Shell, &[]), |_| {}, || {}).unwrap();
+        let p = Proc::spawn(&spec, |_| {}, || {}).unwrap();
         let shown = p.terminal_attached();
         p.write(b"printf '\\033[c'; read -rs -t 1 -d c r; echo \"none=${#r}\"\r".to_vec());
         assert!(wait_for(&p, "none=0"), "a real terminal answers instead: {:?}", p.text());
         drop(shown);
         p.kill();
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
