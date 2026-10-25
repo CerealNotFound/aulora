@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
 use anyhow::{Context, Result};
-use aulora_core::model::{Ms, PaneExit, PaneKind, ShellCommand, now_ms};
+use aulora_core::model::{Ms, PaneExit, PaneKind, Server, ServerStop, ShellCommand, now_ms};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::sync::broadcast;
 
@@ -186,6 +186,8 @@ pub struct Proc {
     terminals: Arc<AtomicUsize>,
     /// The shell has drawn a prompt.
     prompted: std::sync::atomic::AtomicBool,
+    /// Servers the pane started that left its shell, and the last to stop.
+    servers: Mutex<(Vec<Server>, Option<ServerStop>)>,
 }
 
 /// Counts a real terminal as showing a pane until dropped.
@@ -416,6 +418,7 @@ impl Proc {
             shell: Mutex::new(ShellState::default()),
             terminals: Arc::new(AtomicUsize::new(0)),
             prompted: std::sync::atomic::AtomicBool::new(false),
+            servers: Mutex::new((Vec::new(), None)),
         });
 
         wire(&proc_, &spec.id, reader, writer, input_rx, on_wake)?;
@@ -497,6 +500,7 @@ impl Proc {
             shell: Mutex::new(ShellState::default()),
             terminals: Arc::new(AtomicUsize::new(0)),
             prompted: std::sync::atomic::AtomicBool::new(false),
+            servers: Mutex::new((Vec::new(), None)),
         });
         let (Some(reader), Some(writer), Some((_, pid))) = (reader, writer, running) else {
             return Ok(proc_);
@@ -657,11 +661,49 @@ impl Proc {
         if marks.contains(&Mark::Prompt) {
             self.prompted.store(true, Ordering::SeqCst);
         }
+        // Something runs again: a server that stopped isn't news anymore.
+        let cleared = marks.contains(&Mark::Started) && self.servers.lock().unwrap().1.take().is_some();
         let mut shell = self.shell.lock().unwrap();
         let before = shell.command();
         for m in marks {
             shell.note(*m, now);
         }
+        shell.command() != before || cleared
+    }
+
+    /// The servers found running for this pane now; true if that changed.
+    /// One that's gone has stopped.
+    pub fn set_servers(&self, now: Vec<Server>, at: Ms) -> bool {
+        let mut s = self.servers.lock().unwrap();
+        if s.0 == now {
+            return false;
+        }
+        if let Some(gone) = s.0.iter().find(|old| !now.iter().any(|n| n.pid == old.pid)) {
+            s.1 = Some(ServerStop { name: gone.name.clone(), ports: gone.ports.clone(), at });
+        }
+        s.0 = now;
+        true
+    }
+
+    pub fn servers(&self) -> (Vec<Server>, Option<ServerStop>) {
+        self.servers.lock().unwrap().clone()
+    }
+
+    /// Carry over what a replaced daemon knew.
+    pub fn set_server_state(&self, servers: Vec<Server>, stopped: Option<ServerStop>) {
+        *self.servers.lock().unwrap() = (servers, stopped);
+    }
+
+    /// The shell's background jobs are all gone (it has no processes
+    /// left under it), before the shell itself says so: bash 5 only does
+    /// at its next prompt. True if that changed what to show.
+    pub fn jobs_gone(&self, now: Ms) -> bool {
+        let mut shell = self.shell.lock().unwrap();
+        let before = shell.command();
+        if !matches!(before, Some(ShellCommand::Running { background: true, .. })) {
+            return false;
+        }
+        shell.note(Mark::Jobs { running: 0, paused: 0 }, now);
         shell.command() != before
     }
 }
@@ -951,6 +993,19 @@ mod tests {
             p.kill();
             let _ = std::fs::remove_dir_all(&home);
         }
+    }
+
+    #[test]
+    fn a_server_that_goes_away_has_stopped_until_something_runs() {
+        let p = Proc::spawn(&spec(PaneKind::Shell, &[]), |_| {}, || {}).unwrap();
+        let node = Server { pid: 9, name: "node".into(), ports: vec![3000] };
+        assert!(p.set_servers(vec![node.clone()], 1));
+        assert!(!p.set_servers(vec![node], 2), "nothing new");
+        assert!(p.set_servers(vec![], 3));
+        assert_eq!(p.servers().1, Some(ServerStop { name: "node".into(), ports: vec![3000], at: 3 }));
+        assert!(p.note(&[Mark::Started], 4));
+        assert_eq!(p.servers().1, None, "you ran something there");
+        p.kill();
     }
 
     #[test]

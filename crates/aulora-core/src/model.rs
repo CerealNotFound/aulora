@@ -447,6 +447,24 @@ pub enum ShellCommand {
     Ended { code: Option<u32>, at: Ms },
 }
 
+/// A server started in a pane that left the pane's shell (it put
+/// itself in the background, or ran under nohup), found by the
+/// AULORA_PANE_ID it still carries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Server {
+    pub pid: u32,
+    pub name: String,
+    pub ports: Vec<u16>,
+}
+
+/// When such a server stopped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerStop {
+    pub name: String,
+    pub ports: Vec<u16>,
+    pub at: Ms,
+}
+
 /// A terminal whose process is owned by the daemon.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pane {
@@ -471,6 +489,12 @@ pub struct Pane {
     /// one, or when the shell doesn't say.
     #[serde(default)]
     pub command: Option<ShellCommand>,
+    /// Servers the pane started that left its shell, still running.
+    #[serde(default)]
+    pub servers: Vec<Server>,
+    /// The last of those to stop, since the shell last ran something.
+    #[serde(default)]
+    pub server_stopped: Option<ServerStop>,
     /// Bumped on every restart so clients know to re-attach.
     pub generation: u32,
 }

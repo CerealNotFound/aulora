@@ -518,6 +518,8 @@ mod tests {
             bell_at: None,
             exit: None,
             command: None,
+            servers: vec![],
+            server_stopped: None,
             generation: 0,
         }
     }

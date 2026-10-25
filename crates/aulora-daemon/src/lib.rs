@@ -209,6 +209,7 @@ impl Shared {
                 pane.bytes_out = p.bytes_out.load(Ordering::Relaxed);
                 pane.title = p.title();
                 pane.command = p.command();
+                (pane.servers, pane.server_stopped) = p.servers();
                 (pane.cols, pane.rows) = p.size();
             }
         }
@@ -262,6 +263,9 @@ impl Shared {
             .map(|mut pane| {
                 let exported = procs.get(&pane.id).map(|p| p.export());
                 pane.command = procs.get(&pane.id).and_then(|p| p.command());
+                if let Some(p) = procs.get(&pane.id) {
+                    (pane.servers, pane.server_stopped) = p.servers();
+                }
                 let (fd, screen, title) = match exported {
                     Some(e) => (e.fd.filter(|_| pane.is_running()), e.screen, e.title),
                     None => (None, Vec::new(), None),
@@ -319,6 +323,7 @@ impl Shared {
             match adopted {
                 Ok(p) => {
                     p.set_command(h.pane.command.clone());
+                    p.set_server_state(h.pane.servers.clone(), h.pane.server_stopped.clone());
                     self.procs.lock().unwrap().insert(id.clone(), p);
                     self.hub.lock().unwrap().add_pane(h.pane);
                 }
@@ -391,6 +396,8 @@ impl Shared {
                         bell_at: None,
                         exit: None,
                         command: None,
+                        servers: vec![],
+                        server_stopped: None,
                         generation: 0,
                     });
                     tracing::info!("restored pane {}", p.id);
@@ -478,6 +485,8 @@ impl Shared {
             bell_at: None,
             exit: None,
             command: None,
+            servers: vec![],
+            server_stopped: None,
             generation: 0,
         };
         if self.hub.lock().unwrap().add_pane(pane) {
@@ -611,6 +620,7 @@ pub async fn run(handover: bool) -> Result<()> {
     tokio::spawn(git_loop(shared.clone()));
     tokio::spawn(liveness_loop(shared.clone()));
     tokio::spawn(cwd_loop(shared.clone()));
+    tokio::spawn(escaped_loop(shared.clone()));
     tokio::spawn(transcript_loop(shared.clone()));
     tokio::spawn(discover_loop(shared.clone()));
     tokio::spawn(reach_loop(shared.clone()));
@@ -1071,6 +1081,46 @@ async fn cwd_loop(shared: Arc<Shared>) {
             if changed {
                 shared.changed();
             }
+        }
+    }
+}
+
+/// Every 2 s: servers that panes started and that left their shell
+/// (6 ms for some 700 processes), and shells whose background jobs are
+/// gone before the shell says so.
+async fn escaped_loop(shared: Arc<Shared>) {
+    let mut escaped = procs::Escaped::default();
+    loop {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let panes: Vec<(String, u32)> = shared
+            .hub
+            .lock()
+            .unwrap()
+            .panes
+            .values()
+            .filter(|p| p.is_running())
+            .filter_map(|p| Some((p.id.clone(), p.pid?)))
+            .collect();
+        if panes.is_empty() {
+            continue;
+        }
+        let job = tokio::task::spawn_blocking(move || {
+            let scan = escaped.scan(&panes, now_ms());
+            (escaped, panes, scan)
+        });
+        let Ok((back, panes, scan)) = job.await else { return };
+        escaped = back;
+        let now = now_ms();
+        let mut changed = false;
+        for (id, pid) in panes {
+            let Some(p) = shared.proc_(&id) else { continue };
+            changed |= p.set_servers(scan.servers.get(&id).cloned().unwrap_or_default(), now);
+            if scan.children.get(&pid).copied().unwrap_or(0) == 0 {
+                changed |= p.jobs_gone(now);
+            }
+        }
+        if changed {
+            shared.changed();
         }
     }
 }

@@ -496,6 +496,8 @@ impl Demo {
                 bell_at: None,
                 exit: None,
                 command: None,
+                servers: vec![],
+                server_stopped: None,
                 generation: 0,
             };
         self.snap.panes = vec![
