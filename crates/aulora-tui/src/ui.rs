@@ -523,7 +523,9 @@ fn agent_detail(app: &App, r: &RowRef) -> Vec<Span<'static>> {
     }
     match r {
         RowRef::Pane(id) => match app.pane(id) {
-            Some(p) if p.exit.is_some() => vec![sp("exited · r restart · x close", faint())],
+            Some(Pane { exit: Some(e), .. }) => {
+                vec![sp(format!("exited with code {}", e.code), fg(t.red)), sp(" · r restart · x close", faint())]
+            }
             Some(p) => {
                 let what = p.title.clone().unwrap_or_else(|| match p.kind {
                     PaneKind::Command => p.args.join(" "),
@@ -1933,6 +1935,19 @@ mod tests {
         assert_eq!(sidebar_scroll(25, Some((2, 4)), 10, 40), 1, "a selection above scrolls up to it");
         assert_eq!(sidebar_scroll(0, Some((14, 16)), 10, 40), 6, "and one below scrolls down to it");
         assert_eq!(sidebar_scroll(5, Some((8, 10)), 10, 40), 5, "one in view leaves it alone");
+    }
+
+    #[test]
+    fn an_exited_pane_says_its_code_in_red_even_for_zero() {
+        let mut app = App::new(Conn::Demo, true, String::new());
+        let mut snap = crate::demo::Demo::new().snap;
+        let dev = snap.panes.iter_mut().find(|p| p.kind == PaneKind::Command).unwrap();
+        dev.exit = Some(PaneExit { code: 0, signal: None, at: 1 });
+        let id = dev.id.clone();
+        app.set_snapshot(snap);
+        let spans = agent_detail(&app, &RowRef::Pane(id));
+        assert_eq!(spans[0].content, "exited with code 0");
+        assert_eq!(spans[0].style.fg, Some(theme::get().red));
     }
 
     #[test]
