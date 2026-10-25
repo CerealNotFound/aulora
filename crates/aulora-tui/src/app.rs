@@ -610,10 +610,10 @@ impl App {
 
     /// How the last command in a pane's shell ended, if that happened
     /// since you last had the pane selected.
-    pub fn unseen_command_exit(&self, pane_id: &str) -> Option<&CommandExit> {
+    pub fn unseen_command_exit(&self, pane_id: &str) -> Option<u32> {
         let p = self.pane(pane_id).filter(|p| p.is_running())?;
-        let e = p.command_exit.as_ref()?;
-        (self.seen.get(pane_id).copied().unwrap_or(0) < e.at).then_some(e)
+        let Some(ShellCommand::Ended { code, at }) = p.command else { return None };
+        (self.seen.get(pane_id).copied().unwrap_or(0) < at).then_some(code)
     }
 
     /// Mark what's on screen as seen, so "done" settles into "idle" and a

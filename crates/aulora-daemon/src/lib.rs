@@ -208,7 +208,7 @@ impl Shared {
                 pane.last_output_at = p.last_output_at();
                 pane.bytes_out = p.bytes_out.load(Ordering::Relaxed);
                 pane.title = p.title();
-                pane.command_exit = p.command_exit();
+                pane.command = p.command();
                 (pane.cols, pane.rows) = p.size();
             }
         }
@@ -261,7 +261,7 @@ impl Shared {
             .into_iter()
             .map(|mut pane| {
                 let exported = procs.get(&pane.id).map(|p| p.export());
-                pane.command_exit = procs.get(&pane.id).and_then(|p| p.command_exit());
+                pane.command = procs.get(&pane.id).and_then(|p| p.command());
                 let (fd, screen, title) = match exported {
                     Some(e) => (e.fd.filter(|_| pane.is_running()), e.screen, e.title),
                     None => (None, Vec::new(), None),
@@ -318,7 +318,7 @@ impl Shared {
             );
             match adopted {
                 Ok(p) => {
-                    p.set_command_exit(h.pane.command_exit.clone());
+                    p.set_command(h.pane.command.clone());
                     self.procs.lock().unwrap().insert(id.clone(), p);
                     self.hub.lock().unwrap().add_pane(h.pane);
                 }
@@ -390,7 +390,7 @@ impl Shared {
                         title: None,
                         bell_at: None,
                         exit: None,
-                        command_exit: None,
+                        command: None,
                         generation: 0,
                     });
                     tracing::info!("restored pane {}", p.id);
@@ -477,7 +477,7 @@ impl Shared {
             title: None,
             bell_at: None,
             exit: None,
-            command_exit: None,
+            command: None,
             generation: 0,
         };
         if self.hub.lock().unwrap().add_pane(pane) {

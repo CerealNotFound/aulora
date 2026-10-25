@@ -428,12 +428,13 @@ pub struct PaneExit {
     pub at: Ms,
 }
 
-/// How the last command run in a pane's shell ended, as the shell
-/// reported it (aulora's zsh integration, OSC 133).
+/// What the shell in a pane is doing with the command typed last, as
+/// the shell reports it (aulora's zsh integration, OSC 133).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CommandExit {
-    pub code: u32,
-    pub at: Ms,
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ShellCommand {
+    Running { since: Ms },
+    Ended { code: u32, at: Ms },
 }
 
 /// A terminal whose process is owned by the daemon.
@@ -456,10 +457,10 @@ pub struct Pane {
     pub title: Option<String>,
     pub bell_at: Option<Ms>,
     pub exit: Option<PaneExit>,
-    /// The last command run in the pane's shell, once it has ended; None
-    /// while one runs or when the shell doesn't say.
+    /// The command typed last in the pane's shell; None before the first
+    /// one, or when the shell doesn't say.
     #[serde(default)]
-    pub command_exit: Option<CommandExit>,
+    pub command: Option<ShellCommand>,
     /// Bumped on every restart so clients know to re-attach.
     pub generation: u32,
 }

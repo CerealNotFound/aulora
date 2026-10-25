@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
 use anyhow::{Context, Result};
-use aulora_core::model::{CommandExit, Ms, PaneExit, PaneKind, now_ms};
+use aulora_core::model::{Ms, PaneExit, PaneKind, ShellCommand, now_ms};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::sync::broadcast;
 
@@ -157,7 +157,7 @@ pub struct Proc {
     killer: Mutex<Killer>,
     pub last_output: AtomicI64,
     pub bytes_out: AtomicU64,
-    command_exit: Mutex<Option<CommandExit>>,
+    command: Mutex<Option<ShellCommand>>,
 }
 
 fn nz(n: u16) -> NonZeroU16 {
@@ -332,7 +332,7 @@ impl Proc {
             killer: Mutex::new(Killer::Pty(killer)),
             last_output: AtomicI64::new(now_ms()),
             bytes_out: AtomicU64::new(0),
-            command_exit: Mutex::new(None),
+            command: Mutex::new(None),
         });
 
         wire(&proc_, &spec.id, reader, writer, input_rx, on_wake)?;
@@ -399,7 +399,7 @@ impl Proc {
             killer: Mutex::new(running.map(|(_, p)| Killer::Pid(p)).unwrap_or(Killer::Gone)),
             last_output: AtomicI64::new(now_ms()),
             bytes_out: AtomicU64::new(0),
-            command_exit: Mutex::new(None),
+            command: Mutex::new(None),
         });
         let (Some(reader), Some(writer), Some((_, pid))) = (reader, writer, running) else {
             return Ok(proc_);
@@ -510,28 +510,27 @@ impl Proc {
         self.last_output.load(Ordering::Relaxed)
     }
 
-    /// How the last command in the pane's shell ended; None while one
-    /// runs, or when the shell doesn't say.
-    pub fn command_exit(&self) -> Option<CommandExit> {
-        self.command_exit.lock().unwrap().clone()
+    /// What the pane's shell is doing with its last command, when it says.
+    pub fn command(&self) -> Option<ShellCommand> {
+        self.command.lock().unwrap().clone()
     }
 
     /// Carry over what a replaced daemon knew.
-    pub fn set_command_exit(&self, exit: Option<CommandExit>) {
-        *self.command_exit.lock().unwrap() = exit;
+    pub fn set_command(&self, command: Option<ShellCommand>) {
+        *self.command.lock().unwrap() = command;
     }
 
     /// Take in the shell's reports; true when the command state changed.
     fn note(&self, marks: &[Mark], now: Ms) -> bool {
-        let mut exit = self.command_exit.lock().unwrap();
-        let before = exit.clone();
+        let mut command = self.command.lock().unwrap();
+        let before = command.clone();
         for m in marks {
-            match m {
-                Mark::Started => *exit = None,
-                Mark::Ended(code) => *exit = Some(CommandExit { code: *code, at: now }),
-            }
+            *command = Some(match m {
+                Mark::Started => ShellCommand::Running { since: now },
+                Mark::Ended(code) => ShellCommand::Ended { code: *code, at: now },
+            });
         }
-        *exit != before
+        *command != before
     }
 }
 
@@ -615,7 +614,10 @@ mod tests {
         spec.env = vec![("AULORA_USER_ZDOTDIR".into(), home.to_string_lossy().to_string())];
         let (tx, rx) = mpsc::channel();
         let p = Proc::spawn(&spec, move |e| tx.send(e).unwrap(), || {}).unwrap();
-        let code = || p.command_exit().map(|e| e.code);
+        let code = || match p.command() {
+            Some(ShellCommand::Ended { code, .. }) => Some(code),
+            _ => None,
+        };
         assert!(wait_until(|| code() == Some(3)), "screen was: {:?}", p.text());
         assert!(p.text().contains("served"));
 
@@ -625,7 +627,7 @@ mod tests {
         p.write(b"true\r".to_vec());
         assert!(wait_until(|| code() == Some(0)), "screen was: {:?}", p.text());
         p.write(b"sleep 30\r".to_vec());
-        assert!(wait_until(|| code().is_none()), "a running command clears it");
+        assert!(wait_until(|| matches!(p.command(), Some(ShellCommand::Running { .. }))), "and says one runs");
         assert!(rx.try_recv().is_err(), "the pane is still open");
         p.kill();
         let _ = std::fs::remove_dir_all(&home);

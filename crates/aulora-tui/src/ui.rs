@@ -527,7 +527,7 @@ fn agent_detail(app: &App, r: &RowRef) -> Vec<Span<'static>> {
                 vec![sp(format!("exited with code {}", e.code), fg(t.red)), sp(" · r restart · x close", faint())]
             }
             Some(p) if app.unseen_command_exit(&p.id).is_some() => {
-                let code = app.unseen_command_exit(&p.id).map(|e| e.code).unwrap_or_default();
+                let code = app.unseen_command_exit(&p.id).unwrap_or_default();
                 vec![sp(format!("exited with code {code}"), fg(t.red))]
             }
             Some(p) => {
@@ -1959,7 +1959,7 @@ mod tests {
         let mut app = App::new(Conn::Demo, true, String::new());
         let mut snap = crate::demo::Demo::new().snap;
         let dev = snap.panes.iter_mut().find(|p| p.kind == PaneKind::Command).unwrap();
-        dev.command_exit = Some(CommandExit { code: 0, at: 5 });
+        dev.command = Some(ShellCommand::Ended { code: 0, at: 5 });
         let id = dev.id.clone();
         app.set_snapshot(snap);
         let row = RowRef::Pane(id.clone());
