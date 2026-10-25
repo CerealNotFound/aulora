@@ -1,0 +1,33 @@
+# aulora's shell integration. aulora starts zsh with ZDOTDIR pointing
+# here; each file loads your own, and .zshrc puts ZDOTDIR back.
+if [[ -n ${AULORA_USER_ZDOTDIR-} ]]; then
+  ZDOTDIR=$AULORA_USER_ZDOTDIR
+else
+  unset ZDOTDIR
+fi
+[[ -r ${ZDOTDIR:-$HOME}/.zshenv ]] && builtin source "${ZDOTDIR:-$HOME}/.zshenv"
+
+# Your ZDOTDIR, as your .zshenv left it.
+__aulora_save_zdotdir() {
+  if (( ${+ZDOTDIR} )); then
+    typeset -g __aulora_zdotdir=$ZDOTDIR __aulora_zdotdir_type=${(t)ZDOTDIR}
+  else
+    unset __aulora_zdotdir
+  fi
+}
+__aulora_user_zdotdir() {
+  if (( ! ${+__aulora_zdotdir} )); then
+    unset ZDOTDIR
+  elif [[ $__aulora_zdotdir_type == *export* ]]; then
+    export ZDOTDIR=$__aulora_zdotdir
+  else
+    ZDOTDIR=$__aulora_zdotdir
+  fi
+}
+__aulora_save_zdotdir
+
+# A shell running a script reads the rest of your files itself.
+# An interactive one reads .zprofile and .zshrc from here.
+if [[ -o interactive && -n ${AULORA_ZDOTDIR-} ]]; then
+  ZDOTDIR=$AULORA_ZDOTDIR
+fi

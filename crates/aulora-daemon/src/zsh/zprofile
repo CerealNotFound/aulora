@@ -1,0 +1,5 @@
+# aulora's shell integration: load your .zprofile.
+__aulora_user_zdotdir
+[[ -r ${ZDOTDIR:-$HOME}/.zprofile ]] && builtin source "${ZDOTDIR:-$HOME}/.zprofile"
+__aulora_save_zdotdir
+ZDOTDIR=$AULORA_ZDOTDIR

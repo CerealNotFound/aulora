@@ -11,9 +11,11 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
 use anyhow::{Context, Result};
-use aulora_core::model::{Ms, PaneExit, PaneKind, now_ms};
+use aulora_core::model::{CommandExit, Ms, PaneExit, PaneKind, now_ms};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::sync::broadcast;
+
+use crate::zsh::{self, Mark};
 
 const SCROLLBACK: usize = 5_000;
 const CHANNEL: usize = 1_024;
@@ -52,6 +54,8 @@ const STRIP_ENV: &[&str] = &[
     "WEZTERM_PANE",
     "KITTY_WINDOW_ID",
     "AULORA_PANE_ID",
+    "AULORA_ZDOTDIR",
+    "AULORA_USER_ZDOTDIR",
 ];
 
 #[derive(Debug, Clone)]
@@ -64,6 +68,7 @@ pub enum PaneEvent {
 struct Signals {
     title: Option<String>,
     bell: bool,
+    marks: Vec<Mark>,
 }
 
 impl vt100::Callbacks for Signals {
@@ -72,6 +77,9 @@ impl vt100::Callbacks for Signals {
     }
     fn audible_bell(&mut self, _: &mut vt100::Screen) {
         self.bell = true;
+    }
+    fn unhandled_osc(&mut self, _: &mut vt100::Screen, params: &[&[u8]]) {
+        self.marks.extend(Mark::parse(params));
     }
 }
 
@@ -84,6 +92,10 @@ pub struct Spec {
     pub args: Vec<String>,
     pub cols: u16,
     pub rows: u16,
+    /// The shell to run under; None for yours ($SHELL).
+    pub shell: Option<String>,
+    /// More environment for the pane, set last.
+    pub env: Vec<(String, String)>,
 }
 
 /// The terminal's master side: opened here, or adopted from the daemon
@@ -144,6 +156,7 @@ pub struct Proc {
     killer: Mutex<Killer>,
     pub last_output: AtomicI64,
     pub bytes_out: AtomicU64,
+    command_exit: Mutex<Option<CommandExit>>,
 }
 
 fn nz(n: u16) -> NonZeroU16 {
@@ -158,7 +171,7 @@ fn winsize(fd: i32) -> Option<(u16, u16)> {
     (ok && ws.ws_col > 0 && ws.ws_row > 0).then_some((ws.ws_col, ws.ws_row))
 }
 
-fn shell() -> String {
+fn user_shell() -> String {
     std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/zsh".into())
 }
 
@@ -171,22 +184,29 @@ fn quote(s: &str) -> String {
 }
 
 /// The argv for a pane. Everything runs under the user's login shell so
-/// PATH and other profile settings match a normal terminal.
-pub fn argv(kind: PaneKind, args: &[String]) -> Vec<String> {
-    let sh = shell();
+/// PATH and other profile settings match a normal terminal. `zdotdir` is
+/// aulora's zsh integration, when the shell is zsh.
+pub fn argv(sh: &str, kind: PaneKind, args: &[String], zdotdir: Option<&std::path::Path>) -> Vec<String> {
+    let sh = sh.to_string();
+    // The shell to fall back to when a program exits, like a normal terminal.
+    let fallback = match zdotdir {
+        Some(dir) => format!("ZDOTDIR={} exec {} -l", quote(&dir.to_string_lossy()), quote(&sh)),
+        None => format!("exec {} -l", quote(&sh)),
+    };
     match kind {
         PaneKind::Shell => vec![sh, "-l".into()],
         PaneKind::Claude => {
             let extra: Vec<String> = args.iter().map(|a| quote(a)).collect();
             let claude = if extra.is_empty() { "claude".to_string() } else { format!("claude {}", extra.join(" ")) };
-            // Fall back to a shell when Claude exits, like a normal terminal.
-            vec![sh.clone(), "-l".into(), "-i".into(), "-c".into(), format!("{claude}; exec {} -l", quote(&sh))]
+            vec![sh, "-l".into(), "-i".into(), "-c".into(), format!("{claude}; {fallback}")]
         }
-        PaneKind::Command => {
-            let cmd: Vec<String> = args.iter().map(|a| quote(a)).collect();
-            vec![sh, "-l".into(), "-c".into(), cmd.join(" ")]
-        }
+        PaneKind::Command => vec![sh, "-l".into(), "-c".into(), command_line(args)],
     }
+}
+
+/// A command pane's command line.
+pub fn command_line(args: &[String]) -> String {
+    args.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ")
 }
 
 /// Start a pane's input and output threads: writes go to the program
@@ -217,15 +237,17 @@ fn wire(
                     let quiet = now - out.last_output.swap(now, Ordering::Relaxed) > 1_500;
                     out.bytes_out.fetch_add(n as u64, Ordering::Relaxed);
                     let chunk: Arc<[u8]> = Arc::from(&buf[..n]);
-                    let bell = {
+                    let (bell, marks) = {
                         // Parse and publish under one lock so attach() never sees
                         // a screen that disagrees with the stream that follows it.
                         let mut term = out.term.lock().unwrap();
                         term.process(&chunk);
                         let _ = out.tx.send(PaneEvent::Output(chunk));
-                        std::mem::take(&mut term.callbacks_mut().bell)
+                        let signals = term.callbacks_mut();
+                        (std::mem::take(&mut signals.bell), std::mem::take(&mut signals.marks))
                     };
-                    if quiet || bell {
+                    let command_changed = out.note(&marks, now);
+                    if quiet || bell || command_changed {
                         on_wake();
                     }
                 }
@@ -246,7 +268,9 @@ impl Proc {
         let size = PtySize { rows: spec.rows.max(1), cols: spec.cols.max(1), pixel_width: 0, pixel_height: 0 };
         let pair = native_pty_system().openpty(size).context("opening a pseudo-terminal")?;
 
-        let argv = argv(spec.kind, &spec.args);
+        let sh = spec.shell.clone().unwrap_or_else(user_shell);
+        let zdotdir = if zsh::is_zsh(&sh) { zsh::dir() } else { None };
+        let argv = argv(&sh, spec.kind, &spec.args, zdotdir);
         let mut cmd = CommandBuilder::new(&argv[0]);
         cmd.args(&argv[1..]);
         cmd.cwd(&spec.cwd);
@@ -263,6 +287,19 @@ impl Proc {
         cmd.env("TERM_PROGRAM", "aulora");
         cmd.env("TERM_PROGRAM_VERSION", aulora_core::VERSION);
         cmd.env("AULORA_PANE_ID", &spec.id);
+        if let Some(dir) = zdotdir {
+            // Your own ZDOTDIR, if you have one, is where the integration
+            // finds your startup files.
+            match std::env::var_os("ZDOTDIR").filter(|z| !z.is_empty() && std::path::Path::new(z) != dir) {
+                Some(z) => cmd.env("AULORA_USER_ZDOTDIR", z),
+                None => cmd.env_remove("AULORA_USER_ZDOTDIR"),
+            }
+            cmd.env("ZDOTDIR", dir);
+            cmd.env("AULORA_ZDOTDIR", dir);
+        }
+        for (k, v) in &spec.env {
+            cmd.env(k, v);
+        }
 
         let child = pair.slave.spawn_command(cmd).with_context(|| format!("starting {}", argv.join(" ")))?;
         drop(pair.slave);
@@ -287,6 +324,7 @@ impl Proc {
             killer: Mutex::new(Killer::Pty(killer)),
             last_output: AtomicI64::new(now_ms()),
             bytes_out: AtomicU64::new(0),
+            command_exit: Mutex::new(None),
         });
 
         wire(&proc_, &spec.id, reader, writer, input_rx, on_wake)?;
@@ -353,6 +391,7 @@ impl Proc {
             killer: Mutex::new(running.map(|(_, p)| Killer::Pid(p)).unwrap_or(Killer::Gone)),
             last_output: AtomicI64::new(now_ms()),
             bytes_out: AtomicU64::new(0),
+            command_exit: Mutex::new(None),
         });
         let (Some(reader), Some(writer), Some((_, pid))) = (reader, writer, running) else {
             return Ok(proc_);
@@ -462,6 +501,30 @@ impl Proc {
     pub fn last_output_at(&self) -> Ms {
         self.last_output.load(Ordering::Relaxed)
     }
+
+    /// How the last command in the pane's shell ended; None while one
+    /// runs, or when the shell doesn't say.
+    pub fn command_exit(&self) -> Option<CommandExit> {
+        self.command_exit.lock().unwrap().clone()
+    }
+
+    /// Carry over what a replaced daemon knew.
+    pub fn set_command_exit(&self, exit: Option<CommandExit>) {
+        *self.command_exit.lock().unwrap() = exit;
+    }
+
+    /// Take in the shell's reports; true when the command state changed.
+    fn note(&self, marks: &[Mark], now: Ms) -> bool {
+        let mut exit = self.command_exit.lock().unwrap();
+        let before = exit.clone();
+        for m in marks {
+            match m {
+                Mark::Started => *exit = None,
+                Mark::Ended(code) => *exit = Some(CommandExit { code: *code, at: now }),
+            }
+        }
+        *exit != before
+    }
 }
 
 #[cfg(test)]
@@ -488,21 +551,61 @@ mod tests {
             args: args.iter().map(|s| s.to_string()).collect(),
             cols: 80,
             rows: 24,
+            // A plain shell, so tests don't depend on your zsh setup.
+            shell: Some("/bin/sh".into()),
+            env: vec![],
         }
     }
 
+    fn wait_until(what: impl Fn() -> bool) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(10) {
+            if what() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
     #[test]
-    fn runs_a_command_and_reports_exit() {
+    fn runs_a_shell_and_reports_exit() {
         let (tx, rx) = mpsc::channel();
-        let p = Proc::spawn(
-            &spec(PaneKind::Command, &["sh", "-c", "printf 'hello from %s' \"$AULORA_PANE_ID\"; exit 3"]),
-            move |e| tx.send(e).unwrap(),
-            || {},
-        )
-        .unwrap();
+        let p = Proc::spawn(&spec(PaneKind::Shell, &[]), move |e| tx.send(e).unwrap(), || {}).unwrap();
+        p.write(b"printf 'hello from %s' \"$AULORA_PANE_ID\"; exit 3\r".to_vec());
         assert!(wait_for(&p, "hello from test"), "screen was: {:?}", p.text());
         let exit = rx.recv_timeout(Duration::from_secs(10)).unwrap();
         assert_eq!(exit.code, 3);
+    }
+
+    #[test]
+    fn zsh_says_how_each_command_ended() {
+        if !std::path::Path::new("/bin/zsh").exists() {
+            return;
+        }
+        // An empty ZDOTDIR of your own: none of your startup files.
+        let home = std::env::temp_dir().join(format!("aulora-zsh-test-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        let mut spec = spec(PaneKind::Shell, &[]);
+        spec.shell = Some("/bin/zsh".into());
+        spec.env = vec![("AULORA_USER_ZDOTDIR".into(), home.to_string_lossy().to_string())];
+        let (tx, rx) = mpsc::channel();
+        let p = Proc::spawn(&spec, move |e| tx.send(e).unwrap(), || {}).unwrap();
+        p.write(b"sh -c 'printf served; exit 3'\r".to_vec());
+        let code = || p.command_exit().map(|e| e.code);
+        assert!(wait_until(|| code() == Some(3)), "screen was: {:?}", p.text());
+        assert!(p.text().contains("served"));
+
+        // Up, Enter: the same command again, from the shell's history.
+        p.write(b"\x1b[A\r".to_vec());
+        assert!(wait_until(|| p.text().matches("served").count() >= 2), "screen was: {:?}", p.text());
+        p.write(b"true\r".to_vec());
+        assert!(wait_until(|| code() == Some(0)), "screen was: {:?}", p.text());
+        p.write(b"sleep 30\r".to_vec());
+        assert!(wait_until(|| code().is_none()), "a running command clears it");
+        assert!(rx.try_recv().is_err(), "the pane is still open");
+        p.kill();
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
@@ -564,8 +667,11 @@ mod tests {
 
     #[test]
     fn claude_panes_fall_back_to_a_shell() {
-        let a = argv(PaneKind::Claude, &["--resume".into(), "abc def".into()]);
+        let a = argv("/bin/zsh", PaneKind::Claude, &["--resume".into(), "abc def".into()], None);
         assert_eq!(a[1..4], ["-l", "-i", "-c"]);
-        assert!(a[4].starts_with("claude --resume 'abc def'; exec "));
+        assert_eq!(a[4], "claude --resume 'abc def'; exec /bin/zsh -l");
+        let dir = std::path::Path::new("/a/zsh dir");
+        let a = argv("/bin/zsh", PaneKind::Claude, &[], Some(dir));
+        assert_eq!(a[4], "claude; ZDOTDIR='/a/zsh dir' exec /bin/zsh -l", "the shell after it is integrated too");
     }
 }

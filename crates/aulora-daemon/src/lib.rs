@@ -9,6 +9,7 @@ pub mod notify;
 pub mod procs;
 pub mod pty;
 pub mod store;
+pub mod zsh;
 
 use std::collections::HashMap;
 use std::fs::OpenOptions;
@@ -207,6 +208,7 @@ impl Shared {
                 pane.last_output_at = p.last_output_at();
                 pane.bytes_out = p.bytes_out.load(Ordering::Relaxed);
                 pane.title = p.title();
+                pane.command_exit = p.command_exit();
                 (pane.cols, pane.rows) = p.size();
             }
         }
@@ -257,8 +259,9 @@ impl Shared {
         let procs = self.procs.lock().unwrap();
         let handed: Vec<HandedPane> = panes
             .into_iter()
-            .map(|pane| {
+            .map(|mut pane| {
                 let exported = procs.get(&pane.id).map(|p| p.export());
+                pane.command_exit = procs.get(&pane.id).and_then(|p| p.command_exit());
                 let (fd, screen, title) = match exported {
                     Some(e) => (e.fd.filter(|_| pane.is_running()), e.screen, e.title),
                     None => (None, Vec::new(), None),
@@ -315,6 +318,7 @@ impl Shared {
             );
             match adopted {
                 Ok(p) => {
+                    p.set_command_exit(h.pane.command_exit.clone());
                     self.procs.lock().unwrap().insert(id.clone(), p);
                     self.hub.lock().unwrap().add_pane(h.pane);
                 }
@@ -357,8 +361,16 @@ impl Shared {
             }
             let args = restore_args(p.kind, &p.args, p.session.as_deref());
             let root = self.root_for(&p.cwd).await;
-            let spec =
-                Spec { id: p.id.clone(), cwd: p.cwd.clone(), kind: p.kind, args: args.clone(), cols: 120, rows: 36 };
+            let spec = Spec {
+                id: p.id.clone(),
+                cwd: p.cwd.clone(),
+                kind: p.kind,
+                args: args.clone(),
+                cols: 120,
+                rows: 36,
+                shell: None,
+                env: vec![],
+            };
             match self.start(&spec, 0) {
                 Ok(proc_) => {
                     let now = now_ms();
@@ -378,6 +390,7 @@ impl Shared {
                         title: None,
                         bell_at: None,
                         exit: None,
+                        command_exit: None,
                         generation: 0,
                     });
                     tracing::info!("restored pane {}", p.id);
@@ -443,6 +456,8 @@ impl Shared {
             args: req.args.clone(),
             cols: req.cols,
             rows: req.rows,
+            shell: None,
+            env: vec![],
         };
         let proc_ = self.start(&spec, 0)?;
         let now = now_ms();
@@ -462,6 +477,7 @@ impl Shared {
             title: None,
             bell_at: None,
             exit: None,
+            command_exit: None,
             generation: 0,
         };
         if self.hub.lock().unwrap().add_pane(pane) {
@@ -479,7 +495,16 @@ impl Shared {
         }
         let (cols, rows) = self.proc_(id).map(|p| p.size()).unwrap_or((pane.cols, pane.rows));
         let generation = pane.generation + 1;
-        let spec = Spec { id: id.to_string(), cwd: pane.cwd, kind: pane.kind, args: pane.args, cols, rows };
+        let spec = Spec {
+            id: id.to_string(),
+            cwd: pane.cwd,
+            kind: pane.kind,
+            args: pane.args,
+            cols,
+            rows,
+            shell: None,
+            env: vec![],
+        };
         let proc_ = self.start(&spec, generation)?;
         if let Some(p) = self.hub.lock().unwrap().panes.get_mut(id) {
             p.generation = generation;

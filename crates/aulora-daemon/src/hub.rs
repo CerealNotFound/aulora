@@ -517,6 +517,7 @@ mod tests {
             title: None,
             bell_at: None,
             exit: None,
+            command_exit: None,
             generation: 0,
         }
     }
