@@ -160,6 +160,17 @@ pub struct Proc {
     shell: Mutex<ShellState>,
 }
 
+/// A signal's number from its description, as strsignal gives it.
+fn signal_number(name: &str) -> Option<u32> {
+    (1..32)
+        .find(|&n| {
+            // SAFETY: strsignal returns a C string (or null) for any number.
+            let s = unsafe { libc::strsignal(n) };
+            !s.is_null() && unsafe { std::ffi::CStr::from_ptr(s) }.to_string_lossy() == name
+        })
+        .map(|n| n as u32)
+}
+
 fn nz(n: u16) -> NonZeroU16 {
     NonZeroU16::new(n.max(1)).expect("non-zero")
 }
@@ -342,7 +353,16 @@ impl Proc {
         std::thread::Builder::new().name(format!("pane-{}-wait", spec.id)).spawn(move || {
             let status = child.wait();
             let exit = match status {
-                Ok(s) => PaneExit { code: s.exit_code(), signal: s.signal().map(str::to_string), at: now_ms() },
+                // Killed by a signal: no exit code. portable-pty says 1 and
+                // names the signal; give it 128 + its number, as shells do.
+                Ok(s) => match s.signal() {
+                    Some(name) => PaneExit {
+                        code: signal_number(name).map(|n| 128 + n).unwrap_or(1),
+                        signal: Some(name.to_string()),
+                        at: now_ms(),
+                    },
+                    None => PaneExit { code: s.exit_code(), signal: None, at: now_ms() },
+                },
                 Err(_) => PaneExit { code: 1, signal: None, at: now_ms() },
             };
             // Hold the terminal lock so the exit is ordered after all output.
@@ -583,6 +603,16 @@ mod tests {
         assert!(wait_for(&p, "hello from test"), "screen was: {:?}", p.text());
         let exit = rx.recv_timeout(Duration::from_secs(10)).unwrap();
         assert_eq!(exit.code, 3);
+    }
+
+    #[test]
+    fn a_pane_killed_by_a_signal_says_which() {
+        let (tx, rx) = mpsc::channel();
+        let p = Proc::spawn(&spec(PaneKind::Shell, &[]), move |e| tx.send(e).unwrap(), || {}).unwrap();
+        p.write(b"kill -9 $$\r".to_vec());
+        let exit = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(exit.code, 128 + 9);
+        assert!(exit.signal.is_some());
     }
 
     #[test]
