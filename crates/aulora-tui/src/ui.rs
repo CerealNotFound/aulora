@@ -524,11 +524,17 @@ fn agent_detail(app: &App, r: &RowRef) -> Vec<Span<'static>> {
     match r {
         RowRef::Pane(id) => match app.pane(id) {
             Some(Pane { exit: Some(e), .. }) => {
-                vec![sp(format!("exited with code {}", e.code), fg(t.red)), sp(" · r restart · x close", faint())]
+                vec![sp(crate::app::ending(e.code).0, fg(t.red)), sp(" · r restart · x close", faint())]
             }
             Some(p) if app.failed_command(&p.id).is_some() => {
                 let code = app.failed_command(&p.id).unwrap_or_default();
-                vec![sp(format!("exited with code {code}"), fg(t.red))]
+                vec![sp(crate::app::ending(code).0, fg(t.red))]
+            }
+            Some(p) if matches!(p.command, Some(ShellCommand::Paused { .. })) => {
+                vec![sp("paused", fg(t.yellow)), sp(" · fg resumes it", faint())]
+            }
+            Some(p) if matches!(p.command, Some(ShellCommand::Running { background: true, .. })) => {
+                vec![sp("running in the background", faint())]
             }
             Some(p) => {
                 let what = p.title.clone().unwrap_or_else(|| match p.kind {
@@ -961,7 +967,10 @@ fn leaf_title(app: &App, view: &crate::layout::View, focused: bool) -> Vec<Span<
                 v.push(sp(format!(" · {}", short_model(&m)), faint()));
             }
             if let Some(p) = app.pane(id).filter(|p| p.exit.is_some()) {
-                v.push(sp(format!(" · exited {}", p.exit.as_ref().map(|e| e.code).unwrap_or(0)), fg(t.red)));
+                v.push(sp(
+                    format!(" · {}", crate::app::ending(p.exit.as_ref().map(|e| e.code).unwrap_or(0)).0),
+                    fg(t.red),
+                ));
             }
         }
         View::Changes { filter } => {
@@ -1118,7 +1127,7 @@ fn pane_view(f: &mut Frame, area: Rect, app: &mut App, id: &str) {
         f.render_widget(Paragraph::new(Line::from(sp(msg, pill))), r);
     }
     if let Some(e) = app.pane(id).and_then(|p| p.exit.clone()) {
-        let msg = format!(" exited with code {} · r restart · x close ", e.code);
+        let msg = format!(" {} · r restart · x close ", crate::app::ending(e.code).0);
         let wd = (w(&msg) as u16).min(term_area.width);
         let r = Rect { x: term_area.x, y: term_area.y + term_area.height.saturating_sub(1), width: wd, height: 1 };
         f.render_widget(Paragraph::new(Line::from(sp(msg, pill))), r);
@@ -2015,6 +2024,40 @@ mod tests {
         let spans = agent_detail(&app, &row);
         assert_eq!(spans[0].content, "exited with code 0");
         assert_eq!(spans[0].style.fg, Some(theme::get().red), "and red words");
+    }
+
+    #[test]
+    fn says_how_a_program_ended_in_words() {
+        use crate::app::ending;
+        assert_eq!(ending(0), ("exited with code 0".into(), false));
+        assert_eq!(ending(3), ("exited with code 3".into(), true));
+        assert_eq!(ending(130), ("stopped with Ctrl-C".into(), false), "you stopped it");
+        assert_eq!(ending(137), ("killed".into(), true));
+        assert_eq!(ending(143), ("terminated".into(), true));
+        assert_eq!(ending(128 + libc::SIGSEGV as u32), ("crashed (SIGSEGV)".into(), true));
+        assert_eq!(ending(128 + libc::SIGUSR1 as u32), ("killed by SIGUSR1".into(), true));
+        assert_eq!(ending(255), ("exited with code 255".into(), true), "not a signal");
+    }
+
+    #[test]
+    fn ctrl_c_paused_and_background_jobs_read_right() {
+        let mut app = App::new(Conn::Demo, true, String::new());
+        let mut snap = crate::demo::Demo::new().snap;
+        let id = snap.panes.iter().find(|p| p.kind == PaneKind::Command).unwrap().id.clone();
+        let row = RowRef::Pane(id.clone());
+        let mut show = |command: ShellCommand| {
+            snap.panes.iter_mut().find(|p| p.id == id).unwrap().command = Some(command);
+            app.set_snapshot(snap.clone());
+            app.mark_seen();
+            (app.status(&row), agent_detail(&app, &row)[0].content.to_string())
+        };
+        assert_eq!(show(ShellCommand::Ended { code: 130, at: 5 }).0, Status::Idle, "Ctrl-C is a clean stop");
+        assert_eq!(show(ShellCommand::Ended { code: 137, at: 6 }), (Status::Blocked, "killed".into()));
+        assert_eq!(show(ShellCommand::Paused { since: 7 }), (Status::Running, "paused".into()));
+        assert_eq!(
+            show(ShellCommand::Running { since: 8, background: true }),
+            (Status::Running, "running in the background".into())
+        );
     }
 
     #[test]

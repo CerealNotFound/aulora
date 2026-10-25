@@ -324,6 +324,47 @@ pub struct App {
     pub frame: Option<ratatui::buffer::Buffer>,
 }
 
+/// How a program ended, in words, and whether something went wrong.
+/// Codes above 128 are signals, the way shells report them.
+pub fn ending(code: u32) -> (String, bool) {
+    let Some(n) = code.checked_sub(128).filter(|n| (1..32).contains(n)).map(|n| n as i32) else {
+        return (format!("exited with code {code}"), code != 0);
+    };
+    let name = SIGNALS.iter().find(|(s, _)| *s == n).map(|(_, name)| name.to_string());
+    let name = name.unwrap_or_else(|| format!("signal {n}"));
+    match n {
+        libc::SIGINT => ("stopped with Ctrl-C".into(), false),
+        libc::SIGKILL => ("killed".into(), true),
+        libc::SIGTERM => ("terminated".into(), true),
+        libc::SIGHUP => ("hung up".into(), true),
+        libc::SIGSEGV | libc::SIGBUS | libc::SIGILL | libc::SIGFPE | libc::SIGABRT | libc::SIGTRAP | libc::SIGSYS => {
+            (format!("crashed ({name})"), true)
+        }
+        _ => (format!("killed by {name}"), true),
+    }
+}
+
+const SIGNALS: &[(i32, &str)] = &[
+    (libc::SIGHUP, "SIGHUP"),
+    (libc::SIGINT, "SIGINT"),
+    (libc::SIGQUIT, "SIGQUIT"),
+    (libc::SIGILL, "SIGILL"),
+    (libc::SIGTRAP, "SIGTRAP"),
+    (libc::SIGABRT, "SIGABRT"),
+    (libc::SIGBUS, "SIGBUS"),
+    (libc::SIGFPE, "SIGFPE"),
+    (libc::SIGKILL, "SIGKILL"),
+    (libc::SIGUSR1, "SIGUSR1"),
+    (libc::SIGSEGV, "SIGSEGV"),
+    (libc::SIGUSR2, "SIGUSR2"),
+    (libc::SIGPIPE, "SIGPIPE"),
+    (libc::SIGALRM, "SIGALRM"),
+    (libc::SIGTERM, "SIGTERM"),
+    (libc::SIGSYS, "SIGSYS"),
+    (libc::SIGXCPU, "SIGXCPU"),
+    (libc::SIGXFSZ, "SIGXFSZ"),
+];
+
 fn order_path() -> std::path::PathBuf {
     aulora_core::paths::home().join("order.json")
 }
@@ -632,7 +673,8 @@ impl App {
         let p = self.pane(pane_id).filter(|p| p.is_running())?;
         let Some(ShellCommand::Ended { code, at }) = p.command else { return None };
         let watched = self.seen.get(pane_id).is_some_and(|s| *s >= at);
-        (code != 0 || !watched).then_some(code)
+        // Ctrl-C is you stopping it: fine.
+        (ending(code).1 || (code == 0 && !watched)).then_some(code)
     }
 
     /// Mark what's on screen as seen, so "done" settles into "idle", and
