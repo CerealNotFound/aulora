@@ -526,7 +526,7 @@ fn agent_detail(app: &App, r: &RowRef) -> Vec<Span<'static>> {
             Some(Pane { exit: Some(e), .. }) => {
                 vec![sp(crate::app::ending(Some(e.code)).0, fg(t.red)), sp(" · r restart · x close", faint())]
             }
-            Some(p) if app.failed_command(&p.id).is_some() => {
+            Some(p) if app.failed_command(&p.id).is_some_and(|code| code != Some(0)) => {
                 let code = app.failed_command(&p.id).flatten();
                 vec![sp(crate::app::ending(code).0, fg(t.red))]
             }
@@ -543,6 +543,7 @@ fn agent_detail(app: &App, r: &RowRef) -> Vec<Span<'static>> {
             Some(Pane { server_stopped: Some(s), .. }) => {
                 vec![sp(format!("{} on {} stopped", s.name, ports(&s.ports)), fg(t.red))]
             }
+            Some(p) if app.failed_command(&p.id).is_some() => vec![sp(crate::app::ending(Some(0)).0, fg(t.red))],
             Some(p) => {
                 let what = p.title.clone().unwrap_or_else(|| match p.kind {
                     PaneKind::Command => p.args.join(" "),
@@ -2079,10 +2080,10 @@ mod tests {
         fn pane<'a>(snap: &'a mut Snapshot, id: &str) -> &'a mut Pane {
             snap.panes.iter_mut().find(|p| p.id == id).unwrap()
         }
+        // `npm start` ended quietly while you were elsewhere; its server runs on.
         pane(&mut snap, &id).command = Some(ShellCommand::Ended { code: Some(0), at: 1 });
         pane(&mut snap, &id).servers = vec![Server { pid: 9, name: "node".into(), ports: vec![3000] }];
         app.set_snapshot(snap.clone());
-        app.seen.insert(id.clone(), 1);
         assert_eq!(app.status(&row), Status::Running);
         assert_eq!(agent_detail(&app, &row)[0].content, "node on :3000 in the background");
 

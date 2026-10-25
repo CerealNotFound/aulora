@@ -623,7 +623,10 @@ impl App {
                 if let Some(s) = self.pane_session(id).filter(|s| s.state.is_live()) {
                     return self.session_status(s);
                 }
-                if self.failed_command(id).is_some() {
+                // What went wrong, unless it was a quiet exit with 0: a
+                // server still up says more than the command that started it.
+                let failed = self.failed_command(id);
+                if failed.is_some_and(|code| code != Some(0)) {
                     return Status::Blocked;
                 }
                 if matches!(p.command, Some(ShellCommand::Running { .. } | ShellCommand::Paused { .. })) {
@@ -633,15 +636,13 @@ impl App {
                 if !p.servers.is_empty() {
                     return Status::Running;
                 }
-                if p.server_stopped.is_some() {
+                if p.server_stopped.is_some() || failed.is_some() {
                     return Status::Blocked;
                 }
                 match p.command {
-                    Some(ShellCommand::Running { .. } | ShellCommand::Paused { .. }) => Status::Running,
-                    Some(ShellCommand::Ended { .. }) => Status::Idle,
                     // A shell that doesn't say: going by its output.
                     None if self.now - p.last_output_at < 2_000 => Status::Working,
-                    None => Status::Idle,
+                    _ => Status::Idle,
                 }
             }
             RowRef::Project(root) => self.agents_in(root).iter().map(|a| self.status(a)).min().unwrap_or(Status::Ended),
