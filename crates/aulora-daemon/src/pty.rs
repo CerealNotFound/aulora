@@ -634,6 +634,30 @@ mod tests {
     }
 
     #[test]
+    fn a_dev_server_that_stops_without_an_error_is_reported_as_ended() {
+        if !std::path::Path::new("/bin/zsh").exists() {
+            return;
+        }
+        let home = std::env::temp_dir().join(format!("aulora-zsh-clean-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        let mut spec = spec(PaneKind::Command, &["sh", "-c", "echo listening on :3000; sleep 0.3; exit 0"]);
+        spec.shell = Some("/bin/zsh".into());
+        spec.env = vec![("AULORA_USER_ZDOTDIR".into(), home.to_string_lossy().to_string())];
+        let (tx, rx) = mpsc::channel();
+        let p = Proc::spawn(&spec, move |e| tx.send(e).unwrap(), || {}).unwrap();
+        assert!(wait_until(|| matches!(p.command(), Some(ShellCommand::Running { .. }))), "screen: {:?}", p.text());
+        assert!(
+            wait_until(|| matches!(p.command(), Some(ShellCommand::Ended { code: 0, .. }))),
+            "screen: {:?}",
+            p.text()
+        );
+        assert!(p.text().contains("listening on :3000"));
+        assert!(rx.try_recv().is_err(), "the shell is still open");
+        p.kill();
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
     fn input_reaches_the_program_and_attach_replays_the_screen() {
         let p = Proc::spawn(&spec(PaneKind::Command, &["cat"]), |_| {}, || {}).unwrap();
         p.write(b"ping\r".to_vec());
